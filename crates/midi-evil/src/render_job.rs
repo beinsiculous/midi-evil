@@ -13,6 +13,17 @@ impl RenderJob {
         Self::spawn(move || evil_render::render_project(&project, &patch_base))
     }
 
+    pub fn start_range(
+        project: Project,
+        patch_base: PathBuf,
+        start_tick: u64,
+        end_tick: Option<u64>,
+    ) -> Self {
+        Self::spawn(move || {
+            evil_render::render_project_range(&project, &patch_base, start_tick, end_tick)
+        })
+    }
+
     pub fn start_audition(patch: evil_synth::Patch) -> Self {
         Self::spawn(move || evil_render::render_audition(&patch))
     }

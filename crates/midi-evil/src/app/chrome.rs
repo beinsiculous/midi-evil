@@ -207,6 +207,44 @@ impl StudioApp {
                     }
                 });
             });
+        egui::Panel::top("section-transport")
+            .frame(theme::panel().inner_margin(egui::Margin::symmetric(14, 6)))
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    let bar_ticks = piano_roll::bar_ticks(&self.project);
+                    let mut start = self.transport.start_bar(bar_ticks);
+                    let mut end = self.transport.end_bar(bar_ticks);
+                    theme::label(ui, "START BAR");
+                    let start_changed = ui
+                        .add(egui::DragValue::new(&mut start).range(1..=65_535))
+                        .on_hover_text("Start playback at the beginning of this bar")
+                        .changed();
+                    theme::label(ui, "LOOP END");
+                    let end_changed = ui
+                        .add(egui::DragValue::new(&mut end).range(2..=65_536))
+                        .on_hover_text("Repeat stops at the beginning of this bar")
+                        .changed();
+                    let repeat_changed = ui
+                        .checkbox(&mut self.transport.repeat, "Repeat section")
+                        .changed();
+                    if start_changed || end_changed || repeat_changed {
+                        self.transport.set_bars(start, end, bar_ticks);
+                        self.stop_preview();
+                    }
+                    if self.transport.repeat {
+                        theme::label(
+                            ui,
+                            format!(
+                                "BARS {}–{}",
+                                self.transport.start_bar(bar_ticks),
+                                self.transport.end_bar(bar_ticks) - 1
+                            ),
+                        );
+                    } else {
+                        theme::label(ui, "PLAY THROUGH TAIL");
+                    }
+                });
+            });
         egui::Panel::top("workspace-tabs")
             .frame(theme::panel().inner_margin(egui::Margin::symmetric(14, 6)))
             .show(ui, |ui| {

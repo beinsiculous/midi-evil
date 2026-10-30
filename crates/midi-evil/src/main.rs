@@ -13,6 +13,7 @@ mod piano_roll;
 mod preview;
 mod render_job;
 mod theme;
+mod transport;
 mod workspace;
 
 use std::process::ExitCode;

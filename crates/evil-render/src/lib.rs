@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use evil_project::Project;
 use evil_synth::{
     MonoTrack, Patch, StereoSound, SynthAftertouch, SynthController, SynthNote, SynthPitchBend,
-    mix_stereo,
+    SynthTempoChange, mix_stereo,
 };
 use thiserror::Error;
 
@@ -21,6 +21,8 @@ pub enum Error {
     },
     #[error("the project has no unmuted notes to render")]
     NoNotes,
+    #[error("invalid playback range: {0}")]
+    InvalidSection(String),
 }
 
 pub struct RenderOutput {
@@ -74,6 +76,55 @@ pub fn render_audition(patch: &Patch) -> Result<RenderOutput, Error> {
     })
 }
 
+/// Render from a timeline tick, optionally stopping at a loop boundary.
+/// Earlier notes and automation are rendered before cropping so sustained
+/// voices, LFO phase, tempo changes, and effect tails retain their state.
+pub fn render_project_range(
+    project: &Project,
+    patch_base: &Path,
+    start_tick: u64,
+    end_tick: Option<u64>,
+) -> Result<RenderOutput, Error> {
+    if end_tick.is_some_and(|end| end <= start_tick) {
+        return Err(Error::InvalidSection(
+            "end tick must be greater than start tick".to_owned(),
+        ));
+    }
+    let performance = project.to_performance()?;
+    let start_seconds = performance.seconds_at(start_tick);
+    let end_seconds = end_tick.map(|end| performance.seconds_at(end));
+    let mut input = project.clone();
+    if let Some(end) = end_tick {
+        for track in &mut input.tracks {
+            track.notes.retain(|note| note.start_tick < end);
+            track.pitch_bends.retain(|event| event.tick < end);
+            track.aftertouch.retain(|event| event.tick < end);
+            track.controllers.retain(|event| event.tick < end);
+        }
+    }
+    let mut output = render_project(&input, patch_base)?;
+    let sample_rate = output.sound.sample_rate;
+    let start_frame = (start_seconds * f64::from(sample_rate)).round() as usize;
+    let end_frame = end_seconds.map_or(output.sound.left.len(), |seconds| {
+        (seconds * f64::from(sample_rate)).round() as usize
+    });
+    let start_frame = start_frame.min(output.sound.left.len());
+    let end_frame = end_frame.min(output.sound.left.len());
+    output.sound.left = output.sound.left[start_frame..end_frame].to_vec();
+    output.sound.right = output.sound.right[start_frame..end_frame].to_vec();
+    output.note_count = project
+        .tracks
+        .iter()
+        .filter(|track| !track.muted)
+        .flat_map(|track| &track.notes)
+        .filter(|note| {
+            note.start_tick < end_tick.unwrap_or(u64::MAX)
+                && note.start_tick.saturating_add(note.duration_ticks) > start_tick
+        })
+        .count();
+    Ok(output)
+}
+
 pub fn render_project(project: &Project, patch_base: &Path) -> Result<RenderOutput, Error> {
     let performance = project.to_performance()?;
     if performance.note_count() == 0 {
@@ -81,6 +132,14 @@ pub fn render_project(project: &Project, patch_base: &Path) -> Result<RenderOutp
     }
     let mut rendered = Vec::new();
     let mut note_count = 0;
+    let tempo_changes: Vec<_> = performance
+        .tempo_changes
+        .iter()
+        .map(|change| SynthTempoChange {
+            time_seconds: performance.seconds_at(change.tick),
+            bpm: 60_000_000.0 / change.microseconds_per_quarter as f32,
+        })
+        .collect();
     for track in &performance.tracks {
         let settings = &project.tracks[track.track_index];
         let mut patch = load_patch(&settings.patch, patch_base)?;
@@ -126,12 +185,13 @@ pub fn render_project(project: &Project, patch_base: &Path) -> Result<RenderOutp
                 value: event.value,
             })
             .collect();
-        let sound = evil_synth::render_notes_dry_with_full_automation(
+        let sound = evil_synth::render_notes_dry_with_tempo_and_full_automation(
             &patch,
             &notes,
             &pitch_bends,
             &aftertouch,
             &controllers,
+            &tempo_changes,
         )?;
         rendered.push((
             sound,
@@ -246,6 +306,38 @@ mod tests {
             render_audition(&tracked).unwrap().sound.left,
             render_audition(&fixed).unwrap().sound.left
         );
+    }
+
+    #[test]
+    fn range_crops_exact_frames_and_preserves_sustained_note_state() {
+        let mut project = Project::new("Section");
+        project
+            .add_track(Track {
+                notes: vec![
+                    Note {
+                        start_tick: 0,
+                        duration_ticks: 960,
+                        ..Note::default()
+                    },
+                    Note {
+                        start_tick: 960,
+                        duration_ticks: 480,
+                        ..Note::default()
+                    },
+                ],
+                ..Track::default()
+            })
+            .unwrap();
+        let full = render_project(&project, Path::new(".")).unwrap();
+        let section = render_project_range(&project, Path::new("."), 480, Some(960)).unwrap();
+        assert_eq!(section.sound.left.len(), 24_000);
+        assert_eq!(section.sound.left, full.sound.left[24_000..48_000]);
+        assert_eq!(section.note_count, 1);
+
+        let rest = render_project_range(&project, Path::new("."), 480, None).unwrap();
+        assert_eq!(rest.sound.left, full.sound.left[24_000..]);
+        assert_eq!(rest.note_count, 2);
+        assert!(render_project_range(&project, Path::new("."), 960, Some(480)).is_err());
     }
 
     #[test]

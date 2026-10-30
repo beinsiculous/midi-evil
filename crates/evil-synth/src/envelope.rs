@@ -21,7 +21,7 @@ impl Default for Envelope {
 }
 
 impl Envelope {
-    pub(crate) fn amplitude(&self, time_seconds: f32, gate_seconds: f32) -> f32 {
+    pub fn amplitude(&self, time_seconds: f32, gate_seconds: f32) -> f32 {
         if time_seconds <= gate_seconds {
             return self.level(time_seconds);
         }

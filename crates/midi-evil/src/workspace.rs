@@ -1,7 +1,7 @@
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, RichText, Stroke, vec2};
 use evil_project::Project;
 
-use crate::{piano_roll, theme};
+use crate::{piano_roll, theme, transport::Transport};
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub enum View {
@@ -26,7 +26,13 @@ impl View {
 }
 
 /// A fitted overview of the actual notes, not a separate pattern/clip model.
-pub fn song(ui: &mut egui::Ui, project: &Project, selected: &mut usize) -> bool {
+pub fn song(
+    ui: &mut egui::Ui,
+    project: &Project,
+    selected: &mut usize,
+    transport: &mut Transport,
+    playhead_tick: u64,
+) -> bool {
     ui.horizontal(|ui| {
         ui.heading("Song overview");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -50,8 +56,36 @@ pub fn song(ui: &mut egui::Ui, project: &Project, selected: &mut usize) -> bool 
             let label_width = 148.0;
             let lane_width = (width - label_width).max(40.0);
             let pixels_per_tick = lane_width / (bars * bar) as f32;
-            let (ruler, painter) = ui.allocate_painter(vec2(width, 30.0), egui::Sense::hover());
+            let (ruler, painter) = ui.allocate_painter(vec2(width, 30.0), egui::Sense::click());
             painter.rect_filled(ruler.rect, 2.0, theme::RAISED);
+            let section = Rect::from_min_max(
+                Pos2::new(
+                    ruler.rect.left() + label_width + transport.start_tick as f32 * pixels_per_tick,
+                    ruler.rect.top(),
+                ),
+                Pos2::new(
+                    ruler.rect.left() + label_width + transport.end_tick as f32 * pixels_per_tick,
+                    ruler.rect.bottom(),
+                ),
+            );
+            painter.rect_filled(section, 2.0, theme::GREEN.gamma_multiply(0.18));
+            let playhead_x =
+                ruler.rect.left() + label_width + playhead_tick as f32 * pixels_per_tick;
+            painter.line_segment(
+                [
+                    Pos2::new(playhead_x, ruler.rect.top()),
+                    Pos2::new(playhead_x, ruler.rect.bottom()),
+                ],
+                Stroke::new(1.5, theme::GREEN),
+            );
+            if let Some(position) = ruler.interact_pointer_pos()
+                && ruler.clicked()
+            {
+                let tick = ((position.x - ruler.rect.left() - label_width) / pixels_per_tick)
+                    .max(0.0) as u64;
+                let index = (tick / bar).min(bars - 1);
+                transport.set_bars(index + 1, index + 2, bar);
+            }
             painter.text(
                 ruler.rect.left_center() + vec2(12.0, 0.0),
                 Align2::LEFT_CENTER,
@@ -124,6 +158,14 @@ pub fn song(ui: &mut egui::Ui, project: &Project, selected: &mut usize) -> bool 
                 );
                 let lane = Rect::from_min_max(rect.min + vec2(label_width, 0.0), rect.max);
                 painter.rect_filled(lane, 2.0, theme::BACKGROUND);
+                let playhead_x = lane.left() + playhead_tick as f32 * pixels_per_tick;
+                painter.line_segment(
+                    [
+                        Pos2::new(playhead_x, lane.top()),
+                        Pos2::new(playhead_x, lane.bottom()),
+                    ],
+                    Stroke::new(1.0, theme::GREEN.gamma_multiply(0.8)),
+                );
                 for index in (0..bars).step_by(stride as usize) {
                     let x = lane.left() + (index * bar) as f32 * pixels_per_tick;
                     painter.line_segment(

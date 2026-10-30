@@ -92,8 +92,9 @@ pub fn preset(name: &str) -> Result<Patch, Error> {
         "nasty" => Patch {
             name: "A17 Nasty".to_owned(),
             duration_seconds: 0.35,
-            gain: 0.31,
+            gain: 0.34,
             midi_program: Some(80),
+            pitch_gain_per_octave: 0.3,
             oscillators: vec![Oscillator {
                 waveform: Waveform::Square,
                 detune_cents: 15.5,
@@ -108,7 +109,7 @@ pub fn preset(name: &str) -> Result<Patch, Error> {
             },
             filter: Some(Filter {
                 mode: FilterMode::LowPass,
-                cutoff_hz: 20_000.0,
+                cutoff_hz: 15_000.0,
                 envelope_amount: 0.0,
                 resonance: 0.0,
                 stages: 4,
@@ -126,14 +127,16 @@ pub fn preset(name: &str) -> Result<Patch, Error> {
                     rate_hz: 4.41,
                     destination: LfoDestination::SyncRatio,
                     waveform: LfoWaveform::SawUp,
-                    sync_ratio_depth: 0.35,
+                    sync_ratio_depth: 0.15,
                     ..Lfo::default()
                 },
                 Lfo {
-                    rate_hz: 4.41,
+                    // Source LFO3 beat-sync mode 6: sixteenth notes at 120 BPM.
+                    rate_hz: 8.0,
+                    beats_per_cycle: Some(0.25),
                     destination: LfoDestination::SyncRatio,
                     waveform: LfoWaveform::SawDown,
-                    sync_ratio_depth: 0.5,
+                    sync_ratio_depth: 0.2,
                     ..Lfo::default()
                 },
                 Lfo {
@@ -142,6 +145,14 @@ pub fn preset(name: &str) -> Result<Patch, Error> {
                     waveform: LfoWaveform::Square,
                     target_lfo: Some(2),
                     lfo_rate_depth: 0.25,
+                    ..Lfo::default()
+                },
+                Lfo {
+                    rate_hz: 4.0,
+                    beats_per_cycle: Some(0.5),
+                    destination: LfoDestination::Amplitude,
+                    waveform: LfoWaveform::SawDown,
+                    amplitude_depth: 0.95,
                     ..Lfo::default()
                 },
             ],

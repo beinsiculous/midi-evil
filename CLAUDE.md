@@ -121,6 +121,6 @@ Useful real-data checks beyond unit tests:
 
 - `target/fixtures/Minimal.nsp`: NanoStudio parsing, binary round trips, MIDI export, and arrangement behavior.
 - `examples/public-domain/bach-invention-02/bach-invention-02.mid`: public-domain format-1 MIDI with 384 ticks per quarter and two note tracks. Its source and checksum are in the adjacent `SOURCE.md`.
-- Additional MIDI files under `/home/jedi/projects/insiculous` have been useful for different track counts, meters, and tempo maps. Do not assume their licenses or redistribute them as public-domain assets.
+- Additional MIDI files from the Insiculous project have been useful for different track counts, meters, and tempo maps. Do not assume their licenses or redistribute them as public-domain assets.
 
 Keep NanoStudio compatibility checks distinct from native `.evil` and Standard MIDI tests so an oracle failure does not get mistaken for a native-engine failure.

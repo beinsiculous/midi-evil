@@ -9,6 +9,8 @@
 .idea/
 .vscode/
 .DS_Store
+__pycache__/
+*.pyc
 
 # NanoStudio packages and instrument banks (compatibility fixtures stay local)
 *.nsp

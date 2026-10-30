@@ -20,6 +20,7 @@ use crate::patch_lab::{self, PatchLab};
 use crate::piano_roll::{self, RollState};
 use crate::preview::PreviewPlayer;
 use crate::render_job::RenderJob;
+use crate::transport::Transport;
 
 pub struct StudioApp {
     project: Project,
@@ -38,6 +39,7 @@ pub struct StudioApp {
     show_automation: bool,
     show_about: bool,
     preview: Option<PreviewPlayer>,
+    transport: Transport,
     instance: Option<SingleInstance>,
     history: EditorHistory,
     resetting_document: bool,
@@ -54,7 +56,11 @@ pub struct StudioApp {
 }
 
 enum PendingRender {
-    Preview,
+    Preview {
+        start_tick: u64,
+        end_tick: Option<u64>,
+        repeat: bool,
+    },
     Audition(evil_synth::Patch),
     Wav(PathBuf),
 }
@@ -92,6 +98,7 @@ impl StudioApp {
             show_automation: false,
             show_about: true,
             preview: None,
+            transport: Transport::new(1_920),
             instance,
             history: EditorHistory::default(),
             resetting_document: false,
@@ -286,6 +293,7 @@ impl StudioApp {
         self.project_path = None;
         self.source_midi = None;
         self.roll = RollState::default();
+        self.transport = Transport::new(piano_roll::bar_ticks(&self.project));
         self.automation = AutomationState::default();
         self.add_track();
         self.reset_history();
@@ -471,6 +479,7 @@ impl StudioApp {
                 self.show_about = false;
                 self.source_midi = self.project.source_midi.as_ref().map(PathBuf::from);
                 self.roll = RollState::default();
+                self.transport = Transport::new(piano_roll::bar_ticks(&self.project));
                 self.automation = AutomationState::default();
                 self.reset_history();
                 self.dirty = false;
@@ -622,6 +631,7 @@ impl StudioApp {
                 self.project.source_midi = Some(path.to_string_lossy().into_owned());
                 self.project_path = Some(path.with_extension("evil"));
                 self.roll = RollState::default();
+                self.transport = Transport::new(piano_roll::bar_ticks(&self.project));
                 self.automation = AutomationState::default();
                 self.reset_history();
                 self.dirty = true;
@@ -659,8 +669,31 @@ impl StudioApp {
         }
     }
 
+    fn song_playhead_tick(&self) -> u64 {
+        let Some(preview) = &self.preview else {
+            return self.transport.start_tick;
+        };
+        let Ok(performance) = self.project.to_performance() else {
+            return self.transport.start_tick;
+        };
+        let (start_tick, end_tick) = self.transport.range();
+        let start_seconds = performance.seconds_at(start_tick);
+        let elapsed = preview.position().as_secs_f64();
+        if let Some(end_tick) = end_tick {
+            let duration = (performance.seconds_at(end_tick) - start_seconds).max(f64::EPSILON);
+            performance.tick_at_seconds(start_seconds + elapsed % duration)
+        } else {
+            performance.tick_at_seconds(start_seconds + elapsed)
+        }
+    }
+
     fn preview_project(&mut self) {
-        self.start_render(PendingRender::Preview);
+        let (start_tick, end_tick) = self.transport.range();
+        self.start_render(PendingRender::Preview {
+            start_tick,
+            end_tick,
+            repeat: self.transport.repeat,
+        });
     }
 
     fn start_render(&mut self, action: PendingRender) {
@@ -671,14 +704,24 @@ impl StudioApp {
         self.stop_preview();
         let job = match &action {
             PendingRender::Audition(patch) => RenderJob::start_audition(patch.clone()),
-            PendingRender::Preview | PendingRender::Wav(_) => {
+            PendingRender::Preview {
+                start_tick,
+                end_tick,
+                ..
+            } => RenderJob::start_range(
+                self.project.clone(),
+                self.patch_base().to_path_buf(),
+                *start_tick,
+                *end_tick,
+            ),
+            PendingRender::Wav(_) => {
                 RenderJob::start(self.project.clone(), self.patch_base().to_path_buf())
             }
         };
         self.render_job = Some(job);
         self.status = match &action {
             PendingRender::Audition(patch) => format!("Auditioning '{}'…", patch.name),
-            PendingRender::Preview | PendingRender::Wav(_) => {
+            PendingRender::Preview { .. } | PendingRender::Wav(_) => {
                 "Rendering in the background…".to_owned()
             }
         };
@@ -692,15 +735,15 @@ impl StudioApp {
         self.render_job = None;
         let action = self.pending_render.take();
         match (action, result) {
-            (Some(PendingRender::Preview), Ok(rendered)) => {
+            (Some(PendingRender::Preview { repeat, .. }), Ok(rendered)) => {
                 let status = automation::render_status(
                     format!("Previewing {} notes", rendered.note_count),
                     rendered.unsupported_controller_events,
                 );
-                self.play_render(rendered, status);
+                self.play_render(rendered, status, repeat);
             }
             (Some(PendingRender::Audition(patch)), Ok(rendered)) => {
-                self.play_render(rendered, format!("Auditioning '{}'", patch.name));
+                self.play_render(rendered, format!("Auditioning '{}'", patch.name), false);
             }
             (Some(PendingRender::Wav(output)), Ok(rendered)) => {
                 match rendered.sound.write_wav(&output) {
@@ -723,8 +766,13 @@ impl StudioApp {
         }
     }
 
-    fn play_render(&mut self, rendered: evil_render::RenderOutput, status: String) {
-        match PreviewPlayer::play(rendered.sound) {
+    fn play_render(&mut self, rendered: evil_render::RenderOutput, status: String, repeat: bool) {
+        let result = if repeat {
+            PreviewPlayer::play_repeating(rendered.sound)
+        } else {
+            PreviewPlayer::play(rendered.sound)
+        };
+        match result {
             Ok(player) => {
                 self.preview = Some(player);
                 self.status = status;
@@ -866,8 +914,19 @@ impl eframe::App for StudioApp {
                 match self.view {
                     View::Song => {
                         let mut selected = self.roll.selected_track;
-                        if workspace::song(ui, &self.project, &mut selected) {
+                        let previous_transport = self.transport;
+                        let playhead_tick = self.song_playhead_tick();
+                        if workspace::song(
+                            ui,
+                            &self.project,
+                            &mut selected,
+                            &mut self.transport,
+                            playhead_tick,
+                        ) {
                             self.view = View::Notes;
+                        }
+                        if self.transport != previous_transport {
+                            self.stop_preview();
                         }
                         if selected != self.roll.selected_track {
                             self.roll.select_track(selected);

@@ -133,8 +133,68 @@ impl Performance {
         elapsed + self.seconds_between(previous_tick, tick, microseconds)
     }
 
+    pub fn tick_at_seconds(&self, seconds: f64) -> u64 {
+        if seconds <= 0.0 {
+            return 0;
+        }
+        let mut elapsed = 0.0;
+        let mut previous_tick = 0;
+        let mut microseconds = 500_000;
+        for change in &self.tempo_changes {
+            if change.tick == 0 {
+                microseconds = change.microseconds_per_quarter;
+                continue;
+            }
+            let segment = self.seconds_between(previous_tick, change.tick, microseconds);
+            if elapsed + segment >= seconds {
+                return self.tick_between(previous_tick, seconds - elapsed, microseconds);
+            }
+            elapsed += segment;
+            previous_tick = change.tick;
+            microseconds = change.microseconds_per_quarter;
+        }
+        self.tick_between(previous_tick, seconds - elapsed, microseconds)
+    }
+
+    fn tick_between(&self, start: u64, seconds: f64, microseconds_per_quarter: u32) -> u64 {
+        start
+            + (seconds * f64::from(self.ticks_per_quarter) * 1_000_000.0
+                / f64::from(microseconds_per_quarter))
+            .round() as u64
+    }
+
     fn seconds_between(&self, start: u64, end: u64, microseconds_per_quarter: u32) -> f64 {
         (end - start) as f64 * f64::from(microseconds_per_quarter)
             / (f64::from(self.ticks_per_quarter) * 1_000_000.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tick_at_seconds_inverts_tempo_changes() {
+        let performance = Performance {
+            tempo_bpm: 120.0,
+            beats_per_bar: 4,
+            beat_unit: 4,
+            ticks_per_quarter: 480,
+            tempo_changes: vec![
+                TempoChange {
+                    tick: 0,
+                    microseconds_per_quarter: 500_000,
+                },
+                TempoChange {
+                    tick: 480,
+                    microseconds_per_quarter: 250_000,
+                },
+            ],
+            tracks: Vec::new(),
+        };
+        assert_eq!(performance.seconds_at(960), 0.75);
+        assert_eq!(performance.tick_at_seconds(0.75), 960);
+        assert_eq!(performance.tick_at_seconds(0.25), 240);
+        assert_eq!(performance.tick_at_seconds(-1.0), 0);
     }
 }
