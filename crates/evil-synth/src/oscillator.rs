@@ -63,6 +63,35 @@ impl Oscillator {
             * pitch_multiplier
     }
 
+    pub(crate) fn sync_correction(
+        &self,
+        state: &OscillatorState,
+        reset_phase: f32,
+        sweep_progress: f32,
+        sample_rate: u32,
+        pitch_multiplier: f32,
+        pulse_width_offset: f32,
+    ) -> f32 {
+        let phase_step = self.frequency(sweep_progress, pitch_multiplier) / sample_rate as f32;
+        let previous_phase = (state.phase - phase_step).fract();
+        let discontinuity = match self.waveform {
+            Waveform::Square => {
+                let pulse_width = (self.pulse_width + pulse_width_offset).clamp(0.01, 0.99);
+                let previous = if previous_phase < pulse_width {
+                    1.0
+                } else {
+                    -1.0
+                };
+                1.0 - previous
+            }
+            Waveform::Saw => -2.0 * previous_phase,
+            Waveform::Sine | Waveform::SquareNaive | Waveform::Triangle | Waveform::Noise => {
+                return 0.0;
+            }
+        };
+        -0.5 * discontinuity * poly_blep(reset_phase, phase_step) * self.amplitude
+    }
+
     pub(crate) fn sample(
         &self,
         state: &mut OscillatorState,
@@ -130,5 +159,31 @@ impl XorShift32 {
         self.0 = value;
         let unit = (value >> 8) as f32 / 8_388_607.0;
         unit * 2.0 - 1.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sync_correction_smooths_square_reset_transitions() {
+        let oscillator = Oscillator {
+            waveform: Waveform::Square,
+            ..Oscillator::default()
+        };
+        let mut state = oscillator.state(1);
+        state.phase = 0.75;
+        let correction = oscillator.sync_correction(&state, 0.0, 0.0, 48_000, 1.0, 0.0);
+        assert!((correction - 1.0).abs() < 0.000_001);
+
+        let naive = Oscillator {
+            waveform: Waveform::SquareNaive,
+            ..oscillator
+        };
+        assert_eq!(
+            naive.sync_correction(&state, 0.0, 0.0, 48_000, 1.0, 0.0),
+            0.0
+        );
     }
 }

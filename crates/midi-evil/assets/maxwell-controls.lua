@@ -1,12 +1,12 @@
 -- Original Maxwell control glyphs. Each editable layer occupies a 16px atlas cell.
-local sprite = Sprite(128, 16, ColorMode.RGB)
+local sprite = Sprite(144, 16, ColorMode.RGB)
 sprite.layers[1].name = 'transparent base'
 local cream = app.pixelColor.rgba(249,226,159,255)
 local red = app.pixelColor.rgba(216,73,91,255)
 local function glyph(index, name, draw)
   local layer = sprite:newLayer()
   layer.name = name
-  local image = Image(128,16,ColorMode.RGB)
+  local image = Image(144,16,ColorMode.RGB)
   local function box(x,y,w,h,color)
     for py=y,y+h-1 do for px=x,x+w-1 do image:drawPixel(index*16+px,py,color or cream) end end
   end
@@ -20,6 +20,7 @@ glyph(3,'04 synth',function(b) b(1,8,3,2); b(4,4,2,6); b(6,3,2,2,red); b(8,5,2,6
 glyph(4,'05 play',function(b) for x=4,11 do local d=math.min(x-4,11-x); local h=math.floor((11-x)*0.7); b(x,7-h,1,h*2+1) end end)
 glyph(5,'06 stop',function(b) b(4,4,8,8,red) end)
 glyph(6,'07 save',function(b) b(2,2,11,12); b(4,3,6,4,red); b(4,9,7,4,app.pixelColor.rgba(43,36,53,255)); b(6,10,3,2) end)
-glyph(7,'08 project',function(b) b(2,3,5,2,red); b(2,5,12,8); b(3,6,10,6,app.pixelColor.rgba(43,36,53,255)) end)
+glyph(7,'08 keyboard',function(b) b(2,3,12,10); b(5,3,1,6,red); b(9,3,1,6,red); b(5,9,1,4,app.pixelColor.rgba(19,17,25,255)); b(9,9,1,4,app.pixelColor.rgba(19,17,25,255)) end)
+glyph(8,'09 pads',function(b) for y=2,11,3 do for x=2,11,3 do b(x,y,2,2,y==11 and red or cream) end end end)
 sprite:saveAs('crates/midi-evil/assets/maxwell-controls.aseprite')
 sprite:saveCopyAs('crates/midi-evil/assets/maxwell-controls.png')

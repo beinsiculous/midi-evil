@@ -21,6 +21,7 @@ The `oracle`, `oracle-format`, and `oracle-midi` packages are marked `publish = 
 ```bash
 cargo publish -p evil-performance
 cargo publish -p evil-synth
+cargo publish -p evil-beats
 cargo publish -p evil-project
 cargo publish -p evil-render
 cargo publish -p evil-midi
@@ -83,16 +84,20 @@ cargo run -p midi-evil
 MIDI Evil creates, opens, edits, saves, previews, and renders `.evil` projects. Its native dependency chain contains only `evil-*` crates; Standard MIDI import/export lives in `evil-midi`, while the optional `oracle-*` compatibility tooling remains separate. It includes a track panel with add/delete/duplicate/reorder and patch/gain/pan/mute controls, a full-MIDI piano roll, a note inspector, and editable automation lanes for pitch bend, channel/polyphonic aftertouch, and arbitrary CC/RPN events. Add or drag automation points, edit exact ticks and values, and delete points with the same undo/redo history as notes. CC 1 modulation and CC 11 expression are rendered; unsupported CC/RPN events remain preserved for MIDI export and are explicitly identified as not rendered in the lane, preview, and WAV-export status.
 
 The Dr. Maxwell workspace uses charcoal/plum panels, ivory displays, red accents,
-and original Aseprite control icons. Its four tabs share the same project:
+and original Aseprite control icons. It has six workspaces:
 
 - **Song** fits the complete arrangement into a track overview. Double-click a track to edit its notes.
 - **Piano Roll** has a fixed keyboard and bar ruler, note labels, and an **Automation** toggle. Bar lengths follow the imported time signature.
 - **Mixer** provides track gain faders, pan, mute, master gain, and output sample rate.
 - **Synth** opens Evil Synth with grouped voice/filter and modulation/effects panels and an amplitude-envelope display.
+- **Keyboard** opens the selected track's instrument in Maxwell's performance lab: three octaves of playable keys, a spring-return pitch wheel, and tone/delay XY pads.
+- **Pads** opens Evil Beats: a 4×4 performance grid with an original Maxwell drumkit, WAV loading, pad editing, stereo output controls, and held-pad repeat at the song tempo.
 
 The **Project** menu contains file/import/save commands; **Export** offers MIDI and WAV.
 **Play / Stop** controls the rendered preview and shows elapsed playback time. The
 track rack and inspectors scroll independently in smaller windows.
+
+On **Keyboard**, play with the mouse (including glissando) or use **A W S E D F T G Y H U J K O L P ; '** for computer-keyboard chords. **Z / X** shifts octaves; velocity and sustain controls shape the performance. **Escape / All notes off** silences held notes and delay tails. The tone pad controls filter cutoff/resonance, and the space pad controls delay time/wet mix. XY changes share the current synth draft; use **Edit / save synth patch → Save As** to keep them. Live playing auditions the instrument without recording notes into the song.
 
 Ctrl/Cmd+N/O/S handles new/open/save, Ctrl/Cmd+Z/Y handles undo/redo, Space toggles preview, and New/Open/Import confirms before discarding unsaved work. Click empty space to add a note, drag notes to move them, drag the right edge to resize, and press Delete to remove the selected note. **Render WAV** uses the same shared `evil-render` engine as the CLI and produces a stereo mix with the project's embedded patches and mix settings. Preview and WAV rendering run on a worker thread; New/Open/Import cancels stale jobs. **Export MIDI** writes an engine-compatible `.mid`, while **Save** also updates the original MIDI file for imported songs.
 
@@ -230,7 +235,7 @@ cargo run -p oracle -- synth init laser my-laser.json
 cargo run -p oracle -- synth render my-laser.json my-laser.wav
 ```
 
-Patch JSON includes the sample rate, duration, gain, optional General MIDI `midi_program`, pitch-tracking mode, random seed, oscillator settings, optional oscillator sync and unison, envelope, and optional filter, primary LFO, additional modulation lanes, and delay settings. Imported program changes, CC 7 volume, and CC 10 pan are preserved on export; tracks may override the patch's program with their own `midi_program`. Missing fields use documented defaults in the `evil-synth` data model. Rendering the same patch and seed produces identical audio. Repeated tonal notes also reuse a bounded voice cache to avoid redundant oscillator work; noisy patches retain per-note variation.
+Patch JSON includes the sample rate, duration, gain, optional General MIDI `midi_program`, pitch-tracking mode, optional `pitch_gain_per_octave` scaling around middle C, random seed, oscillator settings, optional oscillator sync and unison, envelope, and optional filter, primary LFO with optional `beats_per_cycle` timing, additional modulation lanes, and delay settings. Imported program changes, CC 7 volume, and CC 10 pan are preserved on export; tracks may override the patch's program with their own `midi_program`. Missing fields use documented defaults in the `evil-synth` data model. Rendering the same patch and seed produces identical audio. Repeated tonal notes also reuse a bounded voice cache to avoid redundant oscillator work; noisy patches retain per-note variation.
 
 Render project notes with a patch, optionally selecting one source track:
 
@@ -239,6 +244,16 @@ cargo run -p oracle -- synth render-project MySong.prj lead lead.wav --track 1
 ```
 
 Omit `--track` to render every track with the same patch. Overlapping notes are independent polyphonic voices. With `pitch_tracking` enabled, oscillator frequencies follow MIDI pitch relative to note 69; disable it for fixed-pitch drums and effects. Note velocity controls voice gain.
+
+### Evil Beats
+
+The native `evil-beats` crate provides original sample-pad drum voices with semitone tuning, velocity-sensitive gain, one-shot or timed-gate playback, ADSR release behavior, and independent overlapping hits. It has no Oracle dependencies. It also provides validated 16-pad banks, mono/stereo WAV loading, a deterministic synthesized starter kit, and a stereo player with sample-clocked repeat.
+
+Open **Pads** for Dr. Maxwell's rhythm lab. Pads are numbered from the bottom left; play them with the mouse or **Z X C V / A S D F / Q W E R / 1 2 3 4**. Hold pads with **Repeat held pads** enabled for rates from 1/1 to 1/32 at the current song tempo. **Silence all / Escape**, leaving the page, and losing window focus stop playback/repeat.
+
+Right-click a pad or choose **Edit Pad** to rename it, load a mono/stereo PCM or float WAV (8–192 kHz, up to 30 seconds), adjust tuning/envelopes, set a short gate, or export the processed pad as WAV. Stereo imports are downmixed to mono; **Output** gives each pad gain, stereo pan, and mute, plus the bank master gain. **New bank** starts empty; **Lab kit** restores the original synthesized sounds.
+
+**Save bank** (or Ctrl/Cmd+S while on Pads) writes a portable `.evilkit` JSON file with embedded audio and pad settings. **Open bank** restores it. Banks are saved separately from `.evil` songs; pad performance currently auditions audio without recording timeline notes. CLI drum rendering and song-track drum-bank integration are not yet implemented.
 
 ### Stereo mixes
 

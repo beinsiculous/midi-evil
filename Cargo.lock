@@ -842,6 +842,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "evil-beats"
+version = "0.1.0"
+dependencies = [
+ "evil-synth",
+ "hound",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "evil-midi"
 version = "0.1.0"
 dependencies = [
@@ -1584,6 +1595,7 @@ name = "midi-evil"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "evil-beats",
  "evil-midi",
  "evil-project",
  "evil-render",

@@ -3,6 +3,7 @@ members = [
     "crates/oracle",
     "crates/oracle-format",
     "crates/oracle-midi",
+    "crates/evil-beats",
     "crates/evil-midi",
     "crates/evil-synth",
     "crates/evil-performance",

@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use eframe::egui::{self, RichText, TextureHandle};
 
 mod chrome;
+mod keyboard_page;
 
 use crate::{
     theme,
@@ -44,6 +45,12 @@ pub struct StudioApp {
     render_job: Option<RenderJob>,
     pending_render: Option<PendingRender>,
     patch_lab: Option<PatchLab>,
+    keyboard: crate::keyboard::KeyboardState,
+    keyboard_player: Option<crate::live_player::LivePlayer>,
+    keyboard_badge: TextureHandle,
+    keyboard_binding: Option<(usize, String)>,
+    keyboard_error: Option<String>,
+    beats: crate::beats::BeatsPage,
 }
 
 enum PendingRender {
@@ -92,6 +99,12 @@ impl StudioApp {
             render_job: None,
             pending_render: None,
             patch_lab: None,
+            keyboard: crate::keyboard::KeyboardState::default(),
+            keyboard_player: None,
+            keyboard_badge: art::load_keyboard(&context.egui_ctx),
+            keyboard_binding: None,
+            keyboard_error: None,
+            beats: crate::beats::BeatsPage::new(&context.egui_ctx),
         };
         app.add_track();
         app.dirty = false;
@@ -199,7 +212,11 @@ impl StudioApp {
         }
     }
 
-    fn can_discard_changes(&self) -> bool {
+    fn can_discard_changes(&mut self) -> bool {
+        if self.dirty {
+            self.stop_keyboard();
+            self.beats.stop();
+        }
         !self.dirty
             || rfd::MessageDialog::new()
                 .set_title("Unsaved changes")
@@ -219,7 +236,11 @@ impl StudioApp {
             self.open_project();
         }
         if command(egui::Key::S) {
-            self.save_project();
+            if self.view == View::Pads {
+                self.beats.save();
+            } else {
+                self.save_project();
+            }
         }
         if command(egui::Key::Z) {
             self.undo();
@@ -272,10 +293,10 @@ impl StudioApp {
         self.status = "New project".to_owned();
     }
 
-    fn open_patch_lab(&mut self) {
+    fn open_patch_lab(&mut self) -> bool {
         let track_index = self.roll.selected_track;
         let Some(track) = self.project.tracks.get(track_index) else {
-            return;
+            return false;
         };
         match evil_render::load_patch(&track.patch, self.patch_base()) {
             Ok(patch) => {
@@ -286,8 +307,12 @@ impl StudioApp {
                 };
                 self.patch_lab = Some(PatchLab::new(patch, file_name, track_index));
                 self.view = View::Synth;
+                true
             }
-            Err(error) => self.status = format!("Could not load synth patch: {error}"),
+            Err(error) => {
+                self.status = format!("Could not load synth patch: {error}");
+                false
+            }
         }
     }
 
@@ -709,6 +734,8 @@ impl StudioApp {
     }
 
     fn stop_preview(&mut self) {
+        self.stop_keyboard();
+        self.beats.stop();
         self.render_job = None;
         self.pending_render = None;
         if let Some(preview) = self.preview.take() {
@@ -725,7 +752,10 @@ impl StudioApp {
             .unwrap_or_else(|| Path::new("."))
     }
 
-    fn file_dialog(&self) -> rfd::FileDialog {
+    fn file_dialog(&mut self) -> rfd::FileDialog {
+        // Native dialogs block UI note-off processing until they close.
+        self.stop_keyboard();
+        self.beats.stop();
         let mut dialog = rfd::FileDialog::new();
         if let Some(project) = &self.project_base {
             dialog = dialog.set_directory(project);
@@ -805,7 +835,17 @@ impl eframe::App for StudioApp {
         }
         self.toolbar(root);
         self.status_bar(root);
-        self.track_panel(root);
+        if self.view != View::Pads {
+            self.track_panel(root);
+            self.beats.stop();
+        }
+        if self.view != View::Keyboard || self.project.tracks.is_empty() {
+            self.stop_keyboard();
+        }
+        if matches!(self.view, View::Keyboard | View::Pads) {
+            root.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(16));
+        }
         if self.view == View::Notes {
             self.note_inspector(root);
             if self.show_automation {
@@ -815,7 +855,7 @@ impl eframe::App for StudioApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(theme::BACKGROUND).inner_margin(16))
             .show(root, |ui| {
-                if self.project.tracks.is_empty() {
+                if self.project.tracks.is_empty() && self.view != View::Pads {
                     ui.centered_and_justified(|ui| {
                         if ui.button("+ Add a track to begin composing").clicked() {
                             self.add_track();
@@ -856,6 +896,8 @@ impl eframe::App for StudioApp {
                         }
                     }
                     View::Synth => self.patch_lab_panel(ui),
+                    View::Keyboard => self.keyboard_panel(ui),
+                    View::Pads => self.beats.show(ui, self.project.tempo_bpm),
                 }
             });
         self.about_window(root.ctx());

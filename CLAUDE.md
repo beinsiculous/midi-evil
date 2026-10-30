@@ -76,6 +76,7 @@ cargo run -p oracle -- project render song.evil song.wav
 | `evil-performance` | Neutral note/track and tempo-map representation with tick-to-seconds conversion. This is the shared performance model, not a NanoStudio-specific model. |
 | `evil-midi` | Standard MIDI import/export for native projects and shared performance data. Contains no NanoStudio compatibility dependencies and is used by the desktop app. |
 | `evil-synth` | Oscillators, pitch sweeps, ADSR envelopes, filters, deterministic noise, polyphony, stereo mixing, and WAV writing. |
+| `evil-beats` | Original sample-pad and TRG-style drum voices with tuning, velocity, gate/release envelopes, and overlapping-hit rendering. Independent of NanoStudio compatibility code. |
 | `evil-render` | Shared native-project renderer and patch loader used by both CLI and GUI. Resolves preset names and relative JSON patch paths, then produces a stereo mix. |
 | `oracle-format` | Reverse-engineered `Package.prj` / `Package.sng` parsing and serialization plus safe `.nsp` archive handling. Treat this as a compatibility/validation oracle, not the native architecture. |
 | `oracle-midi` | NanoStudio timeline expansion and compatibility MIDI export. Reuses `evil-midi` for Standard MIDI interchange but remains outside the native desktop dependency chain. |

@@ -2,6 +2,7 @@ mod delay;
 mod envelope;
 mod filter;
 mod lfo;
+mod live;
 mod mix;
 mod oscillator;
 mod patch;
@@ -9,7 +10,10 @@ mod presets;
 mod render;
 mod sync;
 mod unison;
+mod voice;
 mod wav;
+
+pub use live::{LiveControls, LiveSynth};
 
 pub use delay::{Delay, DelayMode};
 pub use envelope::Envelope;
@@ -20,10 +24,11 @@ pub use oscillator::{Oscillator, Waveform};
 pub use patch::Patch;
 pub use presets::{PRESET_NAMES, preset};
 pub use render::{
-    RenderedSound, SynthAftertouch, SynthController, SynthNote, SynthPitchBend, render,
-    render_notes, render_notes_dry, render_notes_dry_with_automation,
+    RenderedSound, SynthAftertouch, SynthController, SynthNote, SynthPitchBend, SynthTempoChange,
+    render, render_notes, render_notes_dry, render_notes_dry_with_automation,
     render_notes_dry_with_full_automation, render_notes_dry_with_pitch_bend,
-    render_notes_with_automation, render_notes_with_full_automation, render_notes_with_pitch_bend,
+    render_notes_dry_with_tempo_and_full_automation, render_notes_with_automation,
+    render_notes_with_full_automation, render_notes_with_pitch_bend, render_notes_with_tempo,
 };
 pub use sync::OscillatorSync;
 use thiserror::Error;

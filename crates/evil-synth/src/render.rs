@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::delay::apply_delay;
-use crate::filter::FilterState;
+use crate::voice::{VoiceControls, VoiceState};
 use crate::{Error, Lfo, LfoDestination, LfoWaveform, Patch, Waveform};
 
 const MAX_PERFORMANCE_SECONDS: f64 = 3_600.0;
@@ -39,6 +39,12 @@ pub struct SynthController {
     pub value: u8,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct SynthTempoChange {
+    pub time_seconds: f64,
+    pub bpm: f32,
+}
+
 #[derive(Clone, Copy)]
 struct VoiceAutomation<'a> {
     note_start_seconds: f64,
@@ -46,6 +52,7 @@ struct VoiceAutomation<'a> {
     pitch_bends: &'a [SynthPitchBend],
     aftertouch: &'a [SynthAftertouch],
     controllers: &'a [SynthController],
+    tempo_changes: &'a [SynthTempoChange],
 }
 
 pub fn render(patch: &Patch) -> Result<RenderedSound, Error> {
@@ -61,6 +68,7 @@ pub fn render(patch: &Patch) -> Result<RenderedSound, Error> {
             pitch_bends: &[],
             aftertouch: &[],
             controllers: &[],
+            tempo_changes: &[],
         },
     );
     apply_delay(patch, &mut samples);
@@ -78,12 +86,20 @@ pub fn render(patch: &Patch) -> Result<RenderedSound, Error> {
 /// Oscillator frequencies are designed around A4 (MIDI note 69) when
 /// `pitch_tracking` is enabled.
 pub fn render_notes(patch: &Patch, notes: &[SynthNote]) -> Result<RenderedSound, Error> {
-    render_notes_inner(patch, notes, &[], &[], &[], true)
+    render_notes_inner(patch, notes, &[], &[], &[], &[], true)
+}
+
+pub fn render_notes_with_tempo(
+    patch: &Patch,
+    notes: &[SynthNote],
+    tempo_changes: &[SynthTempoChange],
+) -> Result<RenderedSound, Error> {
+    render_notes_inner(patch, notes, &[], &[], &[], tempo_changes, true)
 }
 
 /// Render notes without insert effects so a stereo mixer can apply them per track.
 pub fn render_notes_dry(patch: &Patch, notes: &[SynthNote]) -> Result<RenderedSound, Error> {
-    render_notes_inner(patch, notes, &[], &[], &[], false)
+    render_notes_inner(patch, notes, &[], &[], &[], &[], false)
 }
 
 pub fn render_notes_with_pitch_bend(
@@ -91,7 +107,7 @@ pub fn render_notes_with_pitch_bend(
     notes: &[SynthNote],
     pitch_bends: &[SynthPitchBend],
 ) -> Result<RenderedSound, Error> {
-    render_notes_inner(patch, notes, pitch_bends, &[], &[], true)
+    render_notes_inner(patch, notes, pitch_bends, &[], &[], &[], true)
 }
 
 pub fn render_notes_dry_with_pitch_bend(
@@ -99,7 +115,7 @@ pub fn render_notes_dry_with_pitch_bend(
     notes: &[SynthNote],
     pitch_bends: &[SynthPitchBend],
 ) -> Result<RenderedSound, Error> {
-    render_notes_inner(patch, notes, pitch_bends, &[], &[], false)
+    render_notes_inner(patch, notes, pitch_bends, &[], &[], &[], false)
 }
 
 pub fn render_notes_with_automation(
@@ -108,7 +124,7 @@ pub fn render_notes_with_automation(
     pitch_bends: &[SynthPitchBend],
     aftertouch: &[SynthAftertouch],
 ) -> Result<RenderedSound, Error> {
-    render_notes_inner(patch, notes, pitch_bends, aftertouch, &[], true)
+    render_notes_inner(patch, notes, pitch_bends, aftertouch, &[], &[], true)
 }
 
 pub fn render_notes_dry_with_automation(
@@ -117,7 +133,7 @@ pub fn render_notes_dry_with_automation(
     pitch_bends: &[SynthPitchBend],
     aftertouch: &[SynthAftertouch],
 ) -> Result<RenderedSound, Error> {
-    render_notes_inner(patch, notes, pitch_bends, aftertouch, &[], false)
+    render_notes_inner(patch, notes, pitch_bends, aftertouch, &[], &[], false)
 }
 
 pub fn render_notes_with_full_automation(
@@ -127,7 +143,15 @@ pub fn render_notes_with_full_automation(
     aftertouch: &[SynthAftertouch],
     controllers: &[SynthController],
 ) -> Result<RenderedSound, Error> {
-    render_notes_inner(patch, notes, pitch_bends, aftertouch, controllers, true)
+    render_notes_inner(
+        patch,
+        notes,
+        pitch_bends,
+        aftertouch,
+        controllers,
+        &[],
+        true,
+    )
 }
 
 pub fn render_notes_dry_with_full_automation(
@@ -137,7 +161,34 @@ pub fn render_notes_dry_with_full_automation(
     aftertouch: &[SynthAftertouch],
     controllers: &[SynthController],
 ) -> Result<RenderedSound, Error> {
-    render_notes_inner(patch, notes, pitch_bends, aftertouch, controllers, false)
+    render_notes_inner(
+        patch,
+        notes,
+        pitch_bends,
+        aftertouch,
+        controllers,
+        &[],
+        false,
+    )
+}
+
+pub fn render_notes_dry_with_tempo_and_full_automation(
+    patch: &Patch,
+    notes: &[SynthNote],
+    pitch_bends: &[SynthPitchBend],
+    aftertouch: &[SynthAftertouch],
+    controllers: &[SynthController],
+    tempo_changes: &[SynthTempoChange],
+) -> Result<RenderedSound, Error> {
+    render_notes_inner(
+        patch,
+        notes,
+        pitch_bends,
+        aftertouch,
+        controllers,
+        tempo_changes,
+        false,
+    )
 }
 
 fn render_notes_inner(
@@ -146,16 +197,19 @@ fn render_notes_inner(
     pitch_bends: &[SynthPitchBend],
     aftertouch: &[SynthAftertouch],
     controllers: &[SynthController],
+    tempo_changes: &[SynthTempoChange],
     apply_insert_effects: bool,
 ) -> Result<RenderedSound, Error> {
     patch.validate()?;
     validate_pitch_bends(pitch_bends)?;
     validate_aftertouch(aftertouch)?;
     validate_controllers(controllers)?;
+    validate_tempo_changes(tempo_changes)?;
     let sample_rate = patch.sample_rate;
     let cacheable = pitch_bends.is_empty()
         && aftertouch.is_empty()
         && controllers.is_empty()
+        && (tempo_changes.is_empty() || patch.lfos().all(|lfo| lfo.beats_per_cycle.is_none()))
         && patch
             .oscillators
             .iter()
@@ -168,6 +222,9 @@ fn render_notes_inner(
         let mut voice = patch.clone();
         voice.duration_seconds = note.duration_seconds as f32;
         voice.gain *= f32::from(note.velocity) / 127.0;
+        let pitch_gain =
+            2.0_f32.powf((60.0 - f32::from(note.pitch)) / 12.0 * patch.pitch_gain_per_octave);
+        voice.gain = (voice.gain * pitch_gain).min(1.0);
         voice.seed ^= (index as u32).wrapping_mul(0x9e37_79b9);
         let pitch_ratio = 2.0_f32.powf((f32::from(note.pitch) - 69.0) / 12.0);
         let filter_pitch_ratio = 2.0_f32.powf((f32::from(note.pitch) - 60.0) / 12.0);
@@ -215,6 +272,7 @@ fn render_notes_inner(
                         pitch_bends: &[],
                         aftertouch: &[],
                         controllers: &[],
+                        tempo_changes: &[],
                     },
                 );
                 rendered
@@ -233,6 +291,7 @@ fn render_notes_inner(
                     pitch_bends,
                     aftertouch,
                     controllers,
+                    tempo_changes,
                 },
             );
         }
@@ -316,6 +375,30 @@ fn validate_controllers(controllers: &[SynthController]) -> Result<(), Error> {
     Ok(())
 }
 
+fn validate_tempo_changes(tempo_changes: &[SynthTempoChange]) -> Result<(), Error> {
+    let mut previous_time = 0.0;
+    for event in tempo_changes {
+        if !event.time_seconds.is_finite()
+            || event.time_seconds < previous_time
+            || !event.bpm.is_finite()
+            || event.bpm <= 0.0
+        {
+            return Err(Error::InvalidAutomation(
+                "tempo events need ordered nonnegative times and positive BPM".to_owned(),
+            ));
+        }
+        previous_time = event.time_seconds;
+    }
+    Ok(())
+}
+
+fn tempo_bpm_at(tempo_changes: &[SynthTempoChange], time_seconds: f64) -> f32 {
+    let index = tempo_changes.partition_point(|event| event.time_seconds <= time_seconds);
+    tempo_changes
+        .get(index.saturating_sub(1))
+        .map_or(120.0, |event| event.bpm)
+}
+
 fn modulation_depth(controllers: &[SynthController], time_seconds: f64) -> f32 {
     if controllers.iter().any(|event| event.controller == 1) {
         controller_gain(controllers, 1, time_seconds, 0.0)
@@ -381,28 +464,34 @@ fn voice_frame_count(patch: &Patch) -> usize {
 }
 
 #[derive(Default)]
-struct Modulation {
-    pitch_cents: f32,
-    pulse_width: f32,
-    sync_ratio: f32,
-    filter_cutoff_octaves: f32,
-    amplitude: f32,
+pub(crate) struct Modulation {
+    pub(crate) pitch_cents: f32,
+    pub(crate) pulse_width: f32,
+    pub(crate) sync_ratio: f32,
+    pub(crate) filter_cutoff_octaves: f32,
+    pub(crate) amplitude: f32,
 }
 
-struct ModulationState {
+pub(crate) struct ModulationState {
     lfo_phases: Vec<f32>,
 }
 
 impl ModulationState {
-    fn new(patch: &Patch) -> Self {
+    pub(crate) fn new(patch: &Patch) -> Self {
         Self {
             lfo_phases: vec![0.0; patch.lfo_count()],
         }
     }
 
-    fn next(&mut self, patch: &Patch, sample_rate: u32, depth: f32) -> Modulation {
+    pub(crate) fn next(
+        &mut self,
+        patch: &Patch,
+        sample_rate: u32,
+        depth: f32,
+        quarter_hz: f32,
+    ) -> Modulation {
         let mut modulation = Modulation::default();
-        let mut rate_multipliers = vec![1.0; patch.lfo_count()];
+        let mut rate_multipliers = [1.0; 8];
         for (index, lfo) in patch.lfos().enumerate() {
             if lfo.destination == LfoDestination::LfoRate
                 && let Some(target) = lfo.target_lfo
@@ -429,7 +518,10 @@ impl ModulationState {
                 }
                 LfoDestination::LfoRate => {}
             }
-            let rate = (lfo.rate_hz * rate_multipliers[index]).max(0.0);
+            let base_rate = lfo
+                .beats_per_cycle
+                .map_or(lfo.rate_hz, |beats| quarter_hz / beats);
+            let rate = (base_rate * rate_multipliers[index]).max(0.0);
             self.lfo_phases[index] = (self.lfo_phases[index] + rate / sample_rate as f32).fract();
         }
         modulation.pitch_cents *= depth;
@@ -458,13 +550,13 @@ fn lfo_value(lfo: &Lfo, phase: f32) -> f32 {
 }
 
 #[derive(Default)]
-struct DcBlocker {
+pub(crate) struct DcBlocker {
     previous_input: f32,
     previous_output: f32,
 }
 
 impl DcBlocker {
-    fn process(&mut self, input: f32, sample_rate: u32) -> f32 {
+    pub(crate) fn process(&mut self, input: f32, sample_rate: u32) -> f32 {
         let coefficient = 1.0 - 2.0 * std::f32::consts::PI * 10.0 / sample_rate as f32;
         let output = input - self.previous_input + coefficient * self.previous_output;
         self.previous_input = input;
@@ -486,109 +578,26 @@ fn render_voice_into(
     samples: &mut [f32],
     automation: VoiceAutomation<'_>,
 ) {
-    let sample_rate = patch.sample_rate;
-    let frame_count = voice_frame_count(patch);
-    let unison_count = patch
-        .unison
-        .as_ref()
-        .map_or(1, |unison| unison.voices as usize);
-    let mut unison_voices: Vec<Vec<_>> = (0..unison_count)
-        .map(|voice_index| {
-            patch
-                .oscillators
-                .iter()
-                .enumerate()
-                .map(|(index, oscillator)| {
-                    let seed = patch
-                        .seed
-                        .wrapping_add((voice_index as u32).wrapping_mul(0x9e37_79b9))
-                        .wrapping_add(index as u32);
-                    (oscillator, oscillator.state(seed))
-                })
-                .collect()
-        })
-        .collect();
-    let mut filter_state = FilterState::default();
+    let mut voice = VoiceState::new(patch);
     let mut modulation_state = ModulationState::new(patch);
-    let mut sync_phase = 0.0_f32;
-
-    for frame in 0..frame_count {
-        let time = frame as f32 / sample_rate as f32;
-        let sweep_progress = (time / patch.duration_seconds).min(1.0);
-        let envelope = patch.envelope.amplitude(time, patch.duration_seconds);
+    for frame in 0..voice_frame_count(patch) {
+        let time = frame as f32 / patch.sample_rate as f32;
         let absolute_time = automation.note_start_seconds + f64::from(time);
         let modulation = modulation_state.next(
             patch,
-            sample_rate,
+            patch.sample_rate,
             modulation_depth(automation.controllers, absolute_time),
+            tempo_bpm_at(automation.tempo_changes, absolute_time) / 60.0,
         );
-        let bend_semitones = f32::from(pitch_bend_at(automation.pitch_bends, absolute_time))
-            * patch.pitch_bend_range_semitones
-            / 8192.0;
-        let pitch_multiplier =
-            2.0_f32.powf((modulation.pitch_cents + bend_semitones * 100.0) / 1200.0);
-        let pulse_width_offset = modulation.pulse_width;
-        let sync_ratio = patch
-            .sync
-            .as_ref()
-            .map(|sync| (sync.ratio + modulation.sync_ratio).clamp(0.01, 16.0));
-        let oscillator_multiplier =
-            sync_ratio.map_or(pitch_multiplier, |ratio| ratio * pitch_multiplier);
-        let sync_step = patch.sync.as_ref().map(|_| {
-            unison_voices[0][0]
-                .0
-                .frequency(sweep_progress, pitch_multiplier)
-                / sample_rate as f32
-        });
-        let mut sample = 0.0;
-        for (voice_index, oscillators) in unison_voices.iter_mut().enumerate() {
-            let detune_cents = patch.unison.as_ref().map_or(0.0, |unison| {
-                (voice_index as f32 - (unison_count - 1) as f32 / 2.0) * unison.detune_cents
-            });
-            let voice_multiplier = oscillator_multiplier * 2.0_f32.powf(detune_cents / 1200.0);
-            sample += oscillators
-                .iter_mut()
-                .map(|(oscillator, state)| {
-                    oscillator.sample(
-                        state,
-                        sweep_progress,
-                        sample_rate,
-                        voice_multiplier,
-                        pulse_width_offset,
-                    )
-                })
-                .sum::<f32>();
-        }
-        sample /= unison_count as f32;
-        if let Some(step) = sync_step {
-            sync_phase = (sync_phase + step).fract();
-            if sync_phase < step {
-                for oscillators in &mut unison_voices {
-                    for (_, state) in oscillators {
-                        state.reset_phase();
-                    }
-                }
-            }
-        }
-        if let Some(filter) = &patch.filter {
-            sample = filter.process(
-                sample,
-                &mut filter_state,
-                sample_rate,
-                envelope,
-                modulation.filter_cutoff_octaves
-                    + if filter.key_tracking {
-                        bend_semitones / 12.0
-                    } else {
-                        0.0
-                    },
-            );
-        }
-        let amplitude = (1.0 + modulation.amplitude).clamp(0.0, 1.0);
-        let pressure = aftertouch_gain(automation.aftertouch, automation.note_pitch, absolute_time);
-        let expression = expression_gain(automation.controllers, absolute_time);
-        sample *= envelope * patch.gain * amplitude * pressure * expression;
-        samples[start_frame + frame] += sample;
+        let controls = VoiceControls {
+            modulation,
+            bend_semitones: f32::from(pitch_bend_at(automation.pitch_bends, absolute_time))
+                * patch.pitch_bend_range_semitones
+                / 8192.0,
+            pressure: aftertouch_gain(automation.aftertouch, automation.note_pitch, absolute_time),
+            expression: expression_gain(automation.controllers, absolute_time),
+        };
+        samples[start_frame + frame] += voice.sample(patch, time, patch.duration_seconds, controls);
     }
 }
 
@@ -672,6 +681,76 @@ mod tests {
         let low = render_notes(&patch, &[note(40)]).unwrap();
         let high = render_notes(&patch, &[note(100)]).unwrap();
         assert_ne!(low.samples, high.samples);
+    }
+
+    #[test]
+    fn pitch_gain_per_octave_scales_notes_around_middle_c() {
+        let patch = Patch {
+            gain: 0.1,
+            pitch_gain_per_octave: 0.5,
+            ..Patch::default()
+        };
+        let low = render_notes(&patch, &[note(48)]).unwrap();
+        let high = render_notes(&patch, &[note(72)]).unwrap();
+        let energy = |sound: &RenderedSound| {
+            sound
+                .samples
+                .iter()
+                .map(|sample| sample * sample)
+                .sum::<f32>()
+        };
+        let ratio = (energy(&low) / energy(&high)).sqrt();
+        assert!(
+            (ratio - 2.0).abs() < 0.05,
+            "unexpected pitch-gain ratio: {ratio}"
+        );
+    }
+
+    #[test]
+    fn beat_synced_lfos_follow_tempo_and_tempo_changes() {
+        let synced = Patch {
+            lfo: Some(Lfo {
+                beats_per_cycle: Some(0.25),
+                destination: LfoDestination::Amplitude,
+                waveform: LfoWaveform::SawDown,
+                ..Lfo::default()
+            }),
+            ..Patch::default()
+        };
+        let mut fixed = synced.clone();
+        fixed.lfo.as_mut().unwrap().rate_hz = 8.0;
+        let notes = [SynthNote {
+            start_seconds: 0.0,
+            duration_seconds: 0.5,
+            pitch: 69,
+            velocity: 100,
+        }];
+        let initial_tempo = [SynthTempoChange {
+            time_seconds: 0.0,
+            bpm: 120.0,
+        }];
+        assert_eq!(
+            render_notes(&fixed, &notes).unwrap().samples,
+            render_notes_with_tempo(&synced, &notes, &initial_tempo)
+                .unwrap()
+                .samples
+        );
+
+        let tempo_change = [
+            initial_tempo[0],
+            SynthTempoChange {
+                time_seconds: 0.25,
+                bpm: 240.0,
+            },
+        ];
+        let changed = render_notes_with_tempo(&synced, &notes, &tempo_change)
+            .unwrap()
+            .samples;
+        let steady = render_notes_with_tempo(&synced, &notes, &initial_tempo)
+            .unwrap()
+            .samples;
+        assert_eq!(changed[..12_000], steady[..12_000]);
+        assert_ne!(changed[12_000..], steady[12_000..]);
     }
 
     #[test]
@@ -965,6 +1044,39 @@ mod tests {
             render(&base).unwrap().samples,
             render(&with_meta_lfo).unwrap().samples
         );
+    }
+
+    #[test]
+    fn lfo_rate_modulation_preserves_target_phase() {
+        let patch = Patch {
+            lfo: Some(Lfo {
+                rate_hz: 4.0,
+                destination: LfoDestination::SyncRatio,
+                waveform: LfoWaveform::SawUp,
+                ..Lfo::default()
+            }),
+            modulation: vec![Lfo {
+                rate_hz: 20.0,
+                destination: LfoDestination::LfoRate,
+                waveform: LfoWaveform::Square,
+                target_lfo: Some(0),
+                lfo_rate_depth: 1.0,
+                ..Lfo::default()
+            }],
+            ..Patch::default()
+        };
+        let mut state = ModulationState::new(&patch);
+        let mut previous_phase = 0.0;
+        for frame in 0..=1_200 {
+            state.next(&patch, 48_000, 1.0, 2.0);
+            let phase = state.lfo_phases[0];
+            let maximum_step = 8.0 / 48_000.0 + f32::EPSILON;
+            assert!(
+                (phase - previous_phase).abs() <= maximum_step,
+                "target phase jumped at frame {frame}: {previous_phase} -> {phase}"
+            );
+            previous_phase = phase;
+        }
     }
 
     #[test]

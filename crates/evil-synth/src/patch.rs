@@ -17,6 +17,8 @@ pub struct Patch {
     pub midi_program: Option<u8>,
     /// Scale oscillator frequencies from MIDI notes when rendering a performance.
     pub pitch_tracking: bool,
+    /// Additional gain change per octave away from middle C; positive favors low notes.
+    pub pitch_gain_per_octave: f32,
     pub pitch_bend_range_semitones: f32,
     pub seed: u32,
     pub oscillators: Vec<Oscillator>,
@@ -39,6 +41,7 @@ impl Default for Patch {
             gain: 0.8,
             midi_program: None,
             pitch_tracking: true,
+            pitch_gain_per_octave: 0.0,
             pitch_bend_range_semitones: 2.0,
             seed: 0x5255_5354,
             oscillators: vec![Oscillator::default()],
@@ -121,6 +124,11 @@ impl Patch {
         if !self.gain.is_finite() || !(0.0..=1.0).contains(&self.gain) {
             return Err(invalid("gain must be between 0 and 1"));
         }
+        if !self.pitch_gain_per_octave.is_finite()
+            || !(-2.0..=2.0).contains(&self.pitch_gain_per_octave)
+        {
+            return Err(invalid("pitch_gain_per_octave must be between -2 and 2"));
+        }
         if !self.pitch_bend_range_semitones.is_finite()
             || self.pitch_bend_range_semitones <= 0.0
             || self.pitch_bend_range_semitones > 24.0
@@ -201,6 +209,9 @@ impl Patch {
         for (index, lfo) in self.lfos().enumerate() {
             if !lfo.rate_hz.is_finite()
                 || lfo.rate_hz < 0.0
+                || lfo
+                    .beats_per_cycle
+                    .is_some_and(|beats| !beats.is_finite() || !(0.001..=64.0).contains(&beats))
                 || !lfo.depth_cents.is_finite()
                 || !lfo.pulse_width_depth.is_finite()
                 || !(-0.99..=0.99).contains(&lfo.pulse_width_depth)
@@ -247,6 +258,7 @@ mod tests {
             delay: Some(Delay::default()),
             lfo: Some(Lfo {
                 rate_hz: 6.0,
+                beats_per_cycle: Some(0.25),
                 depth_cents: 25.0,
                 ..Lfo::default()
             }),

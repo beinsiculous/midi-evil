@@ -1,9 +1,13 @@
 mod app;
 mod art;
 mod automation;
+mod beats;
+mod beats_player;
 mod history;
 mod instance;
+mod keyboard;
 mod launch;
+mod live_player;
 mod patch_lab;
 mod piano_roll;
 mod preview;

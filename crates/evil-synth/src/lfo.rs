@@ -27,6 +27,8 @@ pub enum LfoWaveform {
 #[serde(default)]
 pub struct Lfo {
     pub rate_hz: f32,
+    /// Quarter-note beats per cycle when beat-synced; overrides `rate_hz`.
+    pub beats_per_cycle: Option<f32>,
     pub depth_cents: f32,
     pub destination: LfoDestination,
     pub waveform: LfoWaveform,
@@ -45,6 +47,7 @@ impl Default for Lfo {
     fn default() -> Self {
         Self {
             rate_hz: 4.0,
+            beats_per_cycle: None,
             depth_cents: 0.0,
             destination: LfoDestination::Pitch,
             waveform: LfoWaveform::Sine,

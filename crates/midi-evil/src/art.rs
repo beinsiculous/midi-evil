@@ -6,6 +6,22 @@ const MASCOT_PNG: &[u8] = include_bytes!("../assets/midi-evil-icon.png");
 const SPLASH_PNG: &[u8] = include_bytes!("../assets/midi-evil-splash.png");
 const CONTROLS_PNG: &[u8] = include_bytes!("../assets/maxwell-controls.png");
 
+pub fn load_beats(context: &Context) -> TextureHandle {
+    load_png(
+        context,
+        "maxwell-beats",
+        include_bytes!("../assets/maxwell-beats.png"),
+    )
+}
+
+pub fn load_keyboard(context: &Context) -> TextureHandle {
+    load_png(
+        context,
+        "maxwell-keyboard",
+        include_bytes!("../assets/maxwell-keyboard.png"),
+    )
+}
+
 pub fn load_controls(context: &Context) -> TextureHandle {
     load_png(context, "maxwell-controls", CONTROLS_PNG)
 }
@@ -13,8 +29,8 @@ pub fn load_controls(context: &Context) -> TextureHandle {
 pub fn control(texture: &TextureHandle, index: usize) -> eframe::egui::Image<'_> {
     use eframe::egui::{Image, Rect, pos2, vec2};
     Image::new((texture.id(), vec2(16.0, 16.0))).uv(Rect::from_min_max(
-        pos2(index as f32 / 8.0, 0.0),
-        pos2((index + 1) as f32 / 8.0, 1.0),
+        pos2(index as f32 * 16.0 / texture.size()[0] as f32, 0.0),
+        pos2((index + 1) as f32 * 16.0 / texture.size()[0] as f32, 1.0),
     ))
 }
 

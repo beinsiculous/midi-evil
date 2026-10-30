@@ -211,20 +211,38 @@ impl StudioApp {
             .frame(theme::panel().inner_margin(egui::Margin::symmetric(14, 6)))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
+                    let tab_width = if ui.available_width() < 1100.0 {
+                        88.0
+                    } else {
+                        110.0
+                    };
                     for (index, (view, label)) in View::ALL.into_iter().enumerate() {
                         if ui
                             .add_enabled(
-                                view != View::Synth || !self.project.tracks.is_empty(),
+                                !matches!(view, View::Synth | View::Keyboard)
+                                    || !self.project.tracks.is_empty(),
                                 egui::Button::image_and_text(
-                                    art::control(&self.controls, index),
+                                    art::control(
+                                        &self.controls,
+                                        match view {
+                                            View::Keyboard => 7,
+                                            View::Pads => 8,
+                                            _ => index,
+                                        },
+                                    ),
                                     label,
                                 )
                                 .selected(self.view == view)
-                                .min_size(egui::vec2(110.0, 30.0)),
+                                .min_size(egui::vec2(tab_width, 30.0)),
                             )
                             .clicked()
                         {
-                            if view == View::Synth && self.patch_lab.is_none() {
+                            if view == View::Synth
+                                && self
+                                    .patch_lab
+                                    .as_ref()
+                                    .is_none_or(|lab| lab.track_index != self.roll.selected_track)
+                            {
                                 self.open_patch_lab();
                             }
                             self.view = view;
