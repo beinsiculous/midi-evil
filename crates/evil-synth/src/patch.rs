@@ -20,6 +20,13 @@ pub struct Patch {
     /// Additional gain change per octave away from middle C; positive favors low notes.
     pub pitch_gain_per_octave: f32,
     pub pitch_bend_range_semitones: f32,
+    /// Seconds to slide from the previous note's pitch; zero disables glide.
+    pub glide_seconds: f32,
+    /// Velocity at which accent is enabled; zero disables accent.
+    pub accent_velocity_threshold: u8,
+    pub accent_filter_octaves: f32,
+    /// Additional gain multiplier applied to accented notes.
+    pub accent_gain: f32,
     pub seed: u32,
     pub oscillators: Vec<Oscillator>,
     pub sync: Option<OscillatorSync>,
@@ -43,6 +50,10 @@ impl Default for Patch {
             pitch_tracking: true,
             pitch_gain_per_octave: 0.0,
             pitch_bend_range_semitones: 2.0,
+            glide_seconds: 0.0,
+            accent_velocity_threshold: 0,
+            accent_filter_octaves: 0.0,
+            accent_gain: 0.0,
             seed: 0x5255_5354,
             oscillators: vec![Oscillator::default()],
             sync: None,
@@ -136,6 +147,18 @@ impl Patch {
             return Err(invalid(
                 "pitch bend range must be between 0 and 24 semitones",
             ));
+        }
+        if !self.glide_seconds.is_finite()
+            || !(0.0..=MAX_DURATION_SECONDS).contains(&self.glide_seconds)
+        {
+            return Err(invalid("glide_seconds must be between 0 and 60"));
+        }
+        if self.accent_velocity_threshold > 127
+            || !self.accent_filter_octaves.is_finite()
+            || !self.accent_gain.is_finite()
+            || !(0.0..=1.0).contains(&self.accent_gain)
+        {
+            return Err(invalid("accent settings must be valid"));
         }
         if self.midi_program.is_some_and(|program| program > 127) {
             return Err(invalid("midi_program must be between 0 and 127"));

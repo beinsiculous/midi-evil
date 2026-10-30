@@ -12,6 +12,7 @@ pub const PRESET_NAMES: &[&str] = &[
     "kick",
     "lead",
     "nasty",
+    "nano-303",
     "bass",
     "pad",
 ];
@@ -161,6 +162,33 @@ pub fn preset(name: &str) -> Result<Patch, Error> {
                 feedback: 0.55,
                 mode: DelayMode::StereoCross,
                 ..Delay::default()
+            }),
+            ..Patch::default()
+        },
+        // Original 303-style architecture; reference captures will drive calibration.
+        "nano-303" => Patch {
+            name: "B14 Nano-303".to_owned(),
+            duration_seconds: 0.4,
+            gain: 0.45,
+            midi_program: Some(38),
+            glide_seconds: 0.06,
+            accent_velocity_threshold: 110,
+            accent_filter_octaves: 1.0,
+            accent_gain: 0.15,
+            oscillators: vec![oscillator(Waveform::Saw, 440.0, 440.0, 1.0)],
+            envelope: Envelope {
+                attack_seconds: 0.002,
+                decay_seconds: 0.22,
+                sustain_level: 0.3,
+                release_seconds: 0.1,
+            },
+            filter: Some(Filter {
+                mode: FilterMode::LowPass,
+                cutoff_hz: 700.0,
+                envelope_amount: 2.2,
+                resonance: 0.65,
+                stages: 4,
+                key_tracking: true,
             }),
             ..Patch::default()
         },

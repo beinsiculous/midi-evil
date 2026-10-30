@@ -7,6 +7,7 @@ use crate::render::Modulation;
 pub(crate) struct VoiceControls {
     pub modulation: Modulation,
     pub bend_semitones: f32,
+    pub glide_from_semitones: f32,
     pub pressure: f32,
     pub expression: f32,
 }
@@ -58,8 +59,13 @@ impl VoiceState {
         let envelope = patch.envelope.amplitude(time, gate_seconds);
         let modulation = controls.modulation;
         let bend_semitones = controls.bend_semitones;
-        let pitch_multiplier =
-            2.0_f32.powf((modulation.pitch_cents + bend_semitones * 100.0) / 1200.0);
+        let glide_semitones = if patch.glide_seconds > 0.0 && time < patch.glide_seconds {
+            controls.glide_from_semitones * (1.0 - time / patch.glide_seconds)
+        } else {
+            0.0
+        };
+        let pitch_multiplier = 2.0_f32
+            .powf((modulation.pitch_cents + (bend_semitones + glide_semitones) * 100.0) / 1200.0);
         let sync_ratio = patch
             .sync
             .as_ref()

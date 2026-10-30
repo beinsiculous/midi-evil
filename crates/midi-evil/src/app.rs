@@ -61,7 +61,7 @@ enum PendingRender {
         end_tick: Option<u64>,
         repeat: bool,
     },
-    Audition(evil_synth::Patch),
+    Audition(Box<evil_synth::Patch>),
     Wav(PathBuf),
 }
 
@@ -384,7 +384,7 @@ impl StudioApp {
     }
 
     fn audition_patch(&mut self, patch: &evil_synth::Patch) {
-        self.start_render(PendingRender::Audition(patch.clone()));
+        self.start_render(PendingRender::Audition(Box::new(patch.clone())));
     }
 
     fn patch_lab_panel(&mut self, ui: &mut egui::Ui) {
@@ -703,7 +703,7 @@ impl StudioApp {
         }
         self.stop_preview();
         let job = match &action {
-            PendingRender::Audition(patch) => RenderJob::start_audition(patch.clone()),
+            PendingRender::Audition(patch) => RenderJob::start_audition(patch.as_ref().clone()),
             PendingRender::Preview {
                 start_tick,
                 end_tick,

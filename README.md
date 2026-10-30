@@ -1,6 +1,6 @@
 # MIDI Evil
 
-A Rust music workstation with NanoStudio compatibility as a validation oracle and an open native workflow. The long-term sound workflow is original synthesis and sound-effect design rather than reliance on a sample library.
+A Rust music workstation for original synthesis, drum performance, editable `.evil` projects, and reference-guided sound recreation. The focus is building the instruments and composition features needed for new songs and assisted recovery of older audio exports—not backporting a compatibility engine.
 
 ## Run
 
@@ -10,11 +10,10 @@ Build and run the native desktop app:
 cargo run -p midi-evil
 ```
 
-The root workspace contains only native `evil-*` crates and builds without any Oracle source. For local compatibility development, the ignored `compat/Cargo.toml` workspace links those private crates. Inspect its CLI and development fixture with:
+The root workspace contains only native `evil-*` crates and builds without any Oracle source. Run the native verification suite with:
 
 ```bash
-cargo run --manifest-path compat/Cargo.toml -p oracle -- --help
-cargo run --manifest-path compat/Cargo.toml -p oracle -- inspect target/fixtures/Minimal.nsp
+cargo test --workspace
 ```
 
 ## Publish native crates
@@ -134,68 +133,7 @@ aseprite -b crates/midi-evil/assets/midi-evil-splash.aseprite \
   --save-as crates/midi-evil/assets/midi-evil-splash.png
 ```
 
-## NanoStudio compatibility commands
-
-Create a blank project and add instrument tracks:
-
-```bash
-cargo run --manifest-path compat/Cargo.toml -p oracle -- song create MySong.prj --name "My Song"
-cargo run --manifest-path compat/Cargo.toml -p oracle -- song add-track MySong.prj 1
-cargo run --manifest-path compat/Cargo.toml -p oracle -- song set-channel MySong.prj 0 Channel00 --volume 0.8 --pan 0.5
-cargo run --manifest-path compat/Cargo.toml -p oracle -- song set-effect MySong.prj 0 Channel00 SLOT2 false
-
-# Replace a copied sound template's sequence with MIDI note tracks
-cargo run --manifest-path compat/Cargo.toml -p oracle -- song import-midi MySong.prj input.mid
-```
-
-`song import-midi` retains the project's instruments, mixer settings, banks, and assets. It assigns MIDI note tracks to non-mixer instruments in project order, converts timing to NanoStudio's 256 ticks per quarter, and writes one full-length pattern and timeline part per track. Only the initial tempo is applied; later tempo changes and automation without known NanoStudio mappings are reported as skipped. Use a copied template because this command replaces the existing sequence.
-
-```bash
-# Unpack into a new directory (the destination must not exist)
-cargo run --manifest-path compat/Cargo.toml -p oracle -- unpack input.nsp MySong.prj
-
-# Edit global song settings
-cargo run --manifest-path compat/Cargo.toml -p oracle -- edit MySong.prj --tempo 128 --swing 0.5 --beats-per-bar 4
-
-# Repack the project
-cargo run --manifest-path compat/Cargo.toml -p oracle -- pack MySong.prj MySong.nsp
-```
-
-## Pattern editing
-
-The sequencer uses 256 ticks per quarter note. New patterns default to one bar.
-
-```bash
-# Add pitch 60 at tick 0 with duration 128
-cargo run --manifest-path compat/Cargo.toml -p oracle -- pattern add-note MySong.prj 2000 60 0 128 --velocity 100
-
-cargo run --manifest-path compat/Cargo.toml -p oracle -- pattern list MySong.prj 2000
-cargo run --manifest-path compat/Cargo.toml -p oracle -- pattern move-note MySong.prj 2000 0 --note 64 --start-tick 64
-cargo run --manifest-path compat/Cargo.toml -p oracle -- pattern remove MySong.prj 2000 0
-```
-
-## Arrangement editing
-
-Timeline parts may repeat a pattern for any duration; their lengths do not need to match the source pattern.
-
-```bash
-cargo run --manifest-path compat/Cargo.toml -p oracle -- song list MySong.prj
-cargo run --manifest-path compat/Cargo.toml -p oracle -- song add MySong.prj 1 2000 0 512
-cargo run --manifest-path compat/Cargo.toml -p oracle -- song move MySong.prj 1 4 --start-tick 4096 --length-ticks 1024
-cargo run --manifest-path compat/Cargo.toml -p oracle -- song remove MySong.prj 1 4
-```
-
-## Standard MIDI export
-
-Export either an unpacked project or an `.nsp` archive:
-
-```bash
-cargo run --manifest-path compat/Cargo.toml -p oracle -- midi export MySong.prj MySong.mid
-```
-
-The format 1 MIDI file includes tempo, 4/4-based meter, track names, and notes expanded from repeated timeline patterns. Timing remains at 256 ticks per quarter note. Notes starting within a timeline part retain their full durations, even when they extend past the part boundary. Swing does not alter exported MIDI ticks, matching NanoStudio's own exporter. See `docs/nanostudio-compatibility.md` for the reference-backed edge cases and remaining compatibility limits.
-
-MIDI does not contain instrument audio. Known controller records are translated to signed pitch bend and instrument-specific CC mappings (Eden/mixer CC70–73 and TRG CC75–77/80–82). Initial presets and observed timeline-part preset changes are exported as CC32 bank select plus program change, MIDI channels follow instrument indices, and sequencer tracks sharing an instrument are merged into one MIDI track. Unknown record types are still counted and reported rather than silently dropped. Exact same-tick event ordering, conductor-track naming, and empty-track padding remain separate compatibility work.
+## Original synth and sound effects
 
 ## Standard MIDI import and rendering
 
@@ -215,6 +153,10 @@ cargo run --manifest-path compat/Cargo.toml -p oracle -- synth init-mix input.mi
 cargo run --manifest-path compat/Cargo.toml -p oracle -- synth render-mix input.mid midi-mix.json midi-song.wav
 ```
 
+## Assisted WAV recovery
+
+The roadmap includes a native workflow for rebuilding editable songs from user-owned WAV exports: waveform/spectrogram inspection, tempo and loop detection, drum onsets, bass/lead pitch tracking, confidence-based note editing, patch matching, and A/B rendering. Clear loops and monophonic parts are the initial targets; dense polyphonic mixes will require more manual correction. Recovered `.evil` projects and MIDI files are editable approximations, not exact master restores.
+
 ## Original synth and sound effects
 
 The `evil-synth` engine generates audio from oscillators, pitch sweeps, ADSR envelopes, filters, and seeded noise. It does not use prerecorded instrument samples. Output is mono PCM16 WAV for playback and interchange.
@@ -224,6 +166,8 @@ The `evil-synth` engine generates audio from oscillators, pitch sweeps, ADSR env
 Use **Open Evil Synth** on a track or the **Synth** tab to open the instrument editor. It supports multiple oscillators, waveform selection (including an optional naive square), frequency sweeps, detune, pulse width, oscillator sync, gain-normalized unison voices, ADSR, resonant filters with envelope modulation and slope/key tracking, and up to eight LFO lanes for pitch/pulse-width/sync-ratio/filter-cutoff/amplitude modulation and LFO-to-LFO rate modulation, with mono or stereo-cross feedback delay. **New**, **Open**, **Duplicate**, **Reset**, and **Save As** manage presets without changing the original file; **Audition** plays the current unsaved patch at middle C without modifying the project. Save a custom JSON patch to assign it to the editor's original track; its relative path and optional General MIDI `midi_program` are preserved in the project.
 
 The built-in `nasty` preset recreates the character of NanoStudio's A17.Nasty using original synthesis: reference-matched 1.25 oscillator sync and middle-C tuning, independent vibrato, saw-up/saw-down sync-ratio LFO lanes with tempo-map-aware `beats_per_cycle` timing, phase-continuous square-wave LFO4-to-LFO3 rate modulation, calibrated saw-down amplitude articulation, pitch-dependent gain for the original's stronger low notes, a near-open 24 dB key-tracked low-pass filter, and 20% wet stereo-cross delay with reference-calibrated timing and feedback. It uses no copied samples or original NanoStudio audio. The source preset's Hard waveshaper is bypassed and is therefore not needed in the recreation. Mono-only CLI renders fold the delay down to a mono feedback delay; desktop preview and stereo project/mix renders preserve the stereo routing. Full-bar comparison against NanoStudio now closely matches held-note RMS, spectral centroid, and much of the rhythmic envelope, but oscillator/LFO/envelope behavior and the delay tail are still approximate; see `docs/a17-nasty.md` for measurements and remaining differences.
+
+The built-in `nano-303` preset adds original 303-style saw synthesis, resonant filter-envelope modulation, previous-note pitch glide, and velocity accents with filter/gain boosts. Patch JSON exposes `glide_seconds`, `accent_velocity_threshold`, `accent_filter_octaves`, and `accent_gain` for calibration and custom patches.
 
 ```bash
 # List the original SFX and instrument presets

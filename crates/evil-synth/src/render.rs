@@ -49,6 +49,7 @@ pub struct SynthTempoChange {
 struct VoiceAutomation<'a> {
     note_start_seconds: f64,
     note_pitch: u8,
+    glide_from_pitch: Option<u8>,
     pitch_bends: &'a [SynthPitchBend],
     aftertouch: &'a [SynthAftertouch],
     controllers: &'a [SynthController],
@@ -65,6 +66,7 @@ pub fn render(patch: &Patch) -> Result<RenderedSound, Error> {
         VoiceAutomation {
             note_start_seconds: 0.0,
             note_pitch: 69,
+            glide_from_pitch: None,
             pitch_bends: &[],
             aftertouch: &[],
             controllers: &[],
@@ -206,7 +208,8 @@ fn render_notes_inner(
     validate_controllers(controllers)?;
     validate_tempo_changes(tempo_changes)?;
     let sample_rate = patch.sample_rate;
-    let cacheable = pitch_bends.is_empty()
+    let cacheable = patch.glide_seconds == 0.0
+        && pitch_bends.is_empty()
         && aftertouch.is_empty()
         && controllers.is_empty()
         && (tempo_changes.is_empty() || patch.lfos().all(|lfo| lfo.beats_per_cycle.is_none()))
@@ -242,6 +245,13 @@ fn render_notes_inner(
             filter.cutoff_hz =
                 (filter.cutoff_hz * filter_pitch_ratio).min(sample_rate as f32 * 0.49);
         }
+        if patch.accent_velocity_threshold > 0 && note.velocity >= patch.accent_velocity_threshold {
+            voice.gain = (voice.gain * (1.0 + patch.accent_gain)).min(1.0);
+            if let Some(filter) = &mut voice.filter {
+                filter.cutoff_hz = (filter.cutoff_hz * 2.0_f32.powf(patch.accent_filter_octaves))
+                    .min(sample_rate as f32 * 0.49);
+            }
+        }
         voice.validate().map_err(|error| Error::InvalidNote {
             index,
             message: error.to_string(),
@@ -269,6 +279,7 @@ fn render_notes_inner(
                     VoiceAutomation {
                         note_start_seconds: 0.0,
                         note_pitch: note.pitch,
+                        glide_from_pitch: None,
                         pitch_bends: &[],
                         aftertouch: &[],
                         controllers: &[],
@@ -288,6 +299,11 @@ fn render_notes_inner(
                 VoiceAutomation {
                     note_start_seconds: note.start_seconds,
                     note_pitch: note.pitch,
+                    glide_from_pitch: notes[..index]
+                        .iter()
+                        .rev()
+                        .find(|previous| previous.start_seconds < note.start_seconds)
+                        .map(|previous| previous.pitch),
                     pitch_bends,
                     aftertouch,
                     controllers,
@@ -594,6 +610,9 @@ fn render_voice_into(
             bend_semitones: f32::from(pitch_bend_at(automation.pitch_bends, absolute_time))
                 * patch.pitch_bend_range_semitones
                 / 8192.0,
+            glide_from_semitones: automation.glide_from_pitch.map_or(0.0, |pitch| {
+                f32::from(pitch) - f32::from(automation.note_pitch)
+            }),
             pressure: aftertouch_gain(automation.aftertouch, automation.note_pitch, absolute_time),
             expression: expression_gain(automation.controllers, absolute_time),
         };
@@ -704,6 +723,71 @@ mod tests {
             (ratio - 2.0).abs() < 0.05,
             "unexpected pitch-gain ratio: {ratio}"
         );
+    }
+
+    #[test]
+    fn glide_changes_only_the_transition_into_later_notes() {
+        let gliding = Patch {
+            glide_seconds: 0.1,
+            ..Patch::default()
+        };
+        let mut plain = gliding.clone();
+        plain.glide_seconds = 0.0;
+        let notes = [
+            SynthNote {
+                start_seconds: 0.0,
+                duration_seconds: 0.1,
+                pitch: 60,
+                velocity: 100,
+            },
+            SynthNote {
+                start_seconds: 0.1,
+                duration_seconds: 0.25,
+                pitch: 64,
+                velocity: 100,
+            },
+        ];
+        let glided = render_notes(&gliding, &notes).unwrap().samples;
+        let unglided = render_notes(&plain, &notes).unwrap().samples;
+        assert_eq!(glided[..4_800], unglided[..4_800]);
+        assert_ne!(glided[4_800..], unglided[4_800..]);
+    }
+
+    #[test]
+    fn accent_changes_filter_and_gain_only_above_the_velocity_threshold() {
+        let accented = Patch {
+            accent_velocity_threshold: 110,
+            accent_filter_octaves: 1.0,
+            accent_gain: 0.2,
+            filter: Some(Filter::default()),
+            ..Patch::default()
+        };
+        let soft = render_notes(&accented, &[note(60)]).unwrap().samples;
+        let loud = render_notes(
+            &accented,
+            &[SynthNote {
+                velocity: 110,
+                ..note(60)
+            }],
+        )
+        .unwrap()
+        .samples;
+        assert_ne!(soft, loud);
+
+        let mut unaccented = accented.clone();
+        unaccented.accent_velocity_threshold = 0;
+        let baseline = render_notes(&unaccented, &[note(60)]).unwrap().samples;
+        let also_baseline = render_notes(
+            &unaccented,
+            &[SynthNote {
+                velocity: 110,
+                ..note(60)
+            }],
+        )
+        .unwrap()
+        .samples;
+        assert_ne!(baseline, also_baseline);
+        assert_ne!(loud, also_baseline);
     }
 
     #[test]

@@ -32,6 +32,7 @@ impl LiveControls {
 
 struct Voice {
     pitch: u8,
+    glide_from_semitones: f32,
     held: bool,
     patch: Patch,
     state: VoiceState,
@@ -126,11 +127,18 @@ impl LiveSynth {
                 message: "pitch must be 0..127 and velocity 1..127".to_owned(),
             });
         }
+        let glide_from_semitones = self
+            .voices
+            .last()
+            .map_or(0.0, |voice| f32::from(voice.pitch) - f32::from(pitch));
         let mut patch = self.patch.clone();
         patch.gain *= f32::from(velocity) / 127.0;
         patch.gain = (patch.gain
             * 2.0_f32.powf((60.0 - f32::from(pitch)) / 12.0 * patch.pitch_gain_per_octave))
         .min(1.0);
+        if patch.accent_velocity_threshold > 0 && velocity >= patch.accent_velocity_threshold {
+            patch.gain = (patch.gain * (1.0 + patch.accent_gain)).min(1.0);
+        }
         if patch.pitch_tracking {
             let ratio = 2.0_f32.powf((f32::from(pitch) - 69.0) / 12.0);
             for oscillator in &mut patch.oscillators {
@@ -144,6 +152,13 @@ impl LiveSynth {
             }
         }
         patch.filter = pitched_filter(patch.filter, pitch, patch.sample_rate);
+        if patch.accent_velocity_threshold > 0
+            && velocity >= patch.accent_velocity_threshold
+            && let Some(filter) = &mut patch.filter
+        {
+            filter.cutoff_hz = (filter.cutoff_hz * 2.0_f32.powf(patch.accent_filter_octaves))
+                .min(patch.sample_rate as f32 * 0.49);
+        }
         self.voices.retain(|voice| voice.pitch != pitch);
         if self.voices.len() == MAX_VOICES {
             let oldest_release = self
@@ -155,6 +170,7 @@ impl LiveSynth {
         }
         self.voices.push(Voice {
             pitch,
+            glide_from_semitones,
             held: true,
             state: VoiceState::new(&patch),
             modulation: ModulationState::new(&patch),
@@ -212,6 +228,7 @@ impl LiveSynth {
                 VoiceControls {
                     modulation,
                     bend_semitones: self.controls.bend * self.controls.bend_range_semitones,
+                    glide_from_semitones: voice.glide_from_semitones,
                     pressure: 1.0,
                     expression: 1.0,
                 },

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Workspace
 
-MIDI Evil is a Rust music workstation with a native `.evil` JSON project format, Standard MIDI import/export, original synthesis, offline stereo rendering, and an `eframe`/`egui` desktop editor. Keep the code DRY, simple (KISS), and divided by responsibility rather than duplicating CLI and GUI logic.
+MIDI Evil is a Rust music workstation with a native `.evil` JSON project format, Standard MIDI import/export, original synthesis, offline stereo rendering, and an `eframe`/`egui` desktop editor. Active work targets native sound-recreation features and assisted recovery of user-owned WAV exports, not NanoStudio backporting. Keep the code DRY, simple (KISS), and divided by responsibility rather than duplicating CLI and GUI logic.
 
 ## Common commands
 
