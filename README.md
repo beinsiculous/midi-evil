@@ -4,14 +4,17 @@ A Rust music workstation with NanoStudio compatibility as a validation oracle an
 
 ## Run
 
+Build and run the native desktop app:
+
 ```bash
-cargo run -p oracle -- --help
+cargo run -p midi-evil
 ```
 
-Inspect the development fixture:
+The root workspace contains only native `evil-*` crates and builds without any Oracle source. For local compatibility development, the ignored `compat/Cargo.toml` workspace links those private crates. Inspect its CLI and development fixture with:
 
 ```bash
-cargo run -p oracle -- inspect target/fixtures/Minimal.nsp
+cargo run --manifest-path compat/Cargo.toml -p oracle -- --help
+cargo run --manifest-path compat/Cargo.toml -p oracle -- inspect target/fixtures/Minimal.nsp
 ```
 
 ## Publish native crates
@@ -37,14 +40,14 @@ A `.evil` file is a versioned, human-readable JSON document containing the song 
 Create and render a song from scratch:
 
 ```bash
-cargo run -p oracle -- project new "My Song" song.evil --tempo 120
-cargo run -p oracle -- project add-track song.evil Lead --patch lead --gain 0.8 --pan -0.4
-cargo run -p oracle -- project add-track song.evil Bass --patch bass --gain 0.9 --pan 0.2
-cargo run -p oracle -- project add-note song.evil 0 69 0 128 --velocity 110
-cargo run -p oracle -- project add-note song.evil 1 45 0 256 --velocity 120
-cargo run -p oracle -- project show song.evil
-cargo run -p oracle -- project render song.evil song.wav
-cargo run -p oracle -- project export-midi song.evil song.mid
+cargo run --manifest-path compat/Cargo.toml -p oracle -- project new "My Song" song.evil --tempo 120
+cargo run --manifest-path compat/Cargo.toml -p oracle -- project add-track song.evil Lead --patch lead --gain 0.8 --pan -0.4
+cargo run --manifest-path compat/Cargo.toml -p oracle -- project add-track song.evil Bass --patch bass --gain 0.9 --pan 0.2
+cargo run --manifest-path compat/Cargo.toml -p oracle -- project add-note song.evil 0 69 0 128 --velocity 110
+cargo run --manifest-path compat/Cargo.toml -p oracle -- project add-note song.evil 1 45 0 256 --velocity 120
+cargo run --manifest-path compat/Cargo.toml -p oracle -- project show song.evil
+cargo run --manifest-path compat/Cargo.toml -p oracle -- project render song.evil song.wav
+cargo run --manifest-path compat/Cargo.toml -p oracle -- project export-midi song.evil song.mid
 ```
 
 Track indices are returned by `add-track` and shown by `show`. Note arguments are track, MIDI pitch, start tick, and duration. Native projects default to 480 ticks per quarter note; existing files keep their stored timing. Patch references can be built-in preset names or `.json` paths relative to the `.evil` file. `project render` uses the embedded assignments to produce a stereo PCM16 WAV. `project export-midi` preserves exact track names, meter, tempo changes, gain/pan CCs, program mappings, and atomic output. Muted tracks remain as empty named tracks so engine track indices stay stable. An imported song's `source_midi` is stored in the project so Save can update the original MIDI file even after reopening it. If the MIDI file moves, **Relink MIDI** selects its new location without breaking future save-back.
@@ -52,12 +55,12 @@ Track indices are returned by `add-track` and shown by `show`. Note arguments ar
 Edit notes and tracks, or convert MIDI into a native project:
 
 ```bash
-cargo run -p oracle -- project notes song.evil 0
-cargo run -p oracle -- project move-note song.evil 0 0 --pitch 72 --start-tick 64 --duration-ticks 128
-cargo run -p oracle -- project remove-note song.evil 0 0
-cargo run -p oracle -- project mute song.evil 1
-cargo run -p oracle -- project unmute song.evil 1
-cargo run -p oracle -- project import-midi input.mid imported.evil --name "Imported Song"
+cargo run --manifest-path compat/Cargo.toml -p oracle -- project notes song.evil 0
+cargo run --manifest-path compat/Cargo.toml -p oracle -- project move-note song.evil 0 0 --pitch 72 --start-tick 64 --duration-ticks 128
+cargo run --manifest-path compat/Cargo.toml -p oracle -- project remove-note song.evil 0 0
+cargo run --manifest-path compat/Cargo.toml -p oracle -- project mute song.evil 1
+cargo run --manifest-path compat/Cargo.toml -p oracle -- project unmute song.evil 1
+cargo run --manifest-path compat/Cargo.toml -p oracle -- project import-midi input.mid imported.evil --name "Imported Song"
 ```
 
 Invalid edits leave the document unchanged. MIDI source tracks are remapped to contiguous native track indices and default to the `lead` patch for customization. Optional tempo changes after the initial tempo are preserved in the native JSON. Signed pitch-bend events, RPN 0 bend ranges, channel/polyphonic aftertouch, CC 1 modulation depth, and CC 11 expression are preserved through import, `.evil`, synthesis, and export. Other controller events are preserved and exported but explicitly counted as not rendered.
@@ -67,10 +70,10 @@ Invalid edits leave the document unchanged. MIDI source tracks are remapped to c
 The non-interactive `oracle` CLI provides JSON inspection and render reports for scripting and AI agents. See `docs/cli-ai.md` for supported commands, error behavior, and a full-bar A17 test workflow.
 
 ```bash
-cargo run -p oracle -- project show song.evil --json
-cargo run -p oracle -- midi inspect input.mid --json
-cargo run -p oracle -- synth list --json
-cargo run -p oracle -- project render song.evil song.wav --json
+cargo run --manifest-path compat/Cargo.toml -p oracle -- project show song.evil --json
+cargo run --manifest-path compat/Cargo.toml -p oracle -- midi inspect input.mid --json
+cargo run --manifest-path compat/Cargo.toml -p oracle -- synth list --json
+cargo run --manifest-path compat/Cargo.toml -p oracle -- project render song.evil song.wav --json
 ```
 
 ## MIDI Evil desktop
@@ -136,26 +139,26 @@ aseprite -b crates/midi-evil/assets/midi-evil-splash.aseprite \
 Create a blank project and add instrument tracks:
 
 ```bash
-cargo run -p oracle -- song create MySong.prj --name "My Song"
-cargo run -p oracle -- song add-track MySong.prj 1
-cargo run -p oracle -- song set-channel MySong.prj 0 Channel00 --volume 0.8 --pan 0.5
-cargo run -p oracle -- song set-effect MySong.prj 0 Channel00 SLOT2 false
+cargo run --manifest-path compat/Cargo.toml -p oracle -- song create MySong.prj --name "My Song"
+cargo run --manifest-path compat/Cargo.toml -p oracle -- song add-track MySong.prj 1
+cargo run --manifest-path compat/Cargo.toml -p oracle -- song set-channel MySong.prj 0 Channel00 --volume 0.8 --pan 0.5
+cargo run --manifest-path compat/Cargo.toml -p oracle -- song set-effect MySong.prj 0 Channel00 SLOT2 false
 
 # Replace a copied sound template's sequence with MIDI note tracks
-cargo run -p oracle -- song import-midi MySong.prj input.mid
+cargo run --manifest-path compat/Cargo.toml -p oracle -- song import-midi MySong.prj input.mid
 ```
 
 `song import-midi` retains the project's instruments, mixer settings, banks, and assets. It assigns MIDI note tracks to non-mixer instruments in project order, converts timing to NanoStudio's 256 ticks per quarter, and writes one full-length pattern and timeline part per track. Only the initial tempo is applied; later tempo changes and automation without known NanoStudio mappings are reported as skipped. Use a copied template because this command replaces the existing sequence.
 
 ```bash
 # Unpack into a new directory (the destination must not exist)
-cargo run -p oracle -- unpack input.nsp MySong.prj
+cargo run --manifest-path compat/Cargo.toml -p oracle -- unpack input.nsp MySong.prj
 
 # Edit global song settings
-cargo run -p oracle -- edit MySong.prj --tempo 128 --swing 0.5 --beats-per-bar 4
+cargo run --manifest-path compat/Cargo.toml -p oracle -- edit MySong.prj --tempo 128 --swing 0.5 --beats-per-bar 4
 
 # Repack the project
-cargo run -p oracle -- pack MySong.prj MySong.nsp
+cargo run --manifest-path compat/Cargo.toml -p oracle -- pack MySong.prj MySong.nsp
 ```
 
 ## Pattern editing
@@ -164,11 +167,11 @@ The sequencer uses 256 ticks per quarter note. New patterns default to one bar.
 
 ```bash
 # Add pitch 60 at tick 0 with duration 128
-cargo run -p oracle -- pattern add-note MySong.prj 2000 60 0 128 --velocity 100
+cargo run --manifest-path compat/Cargo.toml -p oracle -- pattern add-note MySong.prj 2000 60 0 128 --velocity 100
 
-cargo run -p oracle -- pattern list MySong.prj 2000
-cargo run -p oracle -- pattern move-note MySong.prj 2000 0 --note 64 --start-tick 64
-cargo run -p oracle -- pattern remove MySong.prj 2000 0
+cargo run --manifest-path compat/Cargo.toml -p oracle -- pattern list MySong.prj 2000
+cargo run --manifest-path compat/Cargo.toml -p oracle -- pattern move-note MySong.prj 2000 0 --note 64 --start-tick 64
+cargo run --manifest-path compat/Cargo.toml -p oracle -- pattern remove MySong.prj 2000 0
 ```
 
 ## Arrangement editing
@@ -176,10 +179,10 @@ cargo run -p oracle -- pattern remove MySong.prj 2000 0
 Timeline parts may repeat a pattern for any duration; their lengths do not need to match the source pattern.
 
 ```bash
-cargo run -p oracle -- song list MySong.prj
-cargo run -p oracle -- song add MySong.prj 1 2000 0 512
-cargo run -p oracle -- song move MySong.prj 1 4 --start-tick 4096 --length-ticks 1024
-cargo run -p oracle -- song remove MySong.prj 1 4
+cargo run --manifest-path compat/Cargo.toml -p oracle -- song list MySong.prj
+cargo run --manifest-path compat/Cargo.toml -p oracle -- song add MySong.prj 1 2000 0 512
+cargo run --manifest-path compat/Cargo.toml -p oracle -- song move MySong.prj 1 4 --start-tick 4096 --length-ticks 1024
+cargo run --manifest-path compat/Cargo.toml -p oracle -- song remove MySong.prj 1 4
 ```
 
 ## Standard MIDI export
@@ -187,7 +190,7 @@ cargo run -p oracle -- song remove MySong.prj 1 4
 Export either an unpacked project or an `.nsp` archive:
 
 ```bash
-cargo run -p oracle -- midi export MySong.prj MySong.mid
+cargo run --manifest-path compat/Cargo.toml -p oracle -- midi export MySong.prj MySong.mid
 ```
 
 The format 1 MIDI file includes tempo, 4/4-based meter, track names, and notes expanded from repeated timeline patterns. Timing remains at 256 ticks per quarter note. Notes starting within a timeline part retain their full durations, even when they extend past the part boundary. Swing does not alter exported MIDI ticks, matching NanoStudio's own exporter. See `docs/nanostudio-compatibility.md` for the reference-backed edge cases and remaining compatibility limits.
@@ -199,8 +202,8 @@ MIDI does not contain instrument audio. Known controller records are translated 
 Inspect a `.mid` file and render its notes with a preset or custom patch:
 
 ```bash
-cargo run -p oracle -- midi inspect input.mid
-cargo run -p oracle -- synth render-midi input.mid lead lead.wav --track 1
+cargo run --manifest-path compat/Cargo.toml -p oracle -- midi inspect input.mid
+cargo run --manifest-path compat/Cargo.toml -p oracle -- synth render-midi input.mid lead lead.wav --track 1
 ```
 
 The importer supports format 0 and format 1 Standard MIDI Files with metrical timing, multiple tracks, overlapping notes, track names, tempo changes, signed pitch-bend events, RPN 0 bend ranges, channel/polyphonic aftertouch, CC 1 modulation depth, and CC 11 expression. Format 2 and SMPTE timing are rejected explicitly. Other MIDI controller events are preserved for export and counted as not rendered.
@@ -208,8 +211,8 @@ The importer supports format 0 and format 1 Standard MIDI Files with metrical ti
 `init-mix` and `render-mix` also accept `.mid` input in place of a project:
 
 ```bash
-cargo run -p oracle -- synth init-mix input.mid midi-mix.json
-cargo run -p oracle -- synth render-mix input.mid midi-mix.json midi-song.wav
+cargo run --manifest-path compat/Cargo.toml -p oracle -- synth init-mix input.mid midi-mix.json
+cargo run --manifest-path compat/Cargo.toml -p oracle -- synth render-mix input.mid midi-mix.json midi-song.wav
 ```
 
 ## Original synth and sound effects
@@ -224,14 +227,14 @@ The built-in `nasty` preset recreates the character of NanoStudio's A17.Nasty us
 
 ```bash
 # List the original SFX and instrument presets
-cargo run -p oracle -- synth list
+cargo run --manifest-path compat/Cargo.toml -p oracle -- synth list
 
 # Render a preset directly
-cargo run -p oracle -- synth render laser laser.wav
+cargo run --manifest-path compat/Cargo.toml -p oracle -- synth render laser laser.wav
 
 # Save an editable patch, customize it, then render the result
-cargo run -p oracle -- synth init laser my-laser.json
-cargo run -p oracle -- synth render my-laser.json my-laser.wav
+cargo run --manifest-path compat/Cargo.toml -p oracle -- synth init laser my-laser.json
+cargo run --manifest-path compat/Cargo.toml -p oracle -- synth render my-laser.json my-laser.wav
 ```
 
 Patch JSON includes the sample rate, duration, gain, optional General MIDI `midi_program`, pitch-tracking mode, optional `pitch_gain_per_octave` scaling around middle C, random seed, oscillator settings, optional oscillator sync and unison, envelope, and optional filter, primary LFO with optional `beats_per_cycle` timing, additional modulation lanes, and delay settings. Imported program changes, CC 7 volume, and CC 10 pan are preserved on export; tracks may override the patch's program with their own `midi_program`. Missing fields use documented defaults in the `evil-synth` data model. Rendering the same patch and seed produces identical audio. Repeated tonal notes also reuse a bounded voice cache to avoid redundant oscillator work; noisy patches retain per-note variation.
@@ -239,7 +242,7 @@ Patch JSON includes the sample rate, duration, gain, optional General MIDI `midi
 Render project notes with a patch, optionally selecting one source track:
 
 ```bash
-cargo run -p oracle -- synth render-project MySong.prj lead lead.wav --track 1
+cargo run --manifest-path compat/Cargo.toml -p oracle -- synth render-project MySong.prj lead lead.wav --track 1
 ```
 
 Omit `--track` to render every track with the same patch. Overlapping notes are independent polyphonic voices. With `pitch_tracking` enabled, oscillator frequencies follow MIDI pitch relative to note 69; disable it for fixed-pitch drums and effects. Note velocity controls voice gain.
@@ -259,8 +262,8 @@ Right-click a pad or choose **Edit Pad** to rename it, load a mono/stereo PCM or
 Generate a per-track mix configuration, edit the assignments, and render one stereo file:
 
 ```bash
-cargo run -p oracle -- synth init-mix MySong.prj mix.json
-cargo run -p oracle -- synth render-mix MySong.prj mix.json song.wav
+cargo run --manifest-path compat/Cargo.toml -p oracle -- synth init-mix MySong.prj mix.json
+cargo run --manifest-path compat/Cargo.toml -p oracle -- synth render-mix MySong.prj mix.json song.wav
 ```
 
 The open JSON mix format has a shared `sample_rate`, `master_gain`, and a `tracks` array:

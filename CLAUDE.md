@@ -19,6 +19,15 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
+The root workspace is the public native build and contains only `evil-*` crates. The ignored `compat/Cargo.toml` workspace links private Oracle crates for compatibility work. Verify both when changing shared native code:
+
+```bash
+cargo test --workspace
+cargo test --manifest-path compat/Cargo.toml --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --manifest-path compat/Cargo.toml --workspace --all-targets -- -D warnings
+```
+
 Format changes before committing:
 
 ```bash
@@ -52,18 +61,18 @@ cargo run -p midi-evil
 CLI and command discovery:
 
 ```bash
-cargo run -p oracle -- --help
-cargo run -p oracle -- inspect target/fixtures/Minimal.nsp
-cargo run -p oracle -- midi inspect examples/public-domain/bach-invention-02/bach-invention-02.mid
+cargo run --manifest-path compat/Cargo.toml -p oracle -- --help
+cargo run --manifest-path compat/Cargo.toml -p oracle -- inspect target/fixtures/Minimal.nsp
+cargo run --manifest-path compat/Cargo.toml -p oracle -- midi inspect examples/public-domain/bach-invention-02/bach-invention-02.mid
 ```
 
 Create and render a native song:
 
 ```bash
-cargo run -p oracle -- project new "My Song" song.evil --tempo 120
-cargo run -p oracle -- project add-track song.evil Lead --patch lead
-cargo run -p oracle -- project add-note song.evil 0 69 0 128 --velocity 110
-cargo run -p oracle -- project render song.evil song.wav
+cargo run --manifest-path compat/Cargo.toml -p oracle -- project new "My Song" song.evil --tempo 120
+cargo run --manifest-path compat/Cargo.toml -p oracle -- project add-track song.evil Lead --patch lead
+cargo run --manifest-path compat/Cargo.toml -p oracle -- project add-note song.evil 0 69 0 128 --velocity 110
+cargo run --manifest-path compat/Cargo.toml -p oracle -- project render song.evil song.wav
 ```
 
 ## Architecture

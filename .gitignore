@@ -12,6 +12,11 @@
 __pycache__/
 *.pyc
 
+# Local NanoStudio compatibility workspace (never published)
+/compat/
+/compat.toml
+/compat.lock
+
 # NanoStudio packages and instrument banks (compatibility fixtures stay local)
 *.nsp
 *.prj

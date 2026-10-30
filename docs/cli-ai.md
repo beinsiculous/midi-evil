@@ -1,15 +1,17 @@
 # Agent-friendly CLI
 
-`oracle` is the non-interactive MIDI Evil CLI. Use it for native project creation/editing, MIDI conversion, synthesis, inspection, and WAV rendering without launching the desktop app.
+`oracle` is the non-interactive MIDI Evil CLI for local compatibility work. Its crates and `compat/` workspace are intentionally not included in the public native repository. Use it for native project creation/editing, MIDI conversion, synthesis, inspection, and WAV rendering without launching the desktop app.
 
 ## Invocation and errors
 
 ```bash
-cargo build -p oracle
-target/debug/oracle --help
-target/debug/oracle project --help
-target/debug/oracle project render --help
+cargo build --manifest-path compat/Cargo.toml -p oracle
+compat/target/debug/oracle --help
+compat/target/debug/oracle project --help
+compat/target/debug/oracle project render --help
 ```
+
+The examples below use `oracle` to mean `compat/target/debug/oracle`.
 
 Successful commands exit 0. Invalid input and I/O failures print an error to stderr and exit nonzero. Native project edits validate before saving; failed edits do not partially modify the project. Use `--json` where available instead of parsing human-readable output. JSON goes to stdout; warnings and errors go to stderr.
 
