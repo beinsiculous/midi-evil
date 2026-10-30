@@ -1,7 +1,11 @@
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
 use evil_project::{Note, Project, Track};
 
-const KEY_HEIGHT: f32 = 14.0;
+use crate::theme;
+
+const KEY_HEIGHT: f32 = 18.0;
+const KEYBOARD_WIDTH: f32 = 62.0;
+const RULER_HEIGHT: f32 = 26.0;
 const MAX_PITCH: u8 = 127;
 const DEFAULT_NOTE_VELOCITY: u8 = 100;
 
@@ -69,38 +73,73 @@ pub fn timeline_ticks(track: &Track, ticks_per_quarter: u16) -> u64 {
     (longest_event.saturating_add(4 * beat)).max(16 * beat)
 }
 
+pub fn bar_ticks(project: &Project) -> u64 {
+    (u64::from(project.ticks_per_quarter.max(1)) * 4 * u64::from(project.beats_per_bar.max(1))
+        / u64::from(project.beat_unit.max(1)))
+    .max(1)
+}
+
 pub fn show(ui: &mut egui::Ui, project: &mut Project, state: &mut RollState) -> bool {
     if project.tracks.get(state.selected_track).is_none() {
         ui.label("Select a track to edit its notes");
         return false;
     }
-    ui.horizontal(|ui| {
-        ui.label("Piano roll");
+    ui.horizontal_wrapped(|ui| {
+        theme::label(ui, "GRID  1/16");
         ui.add(egui::Slider::new(&mut state.zoom, 0.25..=3.0).text("Zoom"));
-        ui.label("Click: add/select · Drag: move · Drag edge: resize · Delete: remove");
+        ui.label(
+            egui::RichText::new("Click to draw · Drag to move · Drag edge to resize")
+                .size(11.0)
+                .color(theme::MUTED),
+        );
     });
+    ui.add_space(4.0);
 
     let ticks_per_quarter = project.ticks_per_quarter.max(1);
     let beat = u64::from(ticks_per_quarter);
     let snap = (beat / 4).max(1);
-    let bar = beat * u64::from(project.beats_per_bar.max(1));
+    let bar = bar_ticks(project);
     let timeline_ticks = timeline_ticks(&project.tracks[state.selected_track], ticks_per_quarter);
     let pixels_per_tick = state.pixels_per_tick(ticks_per_quarter);
     let size = Vec2::new(
-        timeline_ticks as f32 * pixels_per_tick,
-        (u16::from(MAX_PITCH) + 1) as f32 * KEY_HEIGHT,
+        KEYBOARD_WIDTH + timeline_ticks as f32 * pixels_per_tick,
+        RULER_HEIGHT + (u16::from(MAX_PITCH) + 1) as f32 * KEY_HEIGHT,
     );
-    let mut scroll = egui::ScrollArea::both().auto_shrink([false, false]);
+    let mut scroll = egui::ScrollArea::both()
+        .id_salt("piano-roll")
+        .auto_shrink([false, false]);
     if state.scroll_to_middle {
-        scroll = scroll.scroll_offset(Vec2::new(0.0, (MAX_PITCH - 60) as f32 * KEY_HEIGHT));
+        let notes = &project.tracks[state.selected_track].notes;
+        let middle = match (
+            notes.iter().map(|n| n.pitch).min(),
+            notes.iter().map(|n| n.pitch).max(),
+        ) {
+            (Some(low), Some(high)) => ((u16::from(low) + u16::from(high)) / 2) as u8,
+            _ => 60,
+        };
+        scroll = scroll.scroll_offset(Vec2::new(
+            0.0,
+            f32::from(MAX_PITCH - middle.saturating_add(10).min(MAX_PITCH)) * KEY_HEIGHT,
+        ));
         state.scroll_to_middle = false;
     }
 
     scroll
-        .show(ui, |ui| {
-            let (response, painter) = ui.allocate_painter(size, egui::Sense::click_and_drag());
-            let rect = response.rect;
-            painter.rect_filled(rect, 0.0, Color32::from_rgb(12, 18, 24));
+        .show_viewport(ui, |ui, viewport| {
+            let (response, full_painter) = ui.allocate_painter(size, egui::Sense::click_and_drag());
+            let board = response.rect;
+            let rect = Rect::from_min_max(
+                board.min + Vec2::new(KEYBOARD_WIDTH, RULER_HEIGHT),
+                board.max,
+            );
+            let visible_origin = board.min + viewport.min.to_vec2();
+            let edit_area = Rect::from_min_max(
+                visible_origin + Vec2::new(KEYBOARD_WIDTH, RULER_HEIGHT),
+                full_painter.clip_rect().max,
+            );
+            let painter =
+                full_painter.with_clip_rect(edit_area.intersect(full_painter.clip_rect()));
+            painter.rect_filled(rect, 0.0, theme::BACKGROUND);
             draw_grid(&painter, rect, timeline_ticks, beat, bar, pixels_per_tick);
 
             for (index, note) in project.tracks[state.selected_track]
@@ -114,22 +153,41 @@ pub fn show(ui: &mut egui::Ui, project: &mut Project, state: &mut RollState) -> 
                     note_rect,
                     2.0,
                     if selected {
-                        Color32::from_rgb(255, 170, 76)
+                        theme::IVORY
                     } else {
-                        Color32::from_rgb(54, 190, 180)
+                        theme::track_color(state.selected_track)
                     },
                 );
                 painter.rect_stroke(
                     note_rect,
                     2.0,
-                    Stroke::new(1.0, Color32::from_rgb(230, 240, 235)),
+                    Stroke::new(1.0, theme::TEXT.gamma_multiply(0.35)),
                     egui::StrokeKind::Inside,
                 );
+                if note_rect.width() >= 36.0 {
+                    painter.text(
+                        note_rect.left_center() + Vec2::new(5.0, 0.0),
+                        egui::Align2::LEFT_CENTER,
+                        note_name(note.pitch),
+                        egui::FontId::monospace(10.0),
+                        theme::BACKGROUND,
+                    );
+                }
             }
+            draw_keyboard(&full_painter, rect, visible_origin);
+            draw_ruler(
+                &full_painter,
+                rect,
+                visible_origin,
+                timeline_ticks,
+                bar,
+                pixels_per_tick,
+            );
 
             let mut changed = false;
             if response.drag_started()
                 && let Some(position) = ui.input(|input| input.pointer.press_origin())
+                && edit_area.contains(position)
             {
                 if let Some(index) = note_at(
                     &project.tracks[state.selected_track],
@@ -183,6 +241,7 @@ pub fn show(ui: &mut egui::Ui, project: &mut Project, state: &mut RollState) -> 
             }
             if response.clicked()
                 && let Some(position) = response.interact_pointer_pos()
+                && edit_area.contains(position)
             {
                 if let Some(index) = note_at(
                     &project.tracks[state.selected_track],
@@ -236,33 +295,29 @@ fn draw_grid(
                     Pos2::new(rect.right(), y + KEY_HEIGHT),
                 ),
                 0.0,
-                Color32::from_rgb(18, 27, 35),
+                Color32::from_rgb(26, 23, 33),
             );
         }
         painter.line_segment(
             [Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)],
-            Stroke::new(0.5, Color32::from_rgb(38, 51, 60)),
+            Stroke::new(0.5, Color32::from_rgb(42, 36, 49)),
         );
-        if pitch % 12 == 0 {
-            painter.text(
-                Pos2::new(rect.left() + 4.0, y + 1.0),
-                egui::Align2::LEFT_TOP,
-                octave_label(pitch),
-                egui::FontId::monospace(10.0),
-                Color32::from_rgb(160, 175, 180),
-            );
-        }
     }
     let grid = (beat / 4).max(1);
-    let mut tick = 0;
-    while tick <= timeline_ticks {
+    let mut tick = (((painter.clip_rect().left() - rect.left()).max(0.0) / pixels_per_tick) as u64
+        / grid)
+        * grid;
+    let last_tick = (((painter.clip_rect().right() - rect.left()).max(0.0) / pixels_per_tick)
+        as u64)
+        .min(timeline_ticks);
+    while tick <= last_tick {
         let x = rect.left() + tick as f32 * pixels_per_tick;
-        let (width, color) = if tick % bar == 0 {
-            (1.5, Color32::from_rgb(90, 115, 125))
-        } else if tick % beat == 0 {
-            (1.0, Color32::from_rgb(55, 76, 86))
+        let (width, color) = if tick.is_multiple_of(bar) {
+            (1.5, theme::BORDER)
+        } else if tick.is_multiple_of(beat) {
+            (1.0, Color32::from_rgb(55, 46, 63))
         } else {
-            (0.5, Color32::from_rgb(32, 47, 56))
+            (0.5, Color32::from_rgb(35, 30, 42))
         };
         painter.line_segment(
             [Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())],
@@ -270,6 +325,92 @@ fn draw_grid(
         );
         tick += grid;
     }
+}
+
+fn draw_keyboard(painter: &egui::Painter, grid: Rect, visible: Pos2) {
+    let keyboard = Rect::from_min_max(
+        Pos2::new(visible.x, visible.y + RULER_HEIGHT),
+        Pos2::new(visible.x + KEYBOARD_WIDTH, painter.clip_rect().bottom()),
+    );
+    let painter = painter.with_clip_rect(keyboard.intersect(painter.clip_rect()));
+    painter.rect_filled(keyboard, 0.0, theme::PANEL);
+    for pitch in 0..=MAX_PITCH {
+        let y = grid.top() + f32::from(MAX_PITCH - pitch) * KEY_HEIGHT;
+        let black = is_black_key(pitch);
+        let key = Rect::from_min_size(
+            Pos2::new(visible.x, y + 0.5),
+            Vec2::new(
+                if black { 42.0 } else { KEYBOARD_WIDTH - 2.0 },
+                KEY_HEIGHT - 1.0,
+            ),
+        );
+        painter.rect_filled(
+            key,
+            1.0,
+            if black {
+                theme::BACKGROUND
+            } else {
+                Color32::from_rgb(190, 180, 169)
+            },
+        );
+        if pitch % 12 == 0 {
+            painter.text(
+                key.right_center() - Vec2::new(5.0, 0.0),
+                egui::Align2::RIGHT_CENTER,
+                octave_label(pitch),
+                egui::FontId::monospace(10.0),
+                theme::BACKGROUND,
+            );
+        }
+    }
+}
+
+fn draw_ruler(
+    painter: &egui::Painter,
+    grid: Rect,
+    visible: Pos2,
+    ticks: u64,
+    bar: u64,
+    pixels: f32,
+) {
+    let ruler = Rect::from_min_max(
+        visible + Vec2::new(KEYBOARD_WIDTH, 0.0),
+        Pos2::new(painter.clip_rect().right(), visible.y + RULER_HEIGHT),
+    );
+    let ruler_painter = painter.with_clip_rect(ruler.intersect(painter.clip_rect()));
+    ruler_painter.rect_filled(ruler, 0.0, theme::RAISED);
+    let first = (((ruler.left() - grid.left()).max(0.0) / pixels) as u64 / bar) * bar;
+    let last = (((ruler.right() - grid.left()).max(0.0) / pixels) as u64).min(ticks);
+    for tick in (first..=last).step_by(bar as usize) {
+        let x = grid.left() + tick as f32 * pixels;
+        ruler_painter.text(
+            Pos2::new(x + 6.0, ruler.center().y),
+            egui::Align2::LEFT_CENTER,
+            format!("{:02}", tick / bar + 1),
+            egui::FontId::monospace(11.0),
+            theme::IVORY,
+        );
+    }
+    let corner = Rect::from_min_size(visible, Vec2::new(KEYBOARD_WIDTH, RULER_HEIGHT));
+    painter.rect_filled(corner, 0.0, theme::PANEL);
+    painter.text(
+        corner.center(),
+        egui::Align2::CENTER_CENTER,
+        "KEY",
+        egui::FontId::monospace(10.0),
+        theme::MUTED,
+    );
+}
+
+fn note_name(pitch: u8) -> String {
+    const NAMES: [&str; 12] = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+    format!(
+        "{}{}",
+        NAMES[usize::from(pitch % 12)],
+        i32::from(pitch) / 12 - 1
+    )
 }
 
 fn note_rect(note: &Note, rect: Rect, pixels_per_tick: f32) -> Rect {
@@ -322,6 +463,69 @@ fn is_black_key(pitch: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bar_lengths_follow_the_imported_time_signature() {
+        let mut project = Project::new("Meters");
+        assert_eq!(bar_ticks(&project), 1_920);
+        project.beats_per_bar = 6;
+        project.beat_unit = 8;
+        assert_eq!(bar_ticks(&project), 1_440);
+        project.ticks_per_quarter = 384;
+        project.beats_per_bar = 3;
+        project.beat_unit = 4;
+        assert_eq!(bar_ticks(&project), 1_152);
+    }
+
+    #[test]
+    fn sticky_keyboard_and_ruler_do_not_create_notes_but_the_grid_does() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let mut project = Project::new("Hit testing");
+        project.tracks.push(Track::default());
+        let mut state = RollState::default();
+        let mut time = 0.0;
+        let mut frame = |events| {
+            time += 0.1;
+            let _ = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 600.0))),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    show(ui, &mut project, &mut state);
+                },
+            );
+            project.tracks[0].notes.len()
+        };
+        frame(vec![]);
+        frame(vec![]);
+        for (position, expected) in [
+            (Pos2::new(24.0, 140.0), 0), // fixed keyboard, after initial vertical scroll
+            (Pos2::new(180.0, 48.0), 0), // fixed bar ruler
+            (Pos2::new(180.0, 140.0), 1),
+        ] {
+            frame(vec![
+                egui::Event::PointerMoved(position),
+                egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+            let count = frame(vec![egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }]);
+            assert_eq!(count, expected, "unexpected note creation at {position:?}");
+        }
+        assert_eq!(project.tracks[0].notes[0].start_tick, 840);
+    }
 
     #[test]
     fn snaps_to_the_nearest_grid_point_without_underflow() {

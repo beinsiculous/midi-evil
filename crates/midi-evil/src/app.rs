@@ -1,6 +1,13 @@
 use std::path::{Path, PathBuf};
 
-use eframe::egui::{self, Color32, RichText, TextureHandle};
+use eframe::egui::{self, RichText, TextureHandle};
+
+mod chrome;
+
+use crate::{
+    theme,
+    workspace::{self, View},
+};
 use evil_project::{Project, Track};
 
 use crate::art;
@@ -24,6 +31,10 @@ pub struct StudioApp {
     status: String,
     mascot: TextureHandle,
     splash: TextureHandle,
+    controls: TextureHandle,
+    view: View,
+    show_export: bool,
+    show_automation: bool,
     show_about: bool,
     preview: Option<PreviewPlayer>,
     instance: Option<SingleInstance>,
@@ -56,6 +67,7 @@ impl StudioApp {
         options: LaunchOptions,
         instance: Option<SingleInstance>,
     ) -> Self {
+        theme::install(&context.egui_ctx);
         let mut app = Self {
             project: Project::new("Untitled"),
             project_path: None,
@@ -67,6 +79,10 @@ impl StudioApp {
             status: "Welcome to MIDI Evil".to_owned(),
             mascot: art::load_mascot(&context.egui_ctx),
             splash: art::load_splash(&context.egui_ctx),
+            controls: art::load_controls(&context.egui_ctx),
+            view: View::default(),
+            show_export: false,
+            show_automation: false,
             show_about: true,
             preview: None,
             instance,
@@ -219,7 +235,7 @@ impl StudioApp {
         if !context.egui_wants_keyboard_input()
             && context.input(|input| input.key_pressed(egui::Key::Space))
         {
-            if self.preview.is_some() {
+            if self.preview.is_some() || self.render_job.is_some() {
                 self.stop_preview();
             } else {
                 self.preview_project();
@@ -258,7 +274,9 @@ impl StudioApp {
 
     fn open_patch_lab(&mut self) {
         let track_index = self.roll.selected_track;
-        let track = &self.project.tracks[track_index];
+        let Some(track) = self.project.tracks.get(track_index) else {
+            return;
+        };
         match evil_render::load_patch(&track.patch, self.patch_base()) {
             Ok(patch) => {
                 let file_name = if track.patch.ends_with(".json") {
@@ -267,6 +285,7 @@ impl StudioApp {
                     format!("{}-custom.json", track.patch)
                 };
                 self.patch_lab = Some(PatchLab::new(patch, file_name, track_index));
+                self.view = View::Synth;
             }
             Err(error) => self.status = format!("Could not load synth patch: {error}"),
         }
@@ -335,41 +354,54 @@ impl StudioApp {
         self.start_render(PendingRender::Audition(patch.clone()));
     }
 
-    fn patch_lab_window(&mut self, context: &egui::Context) {
+    fn patch_lab_panel(&mut self, ui: &mut egui::Ui) {
         let Some(mut lab) = self.patch_lab.take() else {
+            ui.label("Select a track and open its instrument to start designing a sound.");
+            if ui.button("Open selected instrument").clicked() {
+                self.open_patch_lab();
+            }
             return;
         };
-        let mut open = true;
         let mut action = None;
-        egui::Window::new("Evil Synth")
-            .open(&mut open)
-            .resizable(true)
-            .show(context, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("New").clicked() {
-                        action = Some(PatchLabAction::New);
-                    }
-                    if ui.button("Open").clicked() {
-                        action = Some(PatchLabAction::Open);
-                    }
-                    if ui.button("Duplicate").clicked() {
-                        action = Some(PatchLabAction::Duplicate);
-                    }
-                    if ui.button("Reset").clicked() {
-                        action = Some(PatchLabAction::Reset);
-                    }
-                    if ui.button("Save As").clicked() {
-                        action = Some(PatchLabAction::SaveAs);
-                    }
-                    if ui.button("Audition").clicked() {
-                        action = Some(PatchLabAction::Audition);
-                    }
-                });
-                ui.separator();
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    patch_lab::show(ui, &mut lab.patch);
-                });
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.heading("Evil Synth");
+                theme::label(
+                    ui,
+                    format!(
+                        "PATCH LAB  /  {}",
+                        self.project
+                            .tracks
+                            .get(lab.track_index)
+                            .map_or("Unassigned", |track| track.name.as_str())
+                    ),
+                );
             });
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("New").clicked() {
+                    action = Some(PatchLabAction::New);
+                }
+                if ui.button("Open").clicked() {
+                    action = Some(PatchLabAction::Open);
+                }
+                if ui.button("Duplicate").clicked() {
+                    action = Some(PatchLabAction::Duplicate);
+                }
+                if ui.button("Reset").clicked() {
+                    action = Some(PatchLabAction::Reset);
+                }
+                if ui.button("Save As").clicked() {
+                    action = Some(PatchLabAction::SaveAs);
+                }
+                if ui.button("Audition").clicked() {
+                    action = Some(PatchLabAction::Audition);
+                }
+            });
+            ui.separator();
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                patch_lab::show(ui, &mut lab);
+            });
+        });
         match action {
             Some(PatchLabAction::New) => {
                 lab = PatchLab::new_preset(lab.track_index);
@@ -388,9 +420,7 @@ impl StudioApp {
             Some(PatchLabAction::Audition) => self.audition_patch(&lab.patch),
             None => {}
         }
-        if open {
-            self.patch_lab = Some(lab);
-        }
+        self.patch_lab = Some(lab);
     }
 
     fn open_project(&mut self) {
@@ -715,88 +745,6 @@ impl StudioApp {
         self.start_render(PendingRender::Wav(output));
     }
 
-    fn toolbar(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::top("toolbar").show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.image((self.mascot.id(), egui::vec2(28.0, 28.0)));
-                ui.label(RichText::new("MIDI Evil").strong().size(20.0));
-                ui.separator();
-                if ui.button("New").clicked() {
-                    self.new_project();
-                }
-                if ui
-                    .add_enabled(self.history.can_undo(), egui::Button::new("Undo"))
-                    .clicked()
-                {
-                    self.undo();
-                }
-                if ui
-                    .add_enabled(self.history.can_redo(), egui::Button::new("Redo"))
-                    .clicked()
-                {
-                    self.redo();
-                }
-                if ui.button("Open").clicked() {
-                    self.open_project();
-                }
-                if ui.button("Import MIDI").clicked() {
-                    self.import_midi();
-                }
-                if ui.button("Save").clicked() {
-                    self.save_project();
-                }
-                if ui.button("Save as").clicked() {
-                    self.save_project_as();
-                }
-                if self.source_midi.is_some() && ui.button("Relink MIDI").clicked() {
-                    self.relink_midi();
-                }
-                if ui.button("Export MIDI").clicked() {
-                    self.export_midi();
-                }
-                if ui.button("Render WAV").clicked() {
-                    self.render_audio();
-                }
-                let preview_label = if self.render_job.is_some() {
-                    "Cancel"
-                } else if self.preview.is_some() {
-                    "Stop"
-                } else {
-                    "Preview"
-                };
-                if ui.button(preview_label).clicked() {
-                    if self.render_job.is_some() || self.preview.is_some() {
-                        self.stop_preview();
-                    } else {
-                        self.preview_project();
-                    }
-                }
-                if ui.button("About").clicked() {
-                    self.show_about = true;
-                }
-                ui.separator();
-                ui.label("Name");
-                if ui.text_edit_singleline(&mut self.project.name).changed() {
-                    self.dirty = true;
-                }
-                ui.label("BPM");
-                if ui
-                    .add(egui::DragValue::new(&mut self.project.tempo_bpm).range(1.0..=999.0))
-                    .changed()
-                {
-                    self.dirty = true;
-                }
-                ui.label("Beats/bar");
-                if ui
-                    .add(egui::DragValue::new(&mut self.project.beats_per_bar).range(1..=32))
-                    .changed()
-                {
-                    self.dirty = true;
-                }
-            });
-        });
-    }
-
     fn automation_panel(&mut self, ui: &mut egui::Ui) {
         if self.project.tracks.is_empty() {
             return;
@@ -815,158 +763,6 @@ impl StudioApp {
                     );
                 }
             });
-    }
-
-    fn track_panel(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::left("tracks")
-            .default_size(230.0)
-            .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.heading("Tracks");
-                    if ui.button("+").on_hover_text("Add track").clicked() {
-                        self.add_track();
-                    }
-                    if !self.project.tracks.is_empty() {
-                        if ui.button("-").on_hover_text("Delete track").clicked() {
-                            self.remove_selected_track();
-                        }
-                        if ui.button("Dup").on_hover_text("Duplicate track").clicked() {
-                            self.duplicate_selected_track();
-                        }
-                        if ui.button("↑").on_hover_text("Move track up").clicked() {
-                            self.move_selected_track(-1);
-                        }
-                        if ui.button("↓").on_hover_text("Move track down").clicked() {
-                            self.move_selected_track(1);
-                        }
-                    }
-                });
-                ui.separator();
-                for index in 0..self.project.tracks.len() {
-                    let track = &self.project.tracks[index];
-                    let label = format!(
-                        "{}  {} ({} notes)",
-                        if track.muted { "M" } else { " " },
-                        track.name,
-                        track.notes.len()
-                    );
-                    if ui
-                        .selectable_label(self.roll.selected_track == index, label)
-                        .clicked()
-                    {
-                        self.roll.select_track(index);
-                    }
-                }
-                ui.separator();
-                let mut open_patch_lab = false;
-                if let Some(track) = self
-                    .project
-                    .tracks
-                    .get_mut(self.roll.selected_track)
-                {
-                    ui.heading("Track settings");
-                    ui.label("Name");
-                    if ui.text_edit_singleline(&mut track.name).changed() {
-                        self.dirty = true;
-                    }
-                    ui.label("Patch (preset or relative .json)");
-                    if ui.text_edit_singleline(&mut track.patch).changed() {
-                        self.dirty = true;
-                    }
-                    if ui.button("Edit synth").clicked() {
-                        open_patch_lab = true;
-                    }
-                    ui.horizontal(|ui| {
-                        ui.label("Bend range");
-                        if ui
-                            .add(
-                                egui::DragValue::new(&mut track.pitch_bend_range_semitones)
-                                    .range(0.01..=24.0),
-                            )
-                            .changed()
-                        {
-                            self.dirty = true;
-                        }
-                    });
-                    if !track.pitch_bends.is_empty() {
-                        ui.label(format!("{} pitch-bend events", track.pitch_bends.len()));
-                    }
-                    if !track.aftertouch.is_empty() {
-                        ui.label(format!("{} aftertouch events", track.aftertouch.len()));
-                    }
-                    if !track.controllers.is_empty() {
-                        ui.label(format!("{} controller events", track.controllers.len()));
-                    }
-                    if ui
-                        .add(egui::Slider::new(&mut track.gain, 0.0..=1.0).text("Gain"))
-                        .changed()
-                    {
-                        self.dirty = true;
-                    }
-                    if ui
-                        .add(egui::Slider::new(&mut track.pan, -1.0..=1.0).text("Pan"))
-                        .changed()
-                    {
-                        self.dirty = true;
-                    }
-                    if ui.checkbox(&mut track.muted, "Muted").changed() {
-                        self.dirty = true;
-                    }
-                }
-                if open_patch_lab {
-                    self.open_patch_lab();
-                }
-                ui.separator();
-                ui.label("Click empty space to add a note. Drag notes to move them or drag the right edge to resize. Delete removes the selected note. Ctrl/Cmd+Z/Y undoes/redoes edits.");
-            });
-    }
-
-    fn note_inspector(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::bottom("note-inspector").show(ui, |ui| {
-            let Some(note_index) = self.roll.selected_note else {
-                ui.label("No note selected");
-                return;
-            };
-            let Some(note) = self
-                .project
-                .tracks
-                .get_mut(self.roll.selected_track)
-                .and_then(|track| track.notes.get_mut(note_index))
-            else {
-                self.roll.selected_note = None;
-                return;
-            };
-            let mut changed = false;
-            let mut remove = false;
-            ui.horizontal(|ui| {
-                ui.label("Note");
-                ui.label("Pitch");
-                changed |= ui
-                    .add(egui::DragValue::new(&mut note.pitch).range(0..=127))
-                    .changed();
-                ui.label("Velocity");
-                changed |= ui
-                    .add(egui::DragValue::new(&mut note.velocity).range(1..=127))
-                    .changed();
-                ui.label("Start");
-                changed |= ui.add(egui::DragValue::new(&mut note.start_tick)).changed();
-                ui.label("Duration");
-                changed |= ui
-                    .add(egui::DragValue::new(&mut note.duration_ticks).range(1..=1_000_000))
-                    .changed();
-                remove = ui.button("Delete note").clicked();
-            });
-            if changed {
-                self.dirty = true;
-            }
-            if remove {
-                self.project.tracks[self.roll.selected_track]
-                    .notes
-                    .remove(note_index);
-                self.roll.selected_note = None;
-                self.dirty = true;
-            }
-        });
     }
 
     fn poll_instance(&mut self, context: &egui::Context) {
@@ -988,55 +784,15 @@ impl StudioApp {
             context.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
     }
-
-    fn about_window(&mut self, context: &egui::Context) {
-        if !self.show_about {
-            return;
-        }
-        let splash = self.splash.clone();
-        let mut start_composing = false;
-        let mut open_project = false;
-        egui::Window::new("Welcome to MIDI Evil")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .open(&mut self.show_about)
-            .show(context, |ui| {
-                ui.image((splash.id(), egui::vec2(320.0, 192.0)));
-                ui.label("A tiny synthesizer and MIDI composer.");
-                ui.horizontal(|ui| {
-                    start_composing = ui.button("Start composing").clicked();
-                    open_project = ui.button("Open project").clicked();
-                });
-            });
-        if start_composing {
-            self.show_about = false;
-        }
-        if open_project {
-            self.show_about = false;
-            self.open_project();
-        }
-    }
-
-    fn status_bar(&self, ui: &mut egui::Ui) {
-        egui::Panel::bottom("status")
-            .exact_size(26.0)
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(if self.dirty { "●" } else { "✓" });
-                    ui.label(&self.status);
-                    if let Some(path) = &self.project_path {
-                        ui.label(RichText::new(path.display().to_string()).color(Color32::GRAY));
-                    }
-                });
-            });
-    }
 }
 
 impl eframe::App for StudioApp {
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let previous_project = self.project.clone();
-        root.ctx().set_visuals(egui::Visuals::dark());
+        // Poll background renders, audio completion and incoming launch requests while idle.
+        root.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(100));
+
         self.poll_render();
         self.poll_instance(root.ctx());
         self.shortcuts(root.ctx());
@@ -1048,26 +804,61 @@ impl eframe::App for StudioApp {
             self.preview = None;
         }
         self.toolbar(root);
-        self.note_inspector(root);
         self.status_bar(root);
-        self.automation_panel(root);
         self.track_panel(root);
-        egui::CentralPanel::default().show(root, |ui| {
-            if self.project.tracks.is_empty() {
-                ui.centered_and_justified(|ui| {
-                    ui.label("Add a track to begin composing");
-                });
-            } else {
-                let track_name = self.project.tracks[self.roll.selected_track].name.clone();
-                ui.heading(track_name);
-                if piano_roll::show(ui, &mut self.project, &mut self.roll) {
-                    self.dirty = true;
-                    self.status = "Notes edited".to_owned();
-                }
+        if self.view == View::Notes {
+            self.note_inspector(root);
+            if self.show_automation {
+                self.automation_panel(root);
             }
-        });
+        }
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(theme::BACKGROUND).inner_margin(16))
+            .show(root, |ui| {
+                if self.project.tracks.is_empty() {
+                    ui.centered_and_justified(|ui| {
+                        if ui.button("+ Add a track to begin composing").clicked() {
+                            self.add_track();
+                        }
+                    });
+                    return;
+                }
+                match self.view {
+                    View::Song => {
+                        let mut selected = self.roll.selected_track;
+                        if workspace::song(ui, &self.project, &mut selected) {
+                            self.view = View::Notes;
+                        }
+                        if selected != self.roll.selected_track {
+                            self.roll.select_track(selected);
+                        }
+                    }
+                    View::Notes => {
+                        ui.horizontal(|ui| {
+                            ui.heading(&self.project.tracks[self.roll.selected_track].name);
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.toggle_value(&mut self.show_automation, "Automation");
+                                },
+                            );
+                        });
+                        if piano_roll::show(ui, &mut self.project, &mut self.roll) {
+                            self.dirty = true;
+                            self.status = "Notes edited".to_owned();
+                        }
+                    }
+                    View::Mixer => {
+                        let mut selected = self.roll.selected_track;
+                        workspace::mixer(ui, &mut self.project, &mut selected);
+                        if selected != self.roll.selected_track {
+                            self.roll.select_track(selected);
+                        }
+                    }
+                    View::Synth => self.patch_lab_panel(ui),
+                }
+            });
         self.about_window(root.ctx());
-        self.patch_lab_window(root.ctx());
         if self.resetting_document {
             self.resetting_document = false;
         } else if previous_project != self.project {

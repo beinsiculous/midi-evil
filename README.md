@@ -82,6 +82,18 @@ cargo run -p midi-evil
 
 MIDI Evil creates, opens, edits, saves, previews, and renders `.evil` projects. Its native dependency chain contains only `evil-*` crates; Standard MIDI import/export lives in `evil-midi`, while the optional `oracle-*` compatibility tooling remains separate. It includes a track panel with add/delete/duplicate/reorder and patch/gain/pan/mute controls, a full-MIDI piano roll, a note inspector, and editable automation lanes for pitch bend, channel/polyphonic aftertouch, and arbitrary CC/RPN events. Add or drag automation points, edit exact ticks and values, and delete points with the same undo/redo history as notes. CC 1 modulation and CC 11 expression are rendered; unsupported CC/RPN events remain preserved for MIDI export and are explicitly identified as not rendered in the lane, preview, and WAV-export status.
 
+The Dr. Maxwell workspace uses charcoal/plum panels, ivory displays, red accents,
+and original Aseprite control icons. Its four tabs share the same project:
+
+- **Song** fits the complete arrangement into a track overview. Double-click a track to edit its notes.
+- **Piano Roll** has a fixed keyboard and bar ruler, note labels, and an **Automation** toggle. Bar lengths follow the imported time signature.
+- **Mixer** provides track gain faders, pan, mute, master gain, and output sample rate.
+- **Synth** opens Evil Synth with grouped voice/filter and modulation/effects panels and an amplitude-envelope display.
+
+The **Project** menu contains file/import/save commands; **Export** offers MIDI and WAV.
+**Play / Stop** controls the rendered preview and shows elapsed playback time. The
+track rack and inspectors scroll independently in smaller windows.
+
 Ctrl/Cmd+N/O/S handles new/open/save, Ctrl/Cmd+Z/Y handles undo/redo, Space toggles preview, and New/Open/Import confirms before discarding unsaved work. Click empty space to add a note, drag notes to move them, drag the right edge to resize, and press Delete to remove the selected note. **Render WAV** uses the same shared `evil-render` engine as the CLI and produces a stereo mix with the project's embedded patches and mix settings. Preview and WAV rendering run on a worker thread; New/Open/Import cancels stale jobs. **Export MIDI** writes an engine-compatible `.mid`, while **Save** also updates the original MIDI file for imported songs.
 
 Launch it directly with a MIDI file and optional engine hints:
@@ -92,7 +104,7 @@ midi-evil [--project <dir>] [--track <name>] <file.mid>
 
 A second invocation forwards its file/track/project options to the running instance and focuses it. `--project` supplies dialog and relative-path hints; `--track` selects the exact track name without changing it.
 
-**Import MIDI** converts a Standard MIDI File into an editable native document. **Preview** renders the current project and plays it through the default audio device; **Stop** ends playback. Opening, replacing, or previewing another project stops the previous preview. These controls use the same note and tempo-map conversion as the CLI.
+**Import MIDI** converts a Standard MIDI File into an editable native document. **Play** renders the current project and plays it through the default audio device; **Stop** ends playback. Opening, replacing, or previewing another project stops the previous preview. These controls use the same note and tempo-map conversion as the CLI.
 
 A public-domain example is included at `examples/public-domain/bach-invention-02/bach-invention-02.mid`. It is Bach's Invention No. 2 in C minor, BWV 773, downloaded from the Mutopia Project, whose entry marks it “Public Domain / CC: No rights reserved.” See `examples/public-domain/bach-invention-02/SOURCE.md` for the source URL, dedication text, and checksum.
 
@@ -102,6 +114,8 @@ Dr. Maxwell is the app logo and mascot, with a dedicated MIDI Evil icon and full
 - `crates/midi-evil/assets/midi-evil-icon.png`
 - `crates/midi-evil/assets/midi-evil-splash.aseprite`
 - `crates/midi-evil/assets/midi-evil-splash.png`
+- `crates/midi-evil/assets/maxwell-controls.aseprite`
+- `crates/midi-evil/assets/maxwell-controls.png`
 - `crates/midi-evil/assets/SOURCE.md`
 
 Re-export the app images in Aseprite without using any NanoStudio artwork:
@@ -200,7 +214,7 @@ The `evil-synth` engine generates audio from oscillators, pitch sweeps, ADSR env
 
 ### Evil Synth instrument editor
 
-Use **Edit synth** on a track to open the instrument editor. It supports multiple oscillators, waveform selection (including an optional naive square), frequency sweeps, detune, pulse width, oscillator sync, gain-normalized unison voices, ADSR, resonant filters with envelope modulation and slope/key tracking, and up to eight LFO lanes for pitch/pulse-width/sync-ratio/filter-cutoff/amplitude modulation and LFO-to-LFO rate modulation, with mono or stereo-cross feedback delay. **New**, **Open**, **Duplicate**, **Reset**, and **Save As** manage presets without changing the original file; **Audition** plays the current unsaved patch at middle C without modifying the project. Save a custom JSON patch to assign it to the editor's original track; its relative path and optional General MIDI `midi_program` are preserved in the project.
+Use **Open Evil Synth** on a track or the **Synth** tab to open the instrument editor. It supports multiple oscillators, waveform selection (including an optional naive square), frequency sweeps, detune, pulse width, oscillator sync, gain-normalized unison voices, ADSR, resonant filters with envelope modulation and slope/key tracking, and up to eight LFO lanes for pitch/pulse-width/sync-ratio/filter-cutoff/amplitude modulation and LFO-to-LFO rate modulation, with mono or stereo-cross feedback delay. **New**, **Open**, **Duplicate**, **Reset**, and **Save As** manage presets without changing the original file; **Audition** plays the current unsaved patch at middle C without modifying the project. Save a custom JSON patch to assign it to the editor's original track; its relative path and optional General MIDI `midi_program` are preserved in the project.
 
 The built-in `nasty` preset recreates the character of NanoStudio's A17.Nasty using original synthesis: reference-matched 1.25 oscillator sync and middle-C tuning, independent vibrato, saw-up/saw-down sync-ratio LFO lanes, square-wave LFO4-to-LFO3 rate modulation, a near-open 24 dB key-tracked low-pass filter, and 20% wet stereo-cross delay with reference-calibrated timing and feedback. It uses no copied samples or original NanoStudio audio. The source preset's Hard waveshaper is bypassed and is therefore not needed in the recreation. Mono-only CLI renders fold the delay down to a mono feedback delay; desktop preview and stereo project/mix renders preserve the stereo routing. Full-bar comparison against NanoStudio now closely matches held-note RMS, spectral centroid, and the late delay tail, but oscillator/LFO/envelope behavior is still approximate; see `docs/a17-nasty.md` for measurements and remaining differences.
 

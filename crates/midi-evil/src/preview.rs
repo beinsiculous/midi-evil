@@ -28,6 +28,10 @@ impl PreviewPlayer {
     pub fn is_finished(&self) -> bool {
         self.player.empty()
     }
+
+    pub fn position(&self) -> Duration {
+        self.player.get_pos()
+    }
 }
 
 struct StereoSource {

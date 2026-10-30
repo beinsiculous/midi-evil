@@ -1,6 +1,8 @@
 use std::path::Path;
 
+use crate::theme;
 use eframe::egui::{self, ComboBox, DragValue, Ui};
+
 use evil_synth::{Delay, DelayMode, FilterMode, Lfo, LfoDestination, LfoWaveform, Patch, Waveform};
 
 pub struct PatchLab {
@@ -8,6 +10,7 @@ pub struct PatchLab {
     pub file_name: String,
     pub track_index: usize,
     original_patch: Patch,
+    modulation_page: bool,
 }
 
 impl PatchLab {
@@ -17,6 +20,7 @@ impl PatchLab {
             patch,
             file_name,
             track_index,
+            modulation_page: false,
         }
     }
 
@@ -51,20 +55,76 @@ fn duplicate_file_name(file_name: &str) -> String {
         .into_owned()
 }
 
-pub fn show(ui: &mut Ui, patch: &mut Patch) {
-    ui.horizontal(|ui| {
+pub fn show(ui: &mut Ui, lab: &mut PatchLab) {
+    ui.horizontal_wrapped(|ui| {
+        ui.selectable_value(&mut lab.modulation_page, false, "VOICE & FILTER");
+        ui.selectable_value(&mut lab.modulation_page, true, "MODULATION & FX");
+        ui.label(
+            egui::RichText::new("Save As assigns the patch to its track")
+                .small()
+                .color(theme::MUTED),
+        );
+    });
+    ui.add_space(8.0);
+    let patch = &mut lab.patch;
+    theme::section(ui, "PRESET / OUTPUT", theme::IVORY, |ui| {
+        show_output(ui, patch);
+    });
+    ui.add_space(10.0);
+    if ui.available_width() >= 750.0 {
+        ui.columns(2, |columns| {
+            if lab.modulation_page {
+                theme::section(&mut columns[0], "01 / MODULATION", theme::PURPLE, |ui| {
+                    show_motion(ui, patch)
+                });
+                theme::section(&mut columns[1], "02 / EFFECTS", theme::GREEN, |ui| {
+                    show_effects(ui, patch)
+                });
+            } else {
+                theme::section(&mut columns[0], "01 / OSCILLATOR BANK", theme::RED, |ui| {
+                    show_voice(ui, patch)
+                });
+                theme::section(
+                    &mut columns[1],
+                    "02 / ENVELOPE & FILTER",
+                    theme::IVORY,
+                    |ui| show_shape(ui, patch),
+                );
+            }
+        });
+    } else if lab.modulation_page {
+        theme::section(ui, "01 / MODULATION", theme::PURPLE, |ui| {
+            show_motion(ui, patch)
+        });
+        ui.add_space(10.0);
+        theme::section(ui, "02 / EFFECTS", theme::GREEN, |ui| {
+            show_effects(ui, patch)
+        });
+    } else {
+        theme::section(ui, "01 / OSCILLATOR BANK", theme::RED, |ui| {
+            show_voice(ui, patch)
+        });
+        ui.add_space(10.0);
+        theme::section(ui, "02 / ENVELOPE & FILTER", theme::IVORY, |ui| {
+            show_shape(ui, patch)
+        });
+    }
+}
+
+fn show_output(ui: &mut Ui, patch: &mut Patch) {
+    ui.horizontal_wrapped(|ui| {
         ui.label("Patch name");
-        ui.text_edit_singleline(&mut patch.name);
+        ui.add(egui::TextEdit::singleline(&mut patch.name).desired_width(200.0));
         ui.label("Sample rate");
         ui.add(DragValue::new(&mut patch.sample_rate).range(8_000..=192_000));
     });
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.add(egui::Slider::new(&mut patch.gain, 0.0..=1.0).text("Gain"));
         ui.checkbox(&mut patch.pitch_tracking, "Pitch tracking");
         ui.label("Duration");
         ui.add(DragValue::new(&mut patch.duration_seconds).range(0.001..=60.0));
     });
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         let mut has_program = patch.midi_program.is_some();
         if ui
             .checkbox(&mut has_program, "General MIDI program")
@@ -78,49 +138,55 @@ pub fn show(ui: &mut Ui, patch: &mut Patch) {
         ui.label("Bend range");
         ui.add(DragValue::new(&mut patch.pitch_bend_range_semitones).range(0.01..=24.0));
     });
+}
 
+fn show_voice(ui: &mut Ui, patch: &mut Patch) {
     ui.heading("Oscillators");
     for (index, oscillator) in patch.oscillators.iter_mut().enumerate() {
-        ui.collapsing(format!("Oscillator {}", index + 1), |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Waveform");
-                ComboBox::from_id_salt(("waveform", index))
-                    .selected_text(format!("{:?}", oscillator.waveform))
-                    .show_ui(ui, |ui| {
-                        for (label, waveform) in [
-                            ("Sine", Waveform::Sine),
-                            ("Square", Waveform::Square),
-                            ("Square (naive)", Waveform::SquareNaive),
-                            ("Saw", Waveform::Saw),
-                            ("Triangle", Waveform::Triangle),
-                            ("Noise", Waveform::Noise),
-                        ] {
-                            ui.selectable_value(&mut oscillator.waveform, waveform, label);
-                        }
-                    });
-                ui.label("Amplitude");
-                ui.add(egui::Slider::new(&mut oscillator.amplitude, 0.0..=1.0));
+        egui::CollapsingHeader::new(format!("Oscillator {}", index + 1))
+            .default_open(true)
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Waveform");
+                    ComboBox::from_id_salt(("waveform", index))
+                        .selected_text(format!("{:?}", oscillator.waveform))
+                        .show_ui(ui, |ui| {
+                            for (label, waveform) in [
+                                ("Sine", Waveform::Sine),
+                                ("Square", Waveform::Square),
+                                ("Square (naive)", Waveform::SquareNaive),
+                                ("Saw", Waveform::Saw),
+                                ("Triangle", Waveform::Triangle),
+                                ("Noise", Waveform::Noise),
+                            ] {
+                                ui.selectable_value(&mut oscillator.waveform, waveform, label);
+                            }
+                        });
+                    ui.label("Amplitude");
+                    ui.add(egui::Slider::new(&mut oscillator.amplitude, 0.0..=1.0));
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Start Hz");
+                    ui.add(
+                        DragValue::new(&mut oscillator.start_frequency_hz).range(0.01..=24_000.0),
+                    );
+                    ui.label("End Hz");
+                    ui.add(DragValue::new(&mut oscillator.end_frequency_hz).range(0.01..=24_000.0));
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Detune cents");
+                    ui.add(DragValue::new(&mut oscillator.detune_cents).range(-2_400..=2_400));
+                    if matches!(
+                        oscillator.waveform,
+                        Waveform::Square | Waveform::SquareNaive
+                    ) {
+                        ui.label("Pulse width");
+                        ui.add(egui::Slider::new(&mut oscillator.pulse_width, 0.01..=0.99));
+                    }
+                });
             });
-            ui.horizontal(|ui| {
-                ui.label("Start Hz");
-                ui.add(DragValue::new(&mut oscillator.start_frequency_hz).range(0.01..=24_000.0));
-                ui.label("End Hz");
-                ui.add(DragValue::new(&mut oscillator.end_frequency_hz).range(0.01..=24_000.0));
-            });
-            ui.horizontal(|ui| {
-                ui.label("Detune cents");
-                ui.add(DragValue::new(&mut oscillator.detune_cents).range(-2_400..=2_400));
-                if matches!(
-                    oscillator.waveform,
-                    Waveform::Square | Waveform::SquareNaive
-                ) {
-                    ui.label("Pulse width");
-                    ui.add(egui::Slider::new(&mut oscillator.pulse_width, 0.01..=0.99));
-                }
-            });
-        });
     }
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         if patch.oscillators.len() < 8 && ui.button("Add oscillator").clicked() {
             patch.oscillators.push(Default::default());
         }
@@ -144,15 +210,18 @@ pub fn show(ui: &mut Ui, patch: &mut Patch) {
         patch.unison = unison_enabled.then(Default::default);
     }
     if let Some(unison) = &mut patch.unison {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label("Voices");
             ui.add(DragValue::new(&mut unison.voices).range(1..=8));
             ui.add(egui::Slider::new(&mut unison.detune_cents, 0.0..=100.0).text("Detune cents"));
         });
     }
+}
 
-    ui.heading("Envelope");
-    ui.horizontal(|ui| {
+fn show_shape(ui: &mut Ui, patch: &mut Patch) {
+    envelope_plot(ui, patch);
+    theme::label(ui, "AMPLITUDE ENVELOPE");
+    ui.horizontal_wrapped(|ui| {
         ui.label("Attack");
         ui.add(DragValue::new(&mut patch.envelope.attack_seconds).range(0.0..=60.0));
         ui.label("Decay");
@@ -172,7 +241,7 @@ pub fn show(ui: &mut Ui, patch: &mut Patch) {
         patch.filter = filter_enabled.then(Default::default);
     }
     if let Some(filter) = &mut patch.filter {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label("Cutoff Hz");
             ui.add(DragValue::new(&mut filter.cutoff_hz).range(1.0..=100_000.0));
             ui.label("Envelope octaves");
@@ -184,14 +253,16 @@ pub fn show(ui: &mut Ui, patch: &mut Patch) {
                 ui.selectable_value(&mut filter.mode, FilterMode::LowPass, "Low-pass");
                 ui.selectable_value(&mut filter.mode, FilterMode::HighPass, "High-pass");
             });
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label("Slope stages");
             ui.add(DragValue::new(&mut filter.stages).range(1..=4));
             ui.add(egui::Slider::new(&mut filter.resonance, 0.0..=1.0).text("Resonance"));
             ui.checkbox(&mut filter.key_tracking, "Track keys");
         });
     }
+}
 
+fn show_motion(ui: &mut Ui, patch: &mut Patch) {
     ui.heading("LFO modulation");
     let mut remove_lfo = None;
     for index in 0..patch.lfo_count() {
@@ -210,14 +281,16 @@ pub fn show(ui: &mut Ui, patch: &mut Patch) {
     if let Some(index) = remove_lfo {
         patch.remove_lfo(index);
     }
+}
 
+fn show_effects(ui: &mut Ui, patch: &mut Patch) {
     ui.heading("Delay");
     let mut delay_enabled = patch.delay.is_some();
     if ui.checkbox(&mut delay_enabled, "Enable delay").changed() {
         patch.delay = delay_enabled.then_some(Delay::default());
     }
     if let Some(delay) = &mut patch.delay {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label("Seconds");
             ui.add(DragValue::new(&mut delay.time_seconds).range(0.001..=2.0));
             ui.add(egui::Slider::new(&mut delay.feedback, 0.0..=0.95).text("Feedback"));
@@ -232,8 +305,40 @@ pub fn show(ui: &mut Ui, patch: &mut Patch) {
     }
 }
 
+fn envelope_plot(ui: &mut Ui, patch: &Patch) {
+    let (response, painter) =
+        ui.allocate_painter(egui::vec2(ui.available_width(), 88.0), egui::Sense::hover());
+    let rect = response.rect;
+    painter.rect_filled(rect, 3.0, theme::BACKGROUND);
+    let plot = rect.shrink(12.0);
+    let envelope = &patch.envelope;
+    let hold = 0.25;
+    let total =
+        (envelope.attack_seconds + envelope.decay_seconds + hold + envelope.release_seconds)
+            .max(0.01);
+    let point = |t: f32, level: f32| {
+        egui::pos2(
+            plot.left() + t / total * plot.width(),
+            plot.bottom() - level * plot.height(),
+        )
+    };
+    let sustain_at = envelope.attack_seconds + envelope.decay_seconds;
+    let points = vec![
+        point(0.0, 0.0),
+        point(envelope.attack_seconds, 1.0),
+        point(sustain_at, envelope.sustain_level),
+        point(sustain_at + hold, envelope.sustain_level),
+        point(total, 0.0),
+    ];
+    painter.add(egui::Shape::line(
+        points,
+        egui::Stroke::new(2.0, theme::IVORY),
+    ));
+    response.on_hover_text("Amplitude envelope · A / D / S / R (sustain shown for 250 ms)");
+}
+
 fn show_lfo(ui: &mut Ui, lfo: &mut Lfo, index: usize) {
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ComboBox::from_id_salt(("lfo-destination", index))
             .selected_text(format!("{:?}", lfo.destination))
             .show_ui(ui, |ui| {
@@ -266,7 +371,7 @@ fn show_lfo(ui: &mut Ui, lfo: &mut Lfo, index: usize) {
                 ui.selectable_value(&mut lfo.waveform, LfoWaveform::Square, "Square");
             });
     });
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label("Rate Hz");
         ui.add(DragValue::new(&mut lfo.rate_hz).range(0.0..=100.0));
         match lfo.destination {

@@ -2,13 +2,14 @@ use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
 use evil_project::{Aftertouch, ControllerEvent, PitchBend, Track};
 
 use crate::piano_roll::{self, RollState};
+use crate::theme;
 
 const LANE_HEIGHT: f32 = 104.0;
 const POINT_RADIUS: f32 = 4.0;
 const HIT_RADIUS: f32 = 9.0;
-const GRID_COLOR: Color32 = Color32::from_rgb(38, 51, 60);
-const LINE_COLOR: Color32 = Color32::from_rgb(54, 190, 180);
-const SELECTED_COLOR: Color32 = Color32::from_rgb(255, 170, 76);
+const GRID_COLOR: Color32 = theme::BORDER;
+const LINE_COLOR: Color32 = theme::PURPLE;
+const SELECTED_COLOR: Color32 = theme::IVORY;
 const WARNING_COLOR: Color32 = Color32::from_rgb(255, 190, 90);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,11 +113,17 @@ pub fn show(
             ),
         );
     }
-    ui.label("Click: add/select · Drag: move · Delete: remove · Shares piano-roll zoom");
+    ui.label(
+        egui::RichText::new(
+            "Click to add · Drag to move · Delete to remove · Shares piano-roll zoom",
+        )
+        .small()
+        .color(theme::MUTED),
+    );
 
     let ticks_per_quarter = project.ticks_per_quarter.max(1);
     let beat = u64::from(ticks_per_quarter);
-    let bar = beat * u64::from(project.beats_per_bar.max(1));
+    let bar = piano_roll::bar_ticks(project);
     let snap = (beat / 4).max(1);
     let timeline_ticks =
         piano_roll::timeline_ticks(&project.tracks[track_index], ticks_per_quarter);
@@ -166,7 +173,7 @@ pub fn render_status(status: String, unsupported_controller_events: usize) -> St
 
 fn show_lane_controls(ui: &mut egui::Ui, state: &mut AutomationState) {
     ui.horizontal_wrapped(|ui| {
-        ui.label("Lane");
+        theme::label(ui, "AUTOMATION");
         let previous_lane = state.lane;
         egui::ComboBox::from_id_salt("automation-lane")
             .selected_text(state.lane.label())
@@ -224,7 +231,7 @@ fn show_lane(
     let size = Vec2::new(timeline_ticks as f32 * pixels_per_tick, LANE_HEIGHT);
     let (response, painter) = ui.allocate_painter(size, egui::Sense::click_and_drag());
     let rect = response.rect;
-    painter.rect_filled(rect, 0.0, Color32::from_rgb(12, 18, 24));
+    painter.rect_filled(rect, 0.0, theme::BACKGROUND);
     draw_grid(
         &painter,
         rect,
