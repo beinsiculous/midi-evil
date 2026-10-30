@@ -1,0 +1,12 @@
+[package]
+name = "evil-render"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+evil-project = { path = "../evil-project", version = "0.1.0" }
+evil-synth = { path = "../evil-synth", version = "0.1.0" }
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"

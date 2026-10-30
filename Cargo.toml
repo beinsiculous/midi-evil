@@ -1,0 +1,13 @@
+[workspace]
+members = [
+    "crates/oracle",
+    "crates/oracle-format",
+    "crates/oracle-midi",
+    "crates/evil-midi",
+    "crates/evil-synth",
+    "crates/evil-performance",
+    "crates/evil-project",
+    "crates/evil-render",
+    "crates/midi-evil",
+]
+resolver = "3"

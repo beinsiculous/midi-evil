@@ -1,0 +1,50 @@
+mod delay;
+mod envelope;
+mod filter;
+mod lfo;
+mod mix;
+mod oscillator;
+mod patch;
+mod presets;
+mod render;
+mod sync;
+mod unison;
+mod wav;
+
+pub use delay::{Delay, DelayMode};
+pub use envelope::Envelope;
+pub use filter::{Filter, FilterMode};
+pub use lfo::{Lfo, LfoDestination, LfoWaveform};
+pub use mix::{MonoTrack, StereoSound, mix_stereo};
+pub use oscillator::{Oscillator, Waveform};
+pub use patch::Patch;
+pub use presets::{PRESET_NAMES, preset};
+pub use render::{
+    RenderedSound, SynthAftertouch, SynthController, SynthNote, SynthPitchBend, render,
+    render_notes, render_notes_dry, render_notes_dry_with_automation,
+    render_notes_dry_with_full_automation, render_notes_dry_with_pitch_bend,
+    render_notes_with_automation, render_notes_with_full_automation, render_notes_with_pitch_bend,
+};
+pub use sync::OscillatorSync;
+use thiserror::Error;
+pub use unison::Unison;
+
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("invalid synth patch: {0}")]
+    InvalidPatch(String),
+    #[error("invalid note at index {index}: {message}")]
+    InvalidNote { index: usize, message: String },
+    #[error("invalid pitch-bend automation: {0}")]
+    InvalidAutomation(String),
+    #[error("performance exceeds the maximum render length of one hour")]
+    PerformanceTooLong,
+    #[error("invalid stereo mix: {0}")]
+    InvalidMix(String),
+    #[error("unknown synth preset: {0}")]
+    UnknownPreset(String),
+    #[error("could not read synth patch JSON: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("could not write WAV audio: {0}")]
+    Wav(#[from] hound::Error),
+}

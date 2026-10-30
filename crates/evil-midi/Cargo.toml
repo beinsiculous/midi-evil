@@ -1,0 +1,14 @@
+[package]
+name = "evil-midi"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+midly = "0.5"
+evil-performance = { path = "../evil-performance", version = "0.1.0" }
+evil-project = { path = "../evil-project", version = "0.1.0" }
+evil-render = { path = "../evil-render", version = "0.1.0" }
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"

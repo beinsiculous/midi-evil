@@ -1,0 +1,35 @@
+# Rust and generated build output
+/target/
+**/*.rs.bk
+*.tmp
+*.new.prev
+*.log
+
+# Editors and local tooling
+.idea/
+.vscode/
+.DS_Store
+
+# NanoStudio packages and instrument banks (compatibility fixtures stay local)
+*.nsp
+*.prj
+Package.prj
+Package.sng
+*.bnk
+
+# Engine-owned sidecars; MIDI Evil must not create these
+*.mid.ron
+
+# Generated audio and local project artifacts
+*.wav
+/song.rmp
+/song.wav
+/Minimal-copy.nsp
+/Minimal.prj/
+
+# Native .evil projects and public-domain .mid files are intentionally tracked.
+# Cargo.lock is kept for reproducible application builds.
+
+oracle
+oracle-format
+oracle-midi
