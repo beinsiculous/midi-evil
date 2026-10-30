@@ -42,6 +42,7 @@ Living tracker for planned native features and follow-up fixes. NanoStudio backp
   - Add polyphonic/chord transcription as a later stage with voice separation, ambiguous-note review, and manual editing.
   - Match native patches by comparing rendered candidates with the source, then render the recovered arrangement for iterative A/B listening.
   - Export `.evil` and Standard MIDI with source-audio provenance. Recovered projects are editable approximations, not exact replacements for lost master files.
+  - Progress (2026-10-30): created `evil-recovery` with PCM WAV loading, activity/onset detection, tempo candidates, JSON inspection, and quantized `.evil` draft generation with tempo/grid overrides. Generated validated onset projects for Dreams (110 BPM), Foolish Thoughts (120 BPM), and The Dagobah Vision (140 BPM) under `target/recovery/`. Spectrogram review, loop detection, pitch tracking, and patch matching remain open.
 
 ## Packaging and release
 

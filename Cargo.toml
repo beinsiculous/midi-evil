@@ -5,6 +5,7 @@ members = [
     "crates/evil-synth",
     "crates/evil-performance",
     "crates/evil-project",
+    "crates/evil-recovery",
     "crates/evil-render",
     "crates/midi-evil",
 ]

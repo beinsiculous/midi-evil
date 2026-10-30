@@ -25,6 +25,7 @@ cargo publish -p evil-performance
 cargo publish -p evil-synth
 cargo publish -p evil-beats
 cargo publish -p evil-project
+cargo publish -p evil-recovery
 cargo publish -p evil-render
 cargo publish -p evil-midi
 cargo publish -p midi-evil
@@ -155,7 +156,14 @@ cargo run --manifest-path compat/Cargo.toml -p oracle -- synth render-mix input.
 
 ## Assisted WAV recovery
 
-The roadmap includes a native workflow for rebuilding editable songs from user-owned WAV exports: waveform/spectrogram inspection, tempo and loop detection, drum onsets, bass/lead pitch tracking, confidence-based note editing, patch matching, and A/B rendering. Clear loops and monophonic parts are the initial targets; dense polyphonic mixes will require more manual correction. Recovered `.evil` projects and MIDI files are editable approximations, not exact master restores.
+The native `evil-recovery` crate and CLI analyze user-owned WAVs and emit JSON reports and editable `.evil` onset drafts. Reports include duration, active range, peak/RMS, all detected onsets, and three tempo candidates. Drafts quantize onsets into a reviewable guide track; they are not claims that every onset is a drum note or a complete transcription.
+
+```bash
+cargo run -p evil-recovery -- inspect Dreams.wav
+cargo run -p evil-recovery -- draft Dreams.wav dreams.evil --bpm 110 --grid 16
+```
+
+`--bpm` overrides the top tempo candidate, and `--grid` accepts 1, 2, 4, 8, 16, or 32. The current native projects for **Dreams**, **Foolish Thoughts**, and **The Dagobah Vision** are under `target/recovery/`. Waveform/spectrogram inspection, loop detection, bass/lead pitch tracking, confidence-based editing, patch matching, and A/B rendering remain staged work. Recovered projects are editable approximations, not exact master restores.
 
 ## Original synth and sound effects
 

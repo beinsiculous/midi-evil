@@ -87,6 +87,7 @@ cargo run --manifest-path compat/Cargo.toml -p oracle -- project render song.evi
 | `evil-synth` | Oscillators, pitch sweeps, ADSR envelopes, filters, deterministic noise, polyphony, stereo mixing, and WAV writing. |
 | `evil-beats` | Original sample-pad and TRG-style drum voices with tuning, velocity, gate/release envelopes, and overlapping-hit rendering. Independent of NanoStudio compatibility code. |
 | `evil-render` | Shared native-project renderer and patch loader used by both CLI and GUI. Resolves preset names and relative JSON patch paths, then produces a stereo mix. |
+| `evil-recovery` | Assisted WAV analysis and reconstruction: PCM loading, activity/onset detection, tempo candidates, and quantized native `.evil` drafts with JSON reports. |
 | `oracle-format` | Reverse-engineered `Package.prj` / `Package.sng` parsing and serialization plus safe `.nsp` archive handling. Treat this as a compatibility/validation oracle, not the native architecture. |
 | `oracle-midi` | NanoStudio timeline expansion and compatibility MIDI export. Reuses `evil-midi` for Standard MIDI interchange but remains outside the native desktop dependency chain. |
 
