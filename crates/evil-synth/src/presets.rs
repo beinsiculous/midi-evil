@@ -1,6 +1,6 @@
 use crate::{
     Delay, DelayMode, Envelope, Error, Filter, FilterMode, Lfo, LfoDestination, LfoWaveform,
-    Oscillator, OscillatorSync, Patch, Waveform,
+    ModalPartial, Oscillator, OscillatorSync, Patch, Waveform,
 };
 
 pub const PRESET_NAMES: &[&str] = &[
@@ -13,6 +13,7 @@ pub const PRESET_NAMES: &[&str] = &[
     "lead",
     "nasty",
     "nano-303",
+    "glocken",
     "bass",
     "pad",
 ];
@@ -91,7 +92,7 @@ pub fn preset(name: &str) -> Result<Patch, Error> {
         // The dry reference matches a 1.25 base ratio and an almost-open filter;
         // tuning, gain, and delay are calibrated against the full-bar render.
         "nasty" => Patch {
-            name: "A17 Nasty".to_owned(),
+            name: "Max Nasty".to_owned(),
             duration_seconds: 0.35,
             gain: 0.34,
             midi_program: Some(80),
@@ -167,7 +168,7 @@ pub fn preset(name: &str) -> Result<Patch, Error> {
         },
         // Original 303-style architecture; reference captures will drive calibration.
         "nano-303" => Patch {
-            name: "B14 Nano-303".to_owned(),
+            name: "Evil-303".to_owned(),
             duration_seconds: 0.4,
             gain: 0.45,
             midi_program: Some(38),
@@ -190,6 +191,47 @@ pub fn preset(name: &str) -> Result<Patch, Error> {
                 stages: 4,
                 key_tracking: true,
             }),
+            ..Patch::default()
+        },
+        "glocken" => Patch {
+            name: "GlockenBlocks".to_owned(),
+            duration_seconds: 1.2,
+            gain: 0.45,
+            midi_program: Some(14),
+            oscillators: vec![oscillator(Waveform::Sine, 440.0, 440.0, 0.25)],
+            envelope: Envelope {
+                attack_seconds: 0.001,
+                decay_seconds: 0.2,
+                sustain_level: 0.8,
+                release_seconds: 4.0,
+            },
+            modal_partials: vec![
+                ModalPartial {
+                    ratio: 1.0,
+                    amplitude: 0.7,
+                    decay_seconds: 4.0,
+                },
+                ModalPartial {
+                    ratio: 2.76,
+                    amplitude: 0.45,
+                    decay_seconds: 3.0,
+                },
+                ModalPartial {
+                    ratio: 5.4,
+                    amplitude: 0.28,
+                    decay_seconds: 2.2,
+                },
+                ModalPartial {
+                    ratio: 8.93,
+                    amplitude: 0.16,
+                    decay_seconds: 1.4,
+                },
+                ModalPartial {
+                    ratio: 13.34,
+                    amplitude: 0.1,
+                    decay_seconds: 0.8,
+                },
+            ],
             ..Patch::default()
         },
         "bass" => Patch {

@@ -16,6 +16,7 @@ pub(crate) struct VoiceState {
     oscillators: Vec<Vec<OscillatorState>>,
     filter: FilterState,
     sync_phase: f32,
+    modal_phases: Vec<f32>,
 }
 
 impl VoiceState {
@@ -44,6 +45,7 @@ impl VoiceState {
                 .collect(),
             filter: FilterState::default(),
             sync_phase: 0.0,
+            modal_phases: vec![0.0; patch.modal_partials.len()],
         }
     }
 
@@ -118,6 +120,15 @@ impl VoiceState {
                     }
                 }
             }
+        }
+        let fundamental = patch.oscillators[0].frequency(sweep_progress, pitch_multiplier);
+        for (index, partial) in patch.modal_partials.iter().enumerate() {
+            let frequency = fundamental * partial.ratio;
+            let phase = self.modal_phases[index];
+            sample += (phase * 2.0 * std::f32::consts::PI).sin()
+                * partial.amplitude
+                * (-time / partial.decay_seconds).exp();
+            self.modal_phases[index] = (phase + frequency / sample_rate as f32).fract();
         }
         if let Some(filter) = &patch.filter {
             sample = filter.process(

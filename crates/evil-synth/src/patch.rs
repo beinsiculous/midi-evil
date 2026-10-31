@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Delay, Envelope, Error, Filter, Lfo, LfoDestination, Oscillator, OscillatorSync, Unison,
+    Delay, Envelope, Error, Filter, Lfo, LfoDestination, ModalPartial, Oscillator, OscillatorSync,
+    Unison,
 };
 
 const MAX_DURATION_SECONDS: f32 = 60.0;
@@ -29,6 +30,8 @@ pub struct Patch {
     pub accent_gain: f32,
     pub seed: u32,
     pub oscillators: Vec<Oscillator>,
+    /// Independently decaying inharmonic partials for modal instruments.
+    pub modal_partials: Vec<ModalPartial>,
     pub sync: Option<OscillatorSync>,
     pub unison: Option<Unison>,
     pub envelope: Envelope,
@@ -56,6 +59,7 @@ impl Default for Patch {
             accent_gain: 0.0,
             seed: 0x5255_5354,
             oscillators: vec![Oscillator::default()],
+            modal_partials: Vec::new(),
             sync: None,
             unison: None,
             envelope: Envelope::default(),
@@ -191,6 +195,12 @@ impl Patch {
             }
         }
 
+        if self.modal_partials.len() > 16 {
+            return Err(invalid("a patch supports at most 16 modal partials"));
+        }
+        for partial in &self.modal_partials {
+            partial.validate()?;
+        }
         if let Some(sync) = &self.sync {
             sync.validate()?;
         }

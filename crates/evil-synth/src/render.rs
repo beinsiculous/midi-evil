@@ -630,8 +630,8 @@ fn soft_limit(samples: &mut [f32]) {
 mod tests {
     use super::*;
     use crate::{
-        Filter, Lfo, LfoDestination, LfoWaveform, Oscillator, OscillatorSync, PRESET_NAMES, Unison,
-        Waveform, preset,
+        Filter, Lfo, LfoDestination, LfoWaveform, ModalPartial, Oscillator, OscillatorSync,
+        PRESET_NAMES, Unison, Waveform, preset,
     };
 
     #[test]
@@ -788,6 +788,41 @@ mod tests {
         .samples;
         assert_ne!(baseline, also_baseline);
         assert_ne!(loud, also_baseline);
+    }
+
+    #[test]
+    fn modal_partials_decay_independently() {
+        let patch = Patch {
+            duration_seconds: 1.0,
+            oscillators: vec![Oscillator {
+                amplitude: 0.0,
+                ..Oscillator::default()
+            }],
+            modal_partials: vec![
+                ModalPartial {
+                    ratio: 1.0,
+                    amplitude: 1.0,
+                    decay_seconds: 0.05,
+                },
+                ModalPartial {
+                    ratio: 2.0,
+                    amplitude: 0.5,
+                    decay_seconds: 0.2,
+                },
+            ],
+            ..Patch::default()
+        };
+        let sound = render(&patch).unwrap();
+        let early = sound.samples[..2_400]
+            .iter()
+            .map(|sample| sample * sample)
+            .sum::<f32>();
+        let late = sound.samples[24_000..]
+            .iter()
+            .map(|sample| sample * sample)
+            .sum::<f32>();
+        assert!(early > late);
+        assert!(late > 0.0);
     }
 
     #[test]
