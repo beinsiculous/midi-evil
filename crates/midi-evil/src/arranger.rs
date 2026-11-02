@@ -19,12 +19,16 @@ pub fn show(
     roll: &mut RollState,
     transport: &mut Transport,
     playhead_tick: u64,
+    allow_structural_edits: bool,
 ) -> SongResult {
     let mut result = SongResult::default();
     let bar = piano_roll::bar_ticks(project);
     ui.horizontal_wrapped(|ui| {
         ui.heading("Arranger");
-        if ui.button("+ Pattern part").clicked() {
+        if ui
+            .add_enabled(allow_structural_edits, egui::Button::new("+ Pattern part"))
+            .clicked()
+        {
             let pattern_index = project.patterns.len();
             let pattern = Pattern {
                 name: format!("Pattern {}", pattern_index + 1),
@@ -50,7 +54,10 @@ pub fn show(
                 Err(error) => result.status = Some(error.to_string()),
             }
         }
-        if ui.button("Duplicate loop").clicked() {
+        if ui
+            .add_enabled(allow_structural_edits, egui::Button::new("Duplicate loop"))
+            .clicked()
+        {
             match project.duplicate_section(transport.start_tick, transport.end_tick) {
                 Ok(copied) => {
                     result.status = Some(format!(
@@ -70,7 +77,14 @@ pub fn show(
                 .color(theme::MUTED),
         );
     });
-    part_inspector(ui, project, roll, transport, &mut result);
+    part_inspector(
+        ui,
+        project,
+        roll,
+        transport,
+        &mut result,
+        allow_structural_edits,
+    );
     ui.add_space(8.0);
 
     let ticks = project
@@ -249,7 +263,7 @@ pub fn show(
                         "{} · {} ticks · drag to move; use the inspector to crop",
                         pattern.name, part.length_ticks
                     ));
-                    if part_response.drag_stopped() {
+                    if allow_structural_edits && part_response.drag_stopped() {
                         let delta = part_response.drag_delta().x / pixels_per_tick;
                         if delta.abs() >= 1.0 {
                             let start =
@@ -300,6 +314,7 @@ fn part_inspector(
     roll: &mut RollState,
     transport: &mut Transport,
     result: &mut SongResult,
+    allow_structural_edits: bool,
 ) {
     let Some(part) = roll.selected_part.and_then(|part| {
         project
@@ -326,7 +341,10 @@ fn part_inspector(
                 );
                 ui.label("Start");
                 if ui
-                    .add(egui::DragValue::new(&mut value.start_tick).range(0..=u64::MAX - 1))
+                    .add_enabled(
+                        allow_structural_edits,
+                        egui::DragValue::new(&mut value.start_tick).range(0..=u64::MAX - 1),
+                    )
                     .changed()
                     && let Err(error) =
                         project.move_part(roll.selected_track, part_index, value.start_tick)
@@ -335,7 +353,11 @@ fn part_inspector(
                 }
                 ui.label("Length");
                 if ui
-                    .add(egui::DragValue::new(&mut value.length_ticks).range(1..=u64::MAX - value.start_tick))
+                    .add_enabled(
+                        allow_structural_edits,
+                        egui::DragValue::new(&mut value.length_ticks)
+                            .range(1..=u64::MAX - value.start_tick),
+                    )
                     .changed()
                     && let Err(error) =
                         project.resize_part(roll.selected_track, part_index, value.length_ticks)
@@ -347,19 +369,28 @@ fn part_inspector(
                     transport.end_tick = value.start_tick + value.length_ticks;
                     transport.repeat = true;
                 }
-                if ui.button("Duplicate shared").clicked() {
+                if ui
+                    .add_enabled(allow_structural_edits, egui::Button::new("Duplicate shared"))
+                    .clicked()
+                {
                     match project.duplicate_part(roll.selected_track, part_index) {
                         Ok(index) => roll.select_part(roll.selected_track, Some(index)),
                         Err(error) => result.status = Some(error.to_string()),
                     }
                 }
-                if ui.button("Make unique").clicked() {
+                if ui
+                    .add_enabled(allow_structural_edits, egui::Button::new("Make unique"))
+                    .clicked()
+                {
                     match project.make_part_unique(roll.selected_track, part_index) {
                         Ok(_) => result.status = Some("Part detached into a unique pattern".into()),
                         Err(error) => result.status = Some(error.to_string()),
                     }
                 }
-                if ui.button("Merge to timeline").clicked() {
+                if ui
+                    .add_enabled(allow_structural_edits, egui::Button::new("Merge to timeline"))
+                    .clicked()
+                {
                     match project.merge_part_into_track(roll.selected_track, part_index) {
                         Ok(()) => {
                             roll.select_part(roll.selected_track, None);
@@ -368,7 +399,10 @@ fn part_inspector(
                         Err(error) => result.status = Some(error.to_string()),
                     }
                 }
-                if ui.button("Delete part").clicked() {
+                if ui
+                    .add_enabled(allow_structural_edits, egui::Button::new("Delete part"))
+                    .clicked()
+                {
                     match project.remove_part(roll.selected_track, part_index) {
                         Ok(_) => roll.select_part(roll.selected_track, None),
                         Err(error) => result.status = Some(error.to_string()),

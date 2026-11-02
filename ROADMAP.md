@@ -8,7 +8,7 @@ Living tracker for planned native features and follow-up fixes. NanoStudio backp
   - Phase 1: versioned shared instruments, reusable pattern parts, native drum-track rendering, and shared-instrument MIDI channels.
     - Completed: schema v2 with v1/legacy migration, repeated/cropped pattern expansion, 64-track shared-instrument tests, offline stereo kit rendering, `+KIT`/`add-drum-track`, and CLI WAV/MIDI smoke verification. Pattern editing and pad-performance linking remain in phase 2.
   - Phase 2: pattern/arranger editing and keyboard/pad/MIDI recording integrated with history and transport.
-    - Progress: added shared/unique part arranging, move/crop/duplicate/make-unique/merge and section duplication, pattern-aware piano-roll/automation editing, quantize/transpose/copy/cleanup, one-take history, loop recording from keyboard/pads/desktop `midir` input, and model/parser/history tests. Interactive desktop and hardware-MIDI smoke verification remains; explicit ramp controller editing, held-pad audio-repeat capture, and automatic Pads-bank linking remain open.
+    - Progress: added shared/unique part arranging, move/crop/duplicate/make-unique/merge and section duplication, pattern-aware piano-roll/automation editing, explicit gridded CC ramps, quantize/transpose/copy/cleanup, one-take history, loop recording from keyboard/pads/desktop `midir` input, sample-clocked held-pad repeat capture, automatic Pads-bank loading/save linking, empty-song recording clocks, structural-edit take protection, chronological take commits, and model/parser/history tests. Interactive desktop and hardware-MIDI smoke verification remains.
   - Phases 3–5: Eden-style modulation/sampling, complete TRG voices/sample editing, and one shared automatable effects graph.
   - Phase 6: stem/part export, favorite-sound calibration, and the final verified parity audit.
   - Track individual capabilities in `docs/nanostudio1-parity.md`; do not claim parity from format round trips alone.
@@ -33,14 +33,14 @@ Living tracker for planned native features and follow-up fixes. NanoStudio backp
 
 - [ ] Finish `evil-beats` song and rendering integration
   - Add native song-track bank references, recording into patterns, per-pad/output filters, and CLI bank/project rendering without Oracle dependencies.
-  - Progress: tuned sample pads, velocity, gate/release envelopes, overlapping hits, portable `.evilkit` banks with embedded audio, WAV import/export, original 16-pad kit, stereo gain/pan/mute, the desktop Pads workspace with held-pad repeat, native song-track bank references, deterministic offline stereo kit rendering, `+KIT`, CLI `add-drum-track`/project rendering, and pad recording into timeline/pattern targets. Per-pad/output filters, held-repeat take capture, and linking the independent Pads audition bank to song instruments remain open.
+  - Progress: tuned sample pads, velocity, gate/release envelopes, overlapping hits, portable `.evilkit` banks with embedded audio, WAV import/export, original 16-pad kit, stereo gain/pan/mute, the desktop Pads workspace with held-pad repeat, native song-track bank references, deterministic offline stereo kit rendering, `+KIT`, CLI `add-drum-track`/project rendering, pad recording into timeline/pattern targets, held-repeat take capture, and automatic Pads-bank loading/save linking. Per-pad/output filters remain open.
 
 ## Editor and composition workflow
 
 - [ ] Continue polishing Evil Synth and Evil Beats
   - Keep grouped controls responsive at small and large window sizes, retain every JSON/bank parameter, and add useful ADSR/LFO/filter feedback without obstructing editing or audition.
   - Integrate pad recording with section play/repeat, piano-roll editing, and native project history.
-    - Progress: physical pad hits record into the selected repeating range and commit as one undoable take; automatic repeat-roll capture remains open.
+    - Progress: physical pad hits and sample-clocked held repeats record into the selected repeating range and commit as one undoable take.
 
 - [ ] Add arrangement conveniences for bar-based writing
   - Section duplicate, loop-aware note duplication, optional recording into the selected range, and clear playhead/selection behavior.

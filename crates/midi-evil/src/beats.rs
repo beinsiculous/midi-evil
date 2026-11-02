@@ -118,12 +118,7 @@ impl BeatsPage {
         self.dirty
     }
 
-    pub fn load_instrument(
-        &mut self,
-        kit: DrumKit,
-        path: Option<PathBuf>,
-        track_index: usize,
-    ) {
+    pub fn load_instrument(&mut self, kit: DrumKit, path: Option<PathBuf>, track_index: usize) {
         self.stop();
         self.kit = kit;
         self.path = path;
@@ -367,9 +362,7 @@ impl BeatsPage {
             );
         }
         self.held = desired;
-        if !panic
-            && let Some(player) = &self.player
-        {
+        if !panic && let Some(player) = &self.player {
             hits.extend(player.repeated_hits().into_iter().map(|hit| PadHit {
                 slot: hit.slot,
                 velocity: hit.velocity,

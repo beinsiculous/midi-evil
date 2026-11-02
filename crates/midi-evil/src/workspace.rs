@@ -34,8 +34,16 @@ pub fn song(
     roll: &mut crate::piano_roll::RollState,
     transport: &mut Transport,
     playhead_tick: u64,
+    allow_structural_edits: bool,
 ) -> SongResult {
-    crate::arranger::show(ui, project, roll, transport, playhead_tick)
+    crate::arranger::show(
+        ui,
+        project,
+        roll,
+        transport,
+        playhead_tick,
+        allow_structural_edits,
+    )
 }
 
 pub fn mixer(ui: &mut egui::Ui, project: &mut Project, selected: &mut usize) {

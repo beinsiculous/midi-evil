@@ -18,6 +18,7 @@ enum Command {
 struct AudioRepeat {
     slot: usize,
     frame: u64,
+    velocity: u8,
 }
 
 #[derive(Clone, Copy)]
@@ -100,12 +101,11 @@ impl BeatsPlayer {
     }
 
     pub fn repeated_hits(&self) -> Vec<RepeatHit> {
-        let velocity = self.input.map_or(100, |input| input.1);
         self.repeat_receiver
             .try_iter()
             .map(|event| RepeatHit {
                 slot: event.slot as u8,
-                velocity,
+                velocity: event.velocity,
                 at: self.clock_origin
                     + Duration::from_secs_f64(
                         event.frame as f64 / f64::from(DrumMachine::SAMPLE_RATE),
@@ -154,6 +154,7 @@ impl Iterator for BeatsSource {
                 let _ = self.repeat_sender.send(AudioRepeat {
                     slot,
                     frame: self.frame,
+                    velocity: self.machine.input_velocity(),
                 });
             }
         }

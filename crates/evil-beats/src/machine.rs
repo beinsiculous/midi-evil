@@ -87,6 +87,10 @@ impl DrumMachine {
         }
     }
 
+    pub fn input_velocity(&self) -> u8 {
+        self.velocity
+    }
+
     pub fn stop(&mut self) {
         self.held = 0;
         self.voices.clear();

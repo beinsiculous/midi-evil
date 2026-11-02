@@ -68,6 +68,12 @@ impl Recorder {
         }
     }
 
+    pub fn target_track(&self) -> usize {
+        match self.target {
+            RecordingTarget::Track(track) | RecordingTarget::Part { track, .. } => track,
+        }
+    }
+
     pub fn pending_events(&self) -> usize {
         self.notes.len()
             + self.active.len()
@@ -142,6 +148,10 @@ impl Recorder {
         sequence.pitch_bends_mut().extend(self.pitch_bends);
         sequence.aftertouch_mut().extend(self.aftertouch);
         sequence.controllers_mut().extend(self.controllers);
+        sequence.notes_mut().sort_by_key(|note| note.start_tick);
+        sequence.pitch_bends_mut().sort_by_key(|event| event.tick);
+        sequence.aftertouch_mut().sort_by_key(|event| event.tick);
+        sequence.controllers_mut().sort_by_key(|event| event.tick);
         updated.validate().map_err(|error| error.to_string())?;
         *project = updated;
         Ok(take)
@@ -209,6 +219,26 @@ impl Recorder {
             Some(grid) => tick / grid * grid,
             None => tick,
         })
+    }
+}
+
+/// Convert elapsed recording time to song ticks even when the project has no
+/// notes and therefore cannot produce an audio-preview clock.
+pub fn recording_tick_at_elapsed(
+    project: &Project,
+    start_tick: u64,
+    end_tick: Option<u64>,
+    elapsed: f64,
+) -> Result<u64, String> {
+    let performance = project
+        .to_performance()
+        .map_err(|error| error.to_string())?;
+    let start_seconds = performance.seconds_at(start_tick);
+    if let Some(end_tick) = end_tick {
+        let duration = (performance.seconds_at(end_tick) - start_seconds).max(f64::EPSILON);
+        Ok(performance.tick_at_seconds(start_seconds + elapsed.max(0.0).rem_euclid(duration)))
+    } else {
+        Ok(performance.tick_at_seconds(start_seconds + elapsed.max(0.0)))
     }
 }
 
@@ -342,6 +372,60 @@ mod tests {
         recorder.finish(240, &mut project).unwrap();
         assert_eq!(project.tracks[0].notes[0].duration_ticks, 1);
         assert_eq!(project.tracks[0].notes[1].duration_ticks, 120);
+    }
+
+    #[test]
+    fn recording_clock_works_without_notes_or_a_preview() {
+        let project = project();
+        assert!(project.tracks[0].notes.is_empty());
+        assert_eq!(
+            recording_tick_at_elapsed(&project, 0, Some(1_920), 1.0).unwrap(),
+            960
+        );
+        assert_eq!(
+            recording_tick_at_elapsed(&project, 0, Some(1_920), 2.0).unwrap(),
+            0
+        );
+        assert_eq!(
+            recording_tick_at_elapsed(&project, 0, Some(1_920), -0.1).unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn loop_overdub_restores_chronological_controller_order() {
+        let mut project = project();
+        project.tracks[0].controllers.push(ControllerEvent {
+            tick: 1_200,
+            controller: 1,
+            value: 80,
+        });
+        let mut recorder = Recorder::new(RecordingTarget::Track(0), 0, 1_920, None);
+        recorder.input(
+            InputEvent::Controller {
+                controller: 1,
+                value: 20,
+            },
+            100,
+            &project,
+        );
+        recorder.input(
+            InputEvent::Controller {
+                controller: 1,
+                value: 40,
+            },
+            600,
+            &project,
+        );
+        recorder.finish(600, &mut project).unwrap();
+        assert_eq!(
+            project.tracks[0]
+                .controllers
+                .iter()
+                .map(|event| event.tick)
+                .collect::<Vec<_>>(),
+            [100, 600, 1_200]
+        );
     }
 
     #[test]

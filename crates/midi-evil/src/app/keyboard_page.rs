@@ -4,7 +4,9 @@ use crate::live_player::LivePlayer;
 
 impl StudioApp {
     pub(super) fn stop_keyboard(&mut self) {
-        self.record_note_events(&[NoteEvent::Panic]);
+        if self.keyboard_player.is_some() || self.keyboard_binding.is_some() {
+            self.record_note_events(&[NoteEvent::Panic]);
+        }
         self.keyboard_player = None;
         self.keyboard.reset();
         self.keyboard_binding = None;

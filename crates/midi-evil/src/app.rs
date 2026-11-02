@@ -56,6 +56,7 @@ pub struct StudioApp {
     beats: crate::beats::BeatsPage,
     beats_binding: Option<(usize, String)>,
     recorder: Option<crate::recording::Recorder>,
+    recording_started_at: Option<std::time::Instant>,
     recording_snapshot: Option<Project>,
     record_quantize: bool,
     midi_input: crate::midi_input::MidiInput,
@@ -121,6 +122,7 @@ impl StudioApp {
             beats: crate::beats::BeatsPage::new(&context.egui_ctx),
             beats_binding: None,
             recorder: None,
+            recording_started_at: None,
             recording_snapshot: None,
             record_quantize: true,
             midi_input: crate::midi_input::MidiInput::default(),
@@ -169,6 +171,20 @@ impl StudioApp {
         }
     }
 
+    fn structural_edit_allowed(&mut self) -> bool {
+        if self.recorder.is_some() {
+            self.status = "Commit the current take before changing tracks".to_owned();
+            false
+        } else {
+            true
+        }
+    }
+
+    fn invalidate_beats_link(&mut self) {
+        self.beats_binding = None;
+        self.beats.clear_instrument_link();
+    }
+
     fn reset_history(&mut self) {
         self.history.clear();
         self.resetting_document = true;
@@ -184,6 +200,7 @@ impl StudioApp {
         }
         if let Some(project) = self.history.undo(&self.project) {
             self.project = project;
+            self.invalidate_beats_link();
             self.roll.clamp(&self.project);
             self.restoring_history = true;
             self.dirty = true;
@@ -198,6 +215,7 @@ impl StudioApp {
         }
         if let Some(project) = self.history.redo(&self.project) {
             self.project = project;
+            self.invalidate_beats_link();
             self.roll.clamp(&self.project);
             self.restoring_history = true;
             self.dirty = true;
@@ -206,8 +224,12 @@ impl StudioApp {
     }
 
     fn remove_selected_track(&mut self) {
+        if !self.structural_edit_allowed() {
+            return;
+        }
         let index = self.roll.selected_track;
         if self.project.remove_track(index).is_ok() {
+            self.invalidate_beats_link();
             self.automation.clear_selection();
             let new_index = if self.project.tracks.is_empty() {
                 0
@@ -221,8 +243,12 @@ impl StudioApp {
     }
 
     fn duplicate_selected_track(&mut self) {
+        if !self.structural_edit_allowed() {
+            return;
+        }
         match self.project.duplicate_track(self.roll.selected_track) {
             Ok(index) => {
+                self.invalidate_beats_link();
                 self.roll.select_track(index);
                 self.dirty = true;
                 self.status = format!("Duplicated track {index}");
@@ -232,12 +258,16 @@ impl StudioApp {
     }
 
     fn move_selected_track(&mut self, offset: isize) {
+        if !self.structural_edit_allowed() {
+            return;
+        }
         let index = self.roll.selected_track;
         let new_index = index as isize + offset;
         if new_index < 0 || new_index >= self.project.tracks.len() as isize {
             return;
         }
         if self.project.move_track(index, new_index as usize).is_ok() {
+            self.invalidate_beats_link();
             self.roll.select_track(new_index as usize);
             self.dirty = true;
         }
@@ -298,6 +328,9 @@ impl StudioApp {
     }
 
     fn add_track(&mut self) {
+        if !self.structural_edit_allowed() {
+            return;
+        }
         let number = self.project.tracks.len() + 1;
         let name = format!("Track {number}");
         let result = self
@@ -321,6 +354,9 @@ impl StudioApp {
     }
 
     fn add_drum_track(&mut self) {
+        if !self.structural_edit_allowed() {
+            return;
+        }
         let number = self.project.tracks.len() + 1;
         let name = format!("Drums {number}");
         let result = self
@@ -357,8 +393,7 @@ impl StudioApp {
         self.roll = RollState::default();
         self.transport = Transport::new(piano_roll::bar_ticks(&self.project));
         self.automation = AutomationState::default();
-        self.beats_binding = None;
-        self.beats.clear_instrument_link();
+        self.invalidate_beats_link();
         self.add_track();
         self.reset_history();
         self.dirty = false;
@@ -558,6 +593,8 @@ impl StudioApp {
                 self.roll = RollState::default();
                 self.transport = Transport::new(piano_roll::bar_ticks(&self.project));
                 self.automation = AutomationState::default();
+                self.invalidate_beats_link();
+                self.project_path = Some(path.to_path_buf());
                 self.reset_history();
                 self.dirty = false;
                 self.status = format!("Opened {}", path.display());
@@ -711,6 +748,7 @@ impl StudioApp {
                 self.roll = RollState::default();
                 self.transport = Transport::new(piano_roll::bar_ticks(&self.project));
                 self.automation = AutomationState::default();
+                self.invalidate_beats_link();
                 self.reset_history();
                 self.dirty = true;
                 self.status = format!(
@@ -748,25 +786,35 @@ impl StudioApp {
     }
 
     fn song_playhead_tick(&self) -> u64 {
-        self.song_playhead_tick_offset(0.0)
+        if let Some(preview) = &self.preview {
+            return self.tick_at_elapsed(preview.position().as_secs_f64());
+        }
+        if self.recording_started_at.is_some() {
+            return self.recording_tick();
+        }
+        self.transport.start_tick
     }
 
-    fn song_playhead_tick_offset(&self, offset_seconds: f64) -> u64 {
-        let Some(preview) = &self.preview else {
+    fn recording_tick(&self) -> u64 {
+        self.recording_tick_offset(0.0)
+    }
+
+    fn recording_tick_offset(&self, offset_seconds: f64) -> u64 {
+        let Some(started_at) = self.recording_started_at else {
             return self.transport.start_tick;
         };
-        let Ok(performance) = self.project.to_performance() else {
-            return self.transport.start_tick;
-        };
-        let (start_tick, end_tick) = self.transport.range();
-        let start_seconds = performance.seconds_at(start_tick);
-        let elapsed = preview.position().as_secs_f64() + offset_seconds;
-        if let Some(end_tick) = end_tick {
-            let duration = (performance.seconds_at(end_tick) - start_seconds).max(f64::EPSILON);
-            performance.tick_at_seconds(start_seconds + elapsed.rem_euclid(duration))
-        } else {
-            performance.tick_at_seconds(start_seconds + elapsed.max(0.0))
-        }
+        self.tick_at_elapsed(started_at.elapsed().as_secs_f64() + offset_seconds)
+    }
+
+    fn tick_at_elapsed(&self, elapsed: f64) -> u64 {
+        let (_, end_tick) = self.transport.range();
+        crate::recording::recording_tick_at_elapsed(
+            &self.project,
+            self.transport.start_tick,
+            end_tick,
+            elapsed,
+        )
+        .unwrap_or(self.transport.start_tick)
     }
 
     fn preview_project(&mut self) {
@@ -845,7 +893,15 @@ impl StudioApp {
                     Err(error) => self.status = format!("Could not write audio: {error}"),
                 }
             }
-            (_, Err(error)) => self.status = format!("Could not render audio: {error}"),
+            (_, Err(error)) => {
+                self.status = if self.recorder.is_some() {
+                    format!(
+                        "Recording with the independent clock; audio preview unavailable: {error}"
+                    )
+                } else {
+                    format!("Could not render audio: {error}")
+                };
+            }
             _ => {}
         }
     }
@@ -883,6 +939,74 @@ impl StudioApp {
             .filter(|parent| !parent.as_os_str().is_empty())
             .or(self.project_base.as_deref())
             .unwrap_or_else(|| Path::new("."))
+    }
+
+    fn sync_beats_instrument(&mut self) {
+        let track_index = self.roll.selected_track;
+        let Some(source) = self
+            .project
+            .tracks
+            .get(track_index)
+            .and_then(|track| self.project.instruments.get(track.instrument))
+            .and_then(|instrument| match &instrument.source {
+                InstrumentSource::DrumKit { kit, .. } => Some(kit.clone()),
+                InstrumentSource::Synth { .. } => None,
+            })
+        else {
+            return;
+        };
+        let binding = (track_index, source.clone());
+        if self.beats_binding.as_ref() == Some(&binding) || self.beats.has_unsaved_changes() {
+            return;
+        }
+        let base = self.patch_base().to_path_buf();
+        match evil_render::load_drum_kit(&source, &base) {
+            Ok(kit) => {
+                let path = (source != "maxwell").then(|| base.join(&source));
+                self.beats.load_instrument(kit, path, track_index);
+                self.status = format!("Pads linked to song track {:02}", track_index + 1);
+            }
+            Err(error) => self.status = format!("Could not load track drum bank: {error}"),
+        }
+        self.beats_binding = Some(binding);
+    }
+
+    fn link_saved_beats_bank(&mut self) {
+        let Some((track_index, path)) = self.beats.take_saved_bank() else {
+            return;
+        };
+        let reference = path
+            .strip_prefix(self.patch_base())
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .into_owned();
+        let result = self
+            .project
+            .instrument_for_track_mut(track_index)
+            .map_err(|error| error.to_string())
+            .and_then(|instrument| match &mut instrument.source {
+                InstrumentSource::DrumKit { kit, .. } => {
+                    *kit = reference.clone();
+                    Ok(())
+                }
+                InstrumentSource::Synth { .. } => {
+                    Err("The linked track is no longer a drum instrument".to_owned())
+                }
+            });
+        match result {
+            Ok(()) => {
+                self.beats_binding = Some((track_index, reference));
+                self.dirty = true;
+                self.status = format!(
+                    "Saved {} and linked song track {:02}",
+                    path.display(),
+                    track_index + 1
+                );
+            }
+            Err(error) => {
+                self.status = format!("Saved {}, but could not link it: {error}", path.display())
+            }
+        }
     }
 
     fn file_dialog(&mut self) -> rfd::FileDialog {
@@ -1006,12 +1130,14 @@ impl eframe::App for StudioApp {
                     View::Song => {
                         let previous_transport = self.transport;
                         let playhead_tick = self.song_playhead_tick();
+                        let allow_structural_edits = self.recorder.is_none();
                         let result = workspace::song(
                             ui,
                             &mut self.project,
                             &mut self.roll,
                             &mut self.transport,
                             playhead_tick,
+                            allow_structural_edits,
                         );
                         if result.edit_notes {
                             self.view = View::Notes;
@@ -1078,7 +1204,9 @@ impl eframe::App for StudioApp {
                     View::Synth => self.patch_lab_panel(ui),
                     View::Keyboard => self.keyboard_panel(ui),
                     View::Pads => {
+                        self.sync_beats_instrument();
                         let hits = self.beats.show(ui, self.project.tempo_bpm);
+                        self.link_saved_beats_bank();
                         self.record_pad_hits(&hits);
                     }
                 }

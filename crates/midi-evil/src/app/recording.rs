@@ -32,9 +32,10 @@ impl StudioApp {
             self.transport.end_tick,
             grid,
         ));
+        self.recording_started_at = Some(std::time::Instant::now());
         self.status = match target {
             RecordingTarget::Track(_) => {
-                "Recording the unique timeline; input is captured when preview starts".to_owned()
+                "Recording the unique timeline with the independent recording clock".to_owned()
             }
             RecordingTarget::Part { .. } => {
                 "Recording loop overdub into the selected shared pattern".to_owned()
@@ -43,9 +44,9 @@ impl StudioApp {
     }
 
     pub(super) fn record_note_events(&mut self, events: &[NoteEvent]) {
-        let tick = self.song_playhead_tick();
+        let tick = self.recording_tick();
         if events.contains(&NoteEvent::Panic)
-            && self.preview.is_some()
+            && self.recorder.is_some()
             && let Some(recorder) = &mut self.recorder
         {
             recorder.panic(tick);
@@ -62,10 +63,13 @@ impl StudioApp {
     }
 
     pub(super) fn record_pad_hits(&mut self, hits: &[PadHit]) {
-        if self.preview.is_none() || hits.is_empty() {
+        if hits.is_empty() {
             return;
         }
-        let Ok(instrument) = self.project.instrument_for_track(self.roll.selected_track) else {
+        let Some(target_track) = self.recorder.as_ref().map(Recorder::target_track) else {
+            return;
+        };
+        let Ok(instrument) = self.project.instrument_for_track(target_track) else {
             return;
         };
         let Some(base_note) = (match &instrument.source {
@@ -80,7 +84,7 @@ impl StudioApp {
                 || -now.duration_since(hit.at).as_secs_f64(),
                 |duration| duration.as_secs_f64(),
             );
-            let tick = self.song_playhead_tick_offset(offset_seconds);
+            let tick = self.recording_tick_offset(offset_seconds);
             if let Some(recorder) = &mut self.recorder {
                 recorder.hit(
                     base_note + hit.slot.min(15),
@@ -156,7 +160,8 @@ impl StudioApp {
             return;
         };
         self.recording_snapshot = None;
-        let tick = self.song_playhead_tick();
+        let tick = self.recording_tick();
+        self.recording_started_at = None;
         match recorder.finish(tick, &mut self.project) {
             Ok(take) => {
                 self.status = format!(
@@ -169,10 +174,10 @@ impl StudioApp {
     }
 
     fn record_input(&mut self, events: &[InputEvent]) {
-        if self.preview.is_none() || events.is_empty() {
+        if events.is_empty() {
             return;
         }
-        let tick = self.song_playhead_tick();
+        let tick = self.recording_tick();
         if let Some(recorder) = &mut self.recorder {
             for &event in events {
                 recorder.input(event, tick, &self.project);

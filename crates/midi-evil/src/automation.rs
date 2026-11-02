@@ -385,9 +385,8 @@ fn show_point_inspector(
         remove = ui.button("Delete point").clicked();
         if state.lane == Lane::Controller {
             let grid = ramp_grid(ticks_per_quarter, state.ramp_division);
-            let has_room = next_point(track, state, point).is_some_and(|next| {
-                next.tick > point.tick && grid < next.tick - point.tick
-            });
+            let has_room = next_point(track, state, point)
+                .is_some_and(|next| next.tick > point.tick && grid < next.tick - point.tick);
             ramp = ui
                 .add_enabled(has_room, egui::Button::new("Ramp to next"))
                 .on_hover_text(
@@ -403,8 +402,12 @@ fn show_point_inspector(
         state.selected = update_point(track, state, point.index, tick, value);
     }
     if ramp {
-        return ramp_controller_to_next(track, state, ramp_grid(ticks_per_quarter, state.ramp_division))
-            .is_some();
+        return ramp_controller_to_next(
+            track,
+            state,
+            ramp_grid(ticks_per_quarter, state.ramp_division),
+        )
+        .is_some();
     }
     changed
 }
@@ -871,15 +874,31 @@ mod tests {
             ..AutomationState::default()
         };
 
-        assert_eq!(ramp_controller_to_next(&mut track, &mut state, 120), Some(3));
+        assert_eq!(
+            ramp_controller_to_next(&mut track, &mut state, 120),
+            Some(3)
+        );
         let lane: Vec<_> = points(&track, &state)
             .into_iter()
             .map(|point| (point.tick, point.value))
             .collect();
-        assert_eq!(lane, [(0, 0), (120, 25), (240, 50), (360, 75), (480, 100), (960, 0)]);
-        assert!(track.controllers.iter().any(|event| {
-            event.controller == 11 && event.tick == 120 && event.value == 90
-        }));
+        assert_eq!(
+            lane,
+            [
+                (0, 0),
+                (120, 25),
+                (240, 50),
+                (360, 75),
+                (480, 100),
+                (960, 0)
+            ]
+        );
+        assert!(
+            track
+                .controllers
+                .iter()
+                .any(|event| { event.controller == 11 && event.tick == 120 && event.value == 90 })
+        );
         assert_eq!(state.selected, Some(0));
     }
 
@@ -895,7 +914,10 @@ mod tests {
         add_point(&mut track, &state, 480, 0);
         state.selected = Some(0);
 
-        assert_eq!(ramp_controller_to_next(&mut track, &mut state, 120), Some(3));
+        assert_eq!(
+            ramp_controller_to_next(&mut track, &mut state, 120),
+            Some(3)
+        );
         assert_eq!(
             track
                 .controllers

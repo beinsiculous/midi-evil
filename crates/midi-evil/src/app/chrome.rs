@@ -359,11 +359,15 @@ impl StudioApp {
                         format!("TRACK RACK  /  {:02}", self.project.tracks.len()),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("+").on_hover_text("Add synth track").clicked() {
+                        if ui
+                            .add_enabled(self.recorder.is_none(), egui::Button::new("+"))
+                            .on_hover_text("Add synth track")
+                            .clicked()
+                        {
                             self.add_track();
                         }
                         if ui
-                            .button("+KIT")
+                            .add_enabled(self.recorder.is_none(), egui::Button::new("+KIT"))
                             .on_hover_text("Add a Maxwell drum-kit track")
                             .clicked()
                         {
@@ -423,30 +427,33 @@ impl StudioApp {
                     });
                 if !self.project.tracks.is_empty() {
                     ui.horizontal(|ui| {
-                        ui.menu_button("Track actions", |ui| {
-                            if ui.button("Duplicate track").clicked() {
-                                ui.close();
-                                self.duplicate_selected_track();
-                            }
-                            if ui.button("Move up").clicked() {
-                                ui.close();
-                                self.move_selected_track(-1);
-                            }
-                            if ui.button("Move down").clicked() {
-                                ui.close();
-                                self.move_selected_track(1);
-                            }
-                            ui.separator();
-                            if ui.button("Delete track").clicked() {
-                                ui.close();
-                                self.remove_selected_track();
-                            }
+                        ui.add_enabled_ui(self.recorder.is_none(), |ui| {
+                            ui.menu_button("Track actions", |ui| {
+                                if ui.button("Duplicate track").clicked() {
+                                    ui.close();
+                                    self.duplicate_selected_track();
+                                }
+                                if ui.button("Move up").clicked() {
+                                    ui.close();
+                                    self.move_selected_track(-1);
+                                }
+                                if ui.button("Move down").clicked() {
+                                    ui.close();
+                                    self.move_selected_track(1);
+                                }
+                                ui.separator();
+                                if ui.button("Delete track").clicked() {
+                                    ui.close();
+                                    self.remove_selected_track();
+                                }
+                            });
                         });
                     });
                 }
                 ui.add_space(8.0);
                 ui.separator();
                 let mut open_patch = false;
+                let mut open_pads = false;
                 egui::ScrollArea::vertical()
                     .id_salt("track-settings")
                     .auto_shrink([false, false])
@@ -480,12 +487,13 @@ impl StudioApp {
                                     );
                                 }
                             }
+                            open_pads = matches!(instrument.source, InstrumentSource::DrumKit { .. });
                             open_patch = ui
                                 .add_sized(
                                     [ui.available_width(), 32.0],
                                     egui::Button::image_and_text(
                                         art::control(&self.controls, 3),
-                                        "Open Evil Synth",
+                                        if open_pads { "Open Pads" } else { "Open Evil Synth" },
                                     ),
                                 )
                                 .clicked();
@@ -521,7 +529,11 @@ impl StudioApp {
                         }
                     });
                 if open_patch {
-                    self.open_patch_lab();
+                    if open_pads {
+                        self.view = View::Pads;
+                    } else {
+                        self.open_patch_lab();
+                    }
                 }
             });
     }
