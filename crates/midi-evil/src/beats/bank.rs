@@ -36,7 +36,7 @@ impl BeatsPage {
                     self.path = path;
                     self.dirty = false;
                     self.selected = 0;
-                    self.message = "Bank ready / save banks separately from the song".into();
+                    self.message = "Bank ready / Save bank to update its linked instrument".into();
                 }
                 Action::Save => {
                     let filename = self
@@ -56,7 +56,8 @@ impl BeatsPage {
                     evil_project::atomic_write(&path, json.as_bytes())
                         .map_err(|e| e.to_string())?;
                     self.message = format!("Saved {}", path.display());
-                    self.path = Some(path);
+                    self.path = Some(path.clone());
+                    self.saved_path = Some(path);
                     self.dirty = false;
                 }
                 Action::Import => {

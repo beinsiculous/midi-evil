@@ -38,5 +38,4 @@ Package.sng
 # Cargo.lock is kept for reproducible application builds.
 
 oracle
-oracle-format
-oracle-midi
+evil-porting

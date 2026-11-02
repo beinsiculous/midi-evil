@@ -1,12 +1,11 @@
-mod import;
-mod native;
+//! Standard MIDI export and event-preserving MIDI edits for native projects.
 
-pub use evil_performance::{
-    Aftertouch, ControllerEvent, Performance, PerformanceNote, PerformanceTrack, PitchBend,
-    TempoChange,
-};
-pub use import::{import_midi, import_midi_file, rename_midi_track};
+mod native;
+mod rename;
+
+use evil_performance::Performance;
 pub use native::{NativeMidiReport, export_native_project, export_native_project_to_path};
+pub use rename::rename_midi_track;
 
 use midly::num::{u4, u28};
 use midly::{MetaMessage, MidiMessage, TrackEvent, TrackEventKind};
@@ -28,10 +27,6 @@ pub enum Error {
     Encode(&'static str),
     #[error("could not decode standard MIDI: {0}")]
     Decode(#[from] midly::Error),
-    #[error("format 2 MIDI files with independent sequences are not supported")]
-    UnsupportedFormat,
-    #[error("invalid MIDI time signature {numerator}/2^{denominator}")]
-    InvalidTimeSignature { numerator: u8, denominator: u8 },
     #[error("SMPTE or zero-division MIDI timing is not supported")]
     UnsupportedTiming,
     #[error("MIDI export is too large for the engine: {bytes} bytes, {events} events")]
@@ -42,12 +37,6 @@ pub enum Error {
     NativeProject(#[from] evil_project::Error),
     #[error(transparent)]
     Patch(#[from] evil_render::Error),
-    #[error("could not access {path}: {source}")]
-    Io {
-        path: std::path::PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
 }
 
 struct TimedEvent {

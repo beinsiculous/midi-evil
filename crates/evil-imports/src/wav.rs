@@ -3,9 +3,10 @@
 use std::path::Path;
 
 use serde::Serialize;
-use thiserror::Error;
 
-use evil_project::{Note, Project, Track};
+use evil_project::{Instrument, Note, Project, Track};
+
+use crate::Error;
 
 const HOP: usize = 512;
 
@@ -96,9 +97,10 @@ pub fn create_draft(
             duration_ticks: step_ticks,
         });
     }
+    let instrument = project.add_instrument(Instrument::synth("Recovery Onsets", "click"))?;
     project.add_track(Track {
         name: "Recovery Onsets".to_owned(),
-        patch: "click".to_owned(),
+        instrument,
         notes,
         ..Track::default()
     })?;
@@ -320,22 +322,6 @@ fn tempo_candidates(windows: &[f32], hop_rate: f64) -> Vec<TempoCandidate> {
         }
     }
     distinct
-}
-
-#[derive(Debug, Error)]
-pub enum Error {
-    #[error(transparent)]
-    Wav(#[from] hound::Error),
-    #[error("invalid WAV: {0}")]
-    InvalidWav(String),
-    #[error("no onsets were detected")]
-    NoOnsets,
-    #[error("no usable tempo was detected; provide --bpm")]
-    NoTempo,
-    #[error("grid must be 1, 2, 4, 8, 16, or 32, got {0}")]
-    InvalidGrid(u8),
-    #[error(transparent)]
-    Project(#[from] evil_project::Error),
 }
 
 #[cfg(test)]

@@ -7,10 +7,12 @@ edition = "2024"
 eframe = { version = "0.35", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
 png = "0.18"
 rfd = "0.17"
+midir = "0.11"
 rodio = { version = "0.23", default-features = false, features = ["playback"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-evil-midi = { path = "../evil-midi", version = "0.1.0" }
+evil-exports = { path = "../evil-exports", version = "0.1.0" }
+evil-imports = { path = "../evil-imports", version = "0.1.0" }
 evil-beats = { path = "../evil-beats", version = "0.1.0" }
 evil-project = { path = "../evil-project", version = "0.1.0" }
 evil-render = { path = "../evil-render", version = "0.1.0" }

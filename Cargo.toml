@@ -1,13 +1,13 @@
 [workspace]
 members = [
     "crates/evil-beats",
-    "crates/evil-midi",
+    "crates/evil-exports",
+    "crates/evil-imports",
     "crates/evil-synth",
     "crates/evil-performance",
     "crates/evil-project",
-    "crates/evil-recovery",
     "crates/evil-render",
     "crates/midi-evil",
 ]
-exclude = ["crates/oracle", "crates/oracle-format", "crates/oracle-midi"]
+exclude = ["crates/oracle", "crates/evil-porting"]
 resolver = "3"

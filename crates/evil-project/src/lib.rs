@@ -9,11 +9,21 @@ use evil_performance::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+mod instrument;
+mod legacy;
+mod pattern;
+mod sequence;
+
+pub use instrument::{DEFAULT_DRUM_BASE_NOTE, DRUM_PAD_COUNT, Instrument, InstrumentSource};
+pub use pattern::{Part, Pattern};
+pub use sequence::{EventSequence, clean_overlaps, quantize_notes, transpose_notes};
+
 pub const FORMAT_NAME: &str = "midi-evil-project";
 pub const LEGACY_FORMAT_NAME: &str = "rusty-music-project";
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 pub const FILE_EXTENSION: &str = "evil";
 pub const LEGACY_FILE_EXTENSION: &str = "rmp";
+pub const NEW_TRACK_INSTRUMENT: usize = usize::MAX;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -49,24 +59,24 @@ pub struct Project {
     pub master_gain: f32,
     /// Original MIDI file to update on save, if this project came from one.
     pub source_midi: Option<String>,
+    pub instruments: Vec<Instrument>,
+    pub patterns: Vec<Pattern>,
     pub tracks: Vec<Track>,
 }
 
+/// A sequencer track owns a unique timeline performance and may also repeat
+/// shared patterns through arrangement parts.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Track {
     pub name: String,
-    pub patch: String,
-    /// General MIDI program to preserve on export, overriding the patch default.
-    pub midi_program: Option<u8>,
-    pub gain: f32,
-    pub pan: f32,
+    pub instrument: usize,
     pub muted: bool,
     pub notes: Vec<Note>,
     pub pitch_bends: Vec<PitchBend>,
     pub aftertouch: Vec<Aftertouch>,
     pub controllers: Vec<ControllerEvent>,
-    pub pitch_bend_range_semitones: f32,
+    pub parts: Vec<Part>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -106,6 +116,8 @@ impl Default for Project {
             sample_rate: 48_000,
             master_gain: 0.8,
             source_midi: None,
+            instruments: Vec::new(),
+            patterns: Vec::new(),
             tracks: Vec::new(),
         }
     }
@@ -115,16 +127,13 @@ impl Default for Track {
     fn default() -> Self {
         Self {
             name: "Track".to_owned(),
-            patch: "lead".to_owned(),
-            midi_program: None,
-            gain: 0.8,
-            pan: 0.0,
+            instrument: NEW_TRACK_INSTRUMENT,
             muted: false,
             notes: Vec::new(),
             pitch_bends: Vec::new(),
             aftertouch: Vec::new(),
             controllers: Vec::new(),
-            pitch_bend_range_semitones: 2.0,
+            parts: Vec::new(),
         }
     }
 }
@@ -152,6 +161,44 @@ impl Project {
         name: impl Into<String>,
         performance: &Performance,
     ) -> Result<Self, Error> {
+        let mut instruments = Vec::with_capacity(performance.tracks.len());
+        let tracks = performance
+            .tracks
+            .iter()
+            .map(|track| {
+                let instrument = instruments.len();
+                instruments.push(Instrument {
+                    name: track.name.clone(),
+                    midi_program: track.program,
+                    gain: track.volume.map_or(0.8, |volume| f32::from(volume) / 127.0),
+                    pan: track.pan.map_or(0.0, |pan| match pan {
+                        64 => 0.0,
+                        0..=63 => f32::from(pan) / 64.0 - 1.0,
+                        _ => f32::from(pan - 64) / 63.0,
+                    }),
+                    pitch_bend_range_semitones: track.pitch_bend_range_semitones,
+                    ..Instrument::default()
+                });
+                Track {
+                    name: track.name.clone(),
+                    instrument,
+                    notes: track
+                        .notes
+                        .iter()
+                        .map(|note| Note {
+                            pitch: note.note,
+                            velocity: note.velocity,
+                            start_tick: note.start_tick,
+                            duration_ticks: note.duration_ticks,
+                        })
+                        .collect(),
+                    pitch_bends: track.pitch_bends.clone(),
+                    aftertouch: track.aftertouch.clone(),
+                    controllers: track.controllers.clone(),
+                    ..Track::default()
+                }
+            })
+            .collect();
         let project = Self {
             name: name.into(),
             tempo_bpm: performance.tempo_bpm,
@@ -167,35 +214,8 @@ impl Project {
             beats_per_bar: performance.beats_per_bar,
             beat_unit: performance.beat_unit,
             ticks_per_quarter: performance.ticks_per_quarter,
-            tracks: performance
-                .tracks
-                .iter()
-                .map(|track| Track {
-                    name: track.name.clone(),
-                    midi_program: track.program,
-                    gain: track.volume.map_or(0.8, |volume| f32::from(volume) / 127.0),
-                    pan: track.pan.map_or(0.0, |pan| match pan {
-                        64 => 0.0,
-                        0..=63 => f32::from(pan) / 64.0 - 1.0,
-                        _ => f32::from(pan - 64) / 63.0,
-                    }),
-                    notes: track
-                        .notes
-                        .iter()
-                        .map(|note| Note {
-                            pitch: note.note,
-                            velocity: note.velocity,
-                            start_tick: note.start_tick,
-                            duration_ticks: note.duration_ticks,
-                        })
-                        .collect(),
-                    pitch_bends: track.pitch_bends.clone(),
-                    aftertouch: track.aftertouch.clone(),
-                    controllers: track.controllers.clone(),
-                    pitch_bend_range_semitones: track.pitch_bend_range_semitones,
-                    ..Track::default()
-                })
-                .collect(),
+            instruments,
+            tracks,
             ..Self::default()
         };
         project.validate()?;
@@ -212,7 +232,20 @@ impl Project {
     }
 
     pub fn from_json(json: &str) -> Result<Self, Error> {
-        let mut project: Self = serde_json::from_str(json)?;
+        let value: serde_json::Value = serde_json::from_str(json)?;
+        let version = value
+            .get("version")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(1);
+        let mut project = if version == 1 {
+            let legacy: legacy::ProjectV1 = serde_json::from_value(value)?;
+            if legacy.format != FORMAT_NAME && legacy.format != LEGACY_FORMAT_NAME {
+                return Err(Error::InvalidFormat);
+            }
+            legacy.into_current()
+        } else {
+            serde_json::from_value::<Self>(value)?
+        };
         if project.format == LEGACY_FORMAT_NAME {
             project.format = FORMAT_NAME.to_owned();
         }
@@ -230,8 +263,63 @@ impl Project {
         atomic_write(path, json.as_bytes())
     }
 
-    pub fn add_track(&mut self, track: Track) -> Result<usize, Error> {
+    pub fn add_instrument(&mut self, instrument: Instrument) -> Result<usize, Error> {
+        instrument.validate()?;
+        let index = self.instruments.len();
+        self.instruments.push(instrument);
+        Ok(index)
+    }
+
+    pub fn instrument_for_track(&self, track_index: usize) -> Result<&Instrument, Error> {
+        let track = self
+            .tracks
+            .get(track_index)
+            .ok_or_else(|| invalid(&format!("track {track_index} does not exist")))?;
+        self.instruments
+            .get(track.instrument)
+            .ok_or_else(|| invalid(&format!("track {track_index} has no instrument")))
+    }
+
+    pub fn instrument_for_track_mut(
+        &mut self,
+        track_index: usize,
+    ) -> Result<&mut Instrument, Error> {
+        let index = self
+            .tracks
+            .get(track_index)
+            .ok_or_else(|| invalid(&format!("track {track_index} does not exist")))?
+            .instrument;
+        self.instruments
+            .get_mut(index)
+            .ok_or_else(|| invalid(&format!("track {track_index} has no instrument")))
+    }
+
+    pub fn add_pattern(&mut self, pattern: Pattern) -> Result<usize, Error> {
+        pattern.validate()?;
+        let index = self.patterns.len();
+        self.patterns.push(pattern);
+        Ok(index)
+    }
+
+    pub fn add_part(&mut self, track_index: usize, part: Part) -> Result<usize, Error> {
+        self.validate_part(part)?;
+        let track = self.track_mut(track_index)?;
+        let index = track.parts.len();
+        track.parts.push(part);
+        Ok(index)
+    }
+
+    pub fn add_track(&mut self, mut track: Track) -> Result<usize, Error> {
         validate_track(&track)?;
+        if track.instrument == NEW_TRACK_INSTRUMENT {
+            let instrument = Instrument {
+                name: track.name.clone(),
+                ..Instrument::default()
+            };
+            track.instrument = self.add_instrument(instrument)?;
+        } else if track.instrument >= self.instruments.len() {
+            return Err(invalid("track instrument does not exist"));
+        }
         let index = self.tracks.len();
         self.tracks.push(track);
         Ok(index)
@@ -250,6 +338,9 @@ impl Project {
             .get(track_index)
             .cloned()
             .ok_or_else(|| invalid(&format!("track {track_index} does not exist")))?;
+        let mut instrument = self.instrument_for_track(track_index)?.clone();
+        instrument.name = format!("{} Copy", instrument.name);
+        track.instrument = self.add_instrument(instrument)?;
         track.name = format!("{} Copy", track.name);
         let new_index = track_index + 1;
         self.tracks.insert(new_index, track);
@@ -337,34 +428,57 @@ impl Project {
             .tracks
             .iter()
             .enumerate()
-            .filter(|(_, track)| {
-                !track.muted
-                    && (!track.notes.is_empty()
-                        || !track.pitch_bends.is_empty()
-                        || !track.aftertouch.is_empty()
-                        || !track.controllers.is_empty())
-            })
-            .map(|(track_index, track)| PerformanceTrack {
-                track_index,
-                name: track.name.clone(),
-                notes: track
-                    .notes
-                    .iter()
-                    .map(|note| PerformanceNote {
-                        note: note.pitch,
-                        velocity: note.velocity,
-                        start_tick: note.start_tick,
-                        duration_ticks: note.duration_ticks,
-                    })
-                    .collect(),
-                pitch_bends: track.pitch_bends.clone(),
-                aftertouch: track.aftertouch.clone(),
-                controllers: track.controllers.clone(),
-                pitch_bend_range_semitones: track.pitch_bend_range_semitones,
-                skipped_controller_events: 0,
-                program: track.midi_program,
-                volume: Some((track.gain * 127.0).round() as u8),
-                pan: Some(((track.pan + 1.0) * 63.5).round() as u8),
+            .filter_map(|(track_index, track)| {
+                if track.muted {
+                    return None;
+                }
+                let instrument = &self.instruments[track.instrument];
+                let mut notes = track.notes.clone();
+                let mut pitch_bends = track.pitch_bends.clone();
+                let mut aftertouch = track.aftertouch.clone();
+                let mut controllers = track.controllers.clone();
+                for part in &track.parts {
+                    pattern::expand_part(
+                        &self.patterns[part.pattern],
+                        *part,
+                        &mut notes,
+                        &mut pitch_bends,
+                        &mut aftertouch,
+                        &mut controllers,
+                    );
+                }
+                if notes.is_empty()
+                    && pitch_bends.is_empty()
+                    && aftertouch.is_empty()
+                    && controllers.is_empty()
+                {
+                    return None;
+                }
+                notes.sort_by_key(|note| note.start_tick);
+                pitch_bends.sort_by_key(|event| event.tick);
+                aftertouch.sort_by_key(|event| event.tick);
+                controllers.sort_by_key(|event| event.tick);
+                Some(PerformanceTrack {
+                    track_index,
+                    name: track.name.clone(),
+                    notes: notes
+                        .iter()
+                        .map(|note| PerformanceNote {
+                            note: note.pitch,
+                            velocity: note.velocity,
+                            start_tick: note.start_tick,
+                            duration_ticks: note.duration_ticks,
+                        })
+                        .collect(),
+                    pitch_bends,
+                    aftertouch,
+                    controllers,
+                    pitch_bend_range_semitones: instrument.pitch_bend_range_semitones,
+                    skipped_controller_events: 0,
+                    program: instrument.midi_program,
+                    volume: Some((instrument.gain * 127.0).round() as u8),
+                    pan: Some(((instrument.pan + 1.0) * 63.5).round() as u8),
+                })
             })
             .collect();
         let mut tempo_changes = Vec::with_capacity(self.tempo_changes.len() + 1);
@@ -386,6 +500,22 @@ impl Project {
             tempo_changes,
             tracks,
         })
+    }
+
+    /// Limit arrangement playback without modifying shared pattern contents.
+    pub fn truncate_timeline(&mut self, end_tick: u64) {
+        for track in &mut self.tracks {
+            track.notes.retain(|note| note.start_tick < end_tick);
+            track.pitch_bends.retain(|event| event.tick < end_tick);
+            track.aftertouch.retain(|event| event.tick < end_tick);
+            track.controllers.retain(|event| event.tick < end_tick);
+            for part in &mut track.parts {
+                part.length_ticks = part
+                    .length_ticks
+                    .min(end_tick.saturating_sub(part.start_tick));
+            }
+            track.parts.retain(|part| part.length_ticks > 0);
+        }
     }
 
     pub fn validate(&self) -> Result<(), Error> {
@@ -427,8 +557,50 @@ impl Project {
         if self.source_midi.as_deref().is_some_and(str::is_empty) {
             return Err(invalid("source_midi cannot be empty when present"));
         }
+        for instrument in &self.instruments {
+            instrument.validate()?;
+        }
+        for pattern in &self.patterns {
+            pattern.validate()?;
+        }
         for track in &self.tracks {
             validate_track(track)?;
+            if track.instrument >= self.instruments.len() {
+                return Err(invalid("track instrument does not exist"));
+            }
+            for part in &track.parts {
+                self.validate_part(*part)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_part(&self, part: Part) -> Result<(), Error> {
+        if part.pattern >= self.patterns.len() {
+            return Err(invalid("part pattern does not exist"));
+        }
+        if part.length_ticks == 0 {
+            return Err(invalid("part length must be greater than zero"));
+        }
+        let part_end = part
+            .start_tick
+            .checked_add(part.length_ticks)
+            .ok_or_else(|| invalid("part end tick exceeds the supported range"))?;
+        let pattern = &self.patterns[part.pattern];
+        let last_occurrence = (part.length_ticks - 1) / pattern.length_ticks;
+        let last_start = part
+            .start_tick
+            .checked_add(last_occurrence * pattern.length_ticks)
+            .ok_or_else(|| invalid("part occurrence exceeds the supported range"))?;
+        for note in &pattern.notes {
+            let start = last_start
+                .checked_add(note.start_tick)
+                .ok_or_else(|| invalid("expanded note start exceeds the supported range"))?;
+            if start < part_end {
+                start
+                    .checked_add(note.duration_ticks)
+                    .ok_or_else(|| invalid("expanded note end exceeds the supported range"))?;
+            }
         }
         Ok(())
     }
@@ -489,52 +661,16 @@ fn validate_track(track: &Track) -> Result<(), Error> {
     if track.name.trim().is_empty() {
         return Err(invalid("track name cannot be empty"));
     }
-    if track.patch.trim().is_empty() {
-        return Err(invalid("track patch cannot be empty"));
-    }
-    if track.midi_program.is_some_and(|program| program > 127) {
-        return Err(invalid("track midi_program must be between 0 and 127"));
-    }
-    if !track.gain.is_finite() || !(0.0..=1.0).contains(&track.gain) {
-        return Err(invalid("track gain must be between 0 and 1"));
-    }
-    if !track.pan.is_finite() || !(-1.0..=1.0).contains(&track.pan) {
-        return Err(invalid("track pan must be between -1 and 1"));
-    }
-    if !track.pitch_bend_range_semitones.is_finite()
-        || track.pitch_bend_range_semitones <= 0.0
-        || track.pitch_bend_range_semitones > 24.0
-    {
-        return Err(invalid(
-            "pitch bend range must be between 0 and 24 semitones",
-        ));
-    }
-    for bend in &track.pitch_bends {
-        if !(-8192..=8191).contains(&bend.value) {
-            return Err(invalid("pitch bend values must be between -8192 and 8191"));
-        }
-    }
-    for pressure in &track.aftertouch {
-        if pressure.value > 127 || pressure.note.is_some_and(|note| note > 127) {
-            return Err(invalid(
-                "aftertouch notes and values must be between 0 and 127",
-            ));
-        }
-    }
-    for event in &track.controllers {
-        if event.controller > 127 || event.value > 127 {
-            return Err(invalid(
-                "controller numbers and values must be between 0 and 127",
-            ));
-        }
-    }
-    for note in &track.notes {
-        validate_note(note)?;
-    }
-    Ok(())
+    pattern::validate_events(
+        1,
+        &track.notes,
+        &track.pitch_bends,
+        &track.aftertouch,
+        &track.controllers,
+    )
 }
 
-fn validate_note(note: &Note) -> Result<(), Error> {
+pub(crate) fn validate_note(note: &Note) -> Result<(), Error> {
     if note.pitch > 127 || note.velocity == 0 || note.velocity > 127 {
         return Err(invalid(
             "note pitch must be 0..=127 and velocity must be 1..=127",
@@ -560,7 +696,7 @@ fn tempo_microseconds(tempo_bpm: f32) -> Result<u32, Error> {
     Ok(microseconds as u32)
 }
 
-fn invalid(message: &str) -> Error {
+pub(crate) fn invalid(message: &str) -> Error {
     Error::InvalidProject(message.to_owned())
 }
 
@@ -576,10 +712,10 @@ mod tests {
         let track = project
             .add_track(Track {
                 name: "Lead".to_owned(),
-                pan: -0.25,
                 ..Track::default()
             })
             .unwrap();
+        project.instruments[0].pan = -0.25;
         project
             .add_note(
                 track,
@@ -599,8 +735,186 @@ mod tests {
         let (start, duration) = performance.note_timing(&performance.tracks[0].notes[0]);
         assert!((start - 0.5).abs() < 0.000_001);
         assert!((duration - 0.25).abs() < 0.000_001);
-        assert_eq!(decoded.tracks[0].pan, -0.25);
+        assert_eq!(decoded.instruments[0].pan, -0.25);
         assert_eq!(decoded.source_midi.as_deref(), Some("song.mid"));
+    }
+
+    #[test]
+    fn version_one_tracks_migrate_to_instruments_without_losing_performance() {
+        let project = Project::from_json(
+            r#"{
+                "format":"midi-evil-project","version":1,"name":"Old Song",
+                "tracks":[{"name":"Lead","patch":"nasty","gain":0.5,"pan":-0.25,
+                    "pitch_bend_range_semitones":7.0,
+                    "notes":[{"pitch":69,"velocity":110,"start_tick":128,"duration_ticks":64}]}]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(project.version, FORMAT_VERSION);
+        assert_eq!(project.instruments[0].patch(), Some("nasty"));
+        assert_eq!(project.instruments[0].pitch_bend_range_semitones, 7.0);
+        assert_eq!(project.to_performance().unwrap().note_count(), 1);
+        assert_eq!(project.tracks[0].instrument, 0);
+    }
+
+    #[test]
+    fn shared_patterns_expand_into_repeated_and_cropped_parts() {
+        let mut project = Project::new("Patterns");
+        project.add_track(Track::default()).unwrap();
+        let pattern = project
+            .add_pattern(Pattern {
+                name: "Beat".to_owned(),
+                length_ticks: 480,
+                notes: vec![Note {
+                    start_tick: 120,
+                    duration_ticks: 600,
+                    ..Note::default()
+                }],
+                controllers: vec![ControllerEvent {
+                    tick: 120,
+                    controller: 1,
+                    value: 90,
+                }],
+                ..Pattern::default()
+            })
+            .unwrap();
+        project
+            .add_part(
+                0,
+                Part {
+                    pattern,
+                    start_tick: 480,
+                    length_ticks: 900,
+                },
+            )
+            .unwrap();
+        let performance = project.to_performance().unwrap();
+        let starts: Vec<_> = performance.tracks[0]
+            .notes
+            .iter()
+            .map(|note| note.start_tick)
+            .collect();
+        assert_eq!(starts, [600, 1080]);
+        assert_eq!(performance.tracks[0].notes[0].duration_ticks, 600);
+        assert_eq!(performance.tracks[0].controllers.len(), 2);
+        project.truncate_timeline(1_000);
+        assert_eq!(project.to_performance().unwrap().note_count(), 1);
+    }
+
+    #[test]
+    fn part_expansion_rejects_note_end_overflow_without_adding_the_part() {
+        let mut project = Project::new("Overflow");
+        project.add_track(Track::default()).unwrap();
+        let pattern = project
+            .add_pattern(Pattern {
+                notes: vec![Note {
+                    duration_ticks: 100,
+                    ..Note::default()
+                }],
+                ..Pattern::default()
+            })
+            .unwrap();
+        let result = project.add_part(
+            0,
+            Part {
+                pattern,
+                start_tick: u64::MAX - 5,
+                length_ticks: 5,
+            },
+        );
+        assert!(result.is_err());
+        assert!(project.tracks[0].parts.is_empty());
+    }
+
+    #[test]
+    fn tracks_can_share_an_instrument_and_scale_beyond_midi_channels() {
+        let mut project = Project::new("Shared");
+        let instrument = project.add_instrument(Instrument::default()).unwrap();
+        for index in 0..64 {
+            project
+                .add_track(Track {
+                    name: format!("Track {index}"),
+                    instrument,
+                    notes: vec![Note::default()],
+                    ..Track::default()
+                })
+                .unwrap();
+        }
+        assert_eq!(project.instruments.len(), 1);
+        assert_eq!(project.to_performance().unwrap().note_count(), 64);
+    }
+
+    #[test]
+    fn native_capacity_covers_instruments_patterns_events_and_parts() {
+        let mut project = Project::new("Capacity");
+        let instruments: Vec<_> = (0..16)
+            .map(|index| {
+                project
+                    .add_instrument(Instrument::synth(format!("Instrument {index}"), "lead"))
+                    .unwrap()
+            })
+            .collect();
+        for index in 0..64 {
+            project
+                .add_track(Track {
+                    name: format!("Track {index}"),
+                    instrument: instruments[index % 16],
+                    ..Track::default()
+                })
+                .unwrap();
+        }
+        for index in 0..100 {
+            let event_count = if index == 99 { 1_000 } else { 1 };
+            project
+                .add_pattern(Pattern {
+                    name: format!("Pattern {index}"),
+                    notes: (0..event_count)
+                        .map(|_| Note {
+                            duration_ticks: 1,
+                            ..Note::default()
+                        })
+                        .collect(),
+                    ..Pattern::default()
+                })
+                .unwrap();
+        }
+        for index in 0..1_000 {
+            project
+                .add_part(
+                    index % 64,
+                    Part {
+                        pattern: index % 99,
+                        start_tick: 0,
+                        length_ticks: 1_920,
+                    },
+                )
+                .unwrap();
+        }
+        project
+            .add_part(
+                0,
+                Part {
+                    pattern: 99,
+                    start_tick: 0,
+                    length_ticks: 1_920,
+                },
+            )
+            .unwrap();
+        let performance = project.to_performance().unwrap();
+        assert_eq!(project.instruments.len(), 16);
+        assert_eq!(project.tracks.len(), 64);
+        assert_eq!(project.patterns.len(), 100);
+        assert_eq!(project.patterns[99].notes.len(), 1_000);
+        assert_eq!(
+            project
+                .tracks
+                .iter()
+                .map(|track| track.parts.len())
+                .sum::<usize>(),
+            1_001
+        );
+        assert_eq!(performance.tracks.len(), 64);
+        assert_eq!(performance.note_count(), 2_000);
     }
 
     #[test]
@@ -676,6 +990,7 @@ mod tests {
         assert_eq!(project.duplicate_track(0).unwrap(), 1);
         assert_eq!(project.tracks[1].name, "Lead Copy");
         assert_eq!(project.tracks[1].notes.len(), 1);
+        assert_ne!(project.tracks[0].instrument, project.tracks[1].instrument);
         project.move_track(2, 0).unwrap();
         assert_eq!(project.tracks[0].name, "Bass");
         assert_eq!(project.remove_track(1).unwrap().name, "Lead");
@@ -684,33 +999,29 @@ mod tests {
     }
 
     #[test]
-    fn track_pitch_bends_round_trip_through_native_json() {
+    fn track_automation_round_trips_through_native_json() {
         let mut project = Project::new("Bend");
-        project
-            .add_track(Track {
-                pitch_bends: vec![PitchBend {
-                    tick: 240,
-                    value: -4096,
-                }],
-                aftertouch: vec![Aftertouch {
-                    tick: 240,
-                    note: Some(60),
-                    value: 96,
-                }],
-                controllers: vec![ControllerEvent {
-                    tick: 240,
-                    controller: 1,
-                    value: 96,
-                }],
-                pitch_bend_range_semitones: 7.0,
-                ..Track::default()
-            })
-            .unwrap();
+        project.add_track(Track::default()).unwrap();
+        project.instruments[0].pitch_bend_range_semitones = 7.0;
+        project.tracks[0].pitch_bends = vec![PitchBend {
+            tick: 240,
+            value: -4096,
+        }];
+        project.tracks[0].aftertouch = vec![Aftertouch {
+            tick: 240,
+            note: Some(60),
+            value: 96,
+        }];
+        project.tracks[0].controllers = vec![ControllerEvent {
+            tick: 240,
+            controller: 1,
+            value: 96,
+        }];
         let decoded = Project::from_json(&project.to_json_pretty().unwrap()).unwrap();
         assert_eq!(decoded.tracks[0].pitch_bends, project.tracks[0].pitch_bends);
         assert_eq!(decoded.tracks[0].aftertouch, project.tracks[0].aftertouch);
         assert_eq!(decoded.tracks[0].controllers, project.tracks[0].controllers);
-        assert_eq!(decoded.tracks[0].pitch_bend_range_semitones, 7.0);
+        assert_eq!(decoded.instruments[0].pitch_bend_range_semitones, 7.0);
     }
 
     #[test]
@@ -751,8 +1062,8 @@ mod tests {
         };
         let project = Project::from_performance("MIDI", &performance).unwrap();
         assert_eq!(project.tracks[0].name, "Imported");
-        assert_eq!(project.tracks[0].midi_program, Some(80));
-        assert_eq!(project.tracks[0].pan, 0.0);
+        assert_eq!(project.instruments[0].midi_program, Some(80));
+        assert_eq!(project.instruments[0].pan, 0.0);
         assert_eq!(project.tempo_changes.len(), 1);
         assert_eq!(project.tempo_changes[0].tick, 128);
         assert_eq!(project.tempo_changes[0].bpm, 240.0);

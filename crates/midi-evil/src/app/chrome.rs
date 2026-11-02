@@ -108,6 +108,21 @@ impl StudioApp {
                             self.preview_project();
                         }
                     }
+                    if ui
+                        .add_sized(
+                            [88.0, 40.0],
+                            egui::Button::new(if self.recorder.is_some() {
+                                "■ TAKE"
+                            } else {
+                                "● REC"
+                            })
+                            .selected(self.recorder.is_some()),
+                        )
+                        .on_hover_text("Record keyboard, pads or MIDI into the selected track/part")
+                        .clicked()
+                    {
+                        self.toggle_recording();
+                    }
                     egui::Frame::new()
                         .fill(theme::BACKGROUND)
                         .stroke(egui::Stroke::new(1.0, theme::BORDER))
@@ -117,7 +132,9 @@ impl StudioApp {
                             ui.vertical(|ui| {
                                 ui.horizontal(|ui| {
                                     ui.label(
-                                        RichText::new(if self.render_job.is_some() {
+                                        RichText::new(if self.recorder.is_some() {
+                                            "RECORDING"
+                                        } else if self.render_job.is_some() {
                                             "RENDERING"
                                         } else if active {
                                             "PLAYING"
@@ -243,6 +260,12 @@ impl StudioApp {
                     } else {
                         theme::label(ui, "PLAY THROUGH TAIL");
                     }
+                    ui.separator();
+                    ui.checkbox(&mut self.record_quantize, "Quantize recording to 1/16");
+                    if let Some(recorder) = &self.recorder {
+                        theme::label(ui, format!("{} EVENTS IN TAKE", recorder.pending_events()));
+                    }
+                    self.midi_input.show(ui);
                 });
             });
         egui::Panel::top("workspace-tabs")
@@ -336,8 +359,15 @@ impl StudioApp {
                         format!("TRACK RACK  /  {:02}", self.project.tracks.len()),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("+").on_hover_text("Add track").clicked() {
+                        if ui.button("+").on_hover_text("Add synth track").clicked() {
                             self.add_track();
+                        }
+                        if ui
+                            .button("+KIT")
+                            .on_hover_text("Add a Maxwell drum-kit track")
+                            .clicked()
+                        {
+                            self.add_drum_track();
                         }
                     });
                 });
@@ -349,6 +379,11 @@ impl StudioApp {
                     .show(ui, |ui| {
                         for index in 0..self.project.tracks.len() {
                             let track = &self.project.tracks[index];
+                            let instrument = &self.project.instruments[track.instrument];
+                            let source = match &instrument.source {
+                                InstrumentSource::Synth { patch } => patch,
+                                InstrumentSource::DrumKit { kit, .. } => kit,
+                            };
                             let selected = self.roll.selected_track == index;
                             let response =
                                 ui.add_sized(
@@ -381,7 +416,7 @@ impl StudioApp {
                             }
                             response.on_hover_text(format!(
                                 "{} · {} notes",
-                                track.patch,
+                                source,
                                 track.notes.len()
                             ));
                         }
@@ -417,6 +452,7 @@ impl StudioApp {
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         if let Some(track) = self.project.tracks.get_mut(self.roll.selected_track) {
+                            let instrument = &mut self.project.instruments[track.instrument];
                             theme::label(ui, "SELECTED TRACK");
                             ui.add(
                                 egui::TextEdit::singleline(&mut track.name)
@@ -424,13 +460,26 @@ impl StudioApp {
                             );
                             ui.add_space(4.0);
                             theme::label(ui, "INSTRUMENT");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut track.patch)
-                                    .desired_width(f32::INFINITY),
-                            )
-                            .on_hover_text(
-                                "Synth preset name or a JSON patch path relative to this project",
-                            );
+                            match &mut instrument.source {
+                                InstrumentSource::Synth { patch } => {
+                                    ui.add(
+                                        egui::TextEdit::singleline(patch)
+                                            .desired_width(f32::INFINITY),
+                                    )
+                                    .on_hover_text(
+                                        "Synth preset name or a JSON patch path relative to this project",
+                                    );
+                                }
+                                InstrumentSource::DrumKit { kit, .. } => {
+                                    ui.add(
+                                        egui::TextEdit::singleline(kit)
+                                            .desired_width(f32::INFINITY),
+                                    )
+                                    .on_hover_text(
+                                        "Drum-kit path relative to this project, or the maxwell kit",
+                                    );
+                                }
+                            }
                             open_patch = ui
                                 .add_sized(
                                     [ui.available_width(), 32.0],
@@ -442,15 +491,17 @@ impl StudioApp {
                                 .clicked();
                             ui.add_space(8.0);
                             theme::label(ui, "CHANNEL");
-                            ui.add(egui::Slider::new(&mut track.gain, 0.0..=1.0).text("Gain"));
-                            ui.add(egui::Slider::new(&mut track.pan, -1.0..=1.0).text("Pan"));
+                            ui.add(egui::Slider::new(&mut instrument.gain, 0.0..=1.0).text("Gain"));
+                            ui.add(egui::Slider::new(&mut instrument.pan, -1.0..=1.0).text("Pan"));
                             ui.checkbox(&mut track.muted, "Mute track");
                             ui.add_space(6.0);
                             ui.collapsing("Performance", |ui| {
                                 ui.horizontal(|ui| {
                                     ui.label("Bend range");
                                     ui.add(
-                                        egui::DragValue::new(&mut track.pitch_bend_range_semitones)
+                                        egui::DragValue::new(
+                                            &mut instrument.pitch_bend_range_semitones,
+                                        )
                                             .range(0.01..=24.0)
                                             .suffix(" st"),
                                     );
@@ -489,12 +540,21 @@ impl StudioApp {
                     });
                     return;
                 };
-                let Some(note) = self
-                    .project
-                    .tracks
-                    .get_mut(self.roll.selected_track)
-                    .and_then(|track| track.notes.get_mut(note_index))
-                else {
+                let track_index = self.roll.selected_track;
+                let part_index = self.roll.selected_part;
+                let pattern_index = part_index.and_then(|part| {
+                    self.project.tracks[track_index]
+                        .parts
+                        .get(part)
+                        .map(|part| part.pattern)
+                });
+                let pattern_length =
+                    pattern_index.map(|index| self.project.patterns[index].length_ticks);
+                let sequence: &mut dyn evil_project::EventSequence = match pattern_index {
+                    Some(index) => &mut self.project.patterns[index],
+                    None => &mut self.project.tracks[track_index],
+                };
+                let Some(note) = sequence.notes_mut().get_mut(note_index) else {
                     self.roll.selected_note = None;
                     return;
                 };
@@ -506,15 +566,16 @@ impl StudioApp {
                     ui.label("Velocity");
                     ui.add(egui::DragValue::new(&mut note.velocity).range(1..=127));
                     ui.label("Start");
-                    ui.add(egui::DragValue::new(&mut note.start_tick));
+                    ui.add(
+                        egui::DragValue::new(&mut note.start_tick)
+                            .range(0..=pattern_length.unwrap_or(u64::MAX).saturating_sub(1)),
+                    );
                     ui.label("Length");
                     ui.add(egui::DragValue::new(&mut note.duration_ticks).range(1..=1_000_000));
                     remove = ui.button("Delete note").clicked();
                 });
                 if remove {
-                    self.project.tracks[self.roll.selected_track]
-                        .notes
-                        .remove(note_index);
+                    sequence.notes_mut().remove(note_index);
                     self.roll.selected_note = None;
                 }
             });

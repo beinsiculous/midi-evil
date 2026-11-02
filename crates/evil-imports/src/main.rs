@@ -3,7 +3,7 @@ use std::process::ExitCode;
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     match arguments.as_slice() {
-        [command, path] if command == "inspect" => match evil_recovery::analyze_file(path) {
+        [command, path] if command == "inspect" => match evil_imports::analyze_file(path) {
             Ok(analysis) => {
                 println!(
                     "{}",
@@ -40,11 +40,11 @@ fn main() -> ExitCode {
             }
             if !valid {
                 eprintln!(
-                    "Usage: evil-recovery draft INPUT.wav OUTPUT.evil [--bpm N] [--grid 1|2|4|8|16|32]"
+                    "Usage: evil-imports draft INPUT.wav OUTPUT.evil [--bpm N] [--grid 1|2|4|8|16|32]"
                 );
                 return ExitCode::FAILURE;
             }
-            match evil_recovery::create_draft(source, output, bpm, grid) {
+            match evil_imports::create_draft(source, output, bpm, grid) {
                 Ok(report) => {
                     println!(
                         "{}",
@@ -60,9 +60,9 @@ fn main() -> ExitCode {
             }
         }
         _ => {
-            eprintln!("Usage: evil-recovery inspect INPUT.wav");
+            eprintln!("Usage: evil-imports inspect INPUT.wav");
             eprintln!(
-                "       evil-recovery draft INPUT.wav OUTPUT.evil [--bpm N] [--grid 1|2|4|8|16|32]"
+                "       evil-imports draft INPUT.wav OUTPUT.evil [--bpm N] [--grid 1|2|4|8|16|32]"
             );
             ExitCode::FAILURE
         }

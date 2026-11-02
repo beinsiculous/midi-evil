@@ -1,4 +1,7 @@
+use std::collections::{BTreeMap, btree_map::Entry};
 use std::path::Path;
+
+use evil_project::InstrumentSource;
 
 use midly::num::{u4, u7, u15, u24, u28};
 use midly::{Format, Header, MetaMessage, MidiMessage, Smf, Timing, TrackEvent, TrackEventKind};
@@ -33,16 +36,31 @@ pub fn export_native_project(
     let performance = project.to_performance()?;
     let mut tracks = vec![tempo_track(&performance)?];
     let mut next_channel = 0_u8;
+    let mut instrument_channels = BTreeMap::new();
     let mut track_count = 0;
     let mut event_count = tracks[0].len();
 
     for (track_index, track) in project.tracks.iter().enumerate() {
-        let patch = evil_render::load_patch(&track.patch, patch_base)?;
-        let channel = if patch.pitch_tracking {
-            next_melodic_channel(&mut next_channel)?
-        } else {
-            9
+        let instrument = project.instrument_for_track(track_index)?;
+        let patch_program = match &instrument.source {
+            InstrumentSource::Synth { patch } => {
+                let patch = evil_render::load_patch(patch, patch_base)?;
+                if let Entry::Vacant(entry) = instrument_channels.entry(track.instrument) {
+                    let channel = if patch.pitch_tracking {
+                        next_melodic_channel(&mut next_channel)?
+                    } else {
+                        9
+                    };
+                    entry.insert(channel);
+                }
+                patch.midi_program
+            }
+            InstrumentSource::DrumKit { .. } => {
+                instrument_channels.entry(track.instrument).or_insert(9);
+                None
+            }
         };
+        let channel = instrument_channels[&track.instrument];
         let mut events = Vec::new();
         if let Some(performance_track) = performance
             .tracks
@@ -112,9 +130,9 @@ pub fn export_native_project(
         let mut setup_events = Vec::new();
         setup_events.extend(pitch_bend_range_events(
             channel,
-            track.pitch_bend_range_semitones,
+            instrument.pitch_bend_range_semitones,
         ));
-        if let Some(program) = track.midi_program.or(patch.midi_program) {
+        if let Some(program) = instrument.midi_program.or(patch_program) {
             setup_events.push(TrackEvent {
                 delta: u28::new(0),
                 kind: TrackEventKind::Midi {
@@ -125,8 +143,8 @@ pub fn export_native_project(
                 },
             });
         }
-        setup_events.push(controller_event(channel, 7, gain_value(track.gain)));
-        setup_events.push(controller_event(channel, 10, pan_value(track.pan)));
+        setup_events.push(controller_event(channel, 7, gain_value(instrument.gain)));
+        setup_events.push(controller_event(channel, 10, pan_value(instrument.pan)));
         midi_track.splice(1..1, setup_events);
         event_count += midi_track.len();
         track_count += 1;
@@ -266,12 +284,12 @@ mod tests {
         project
             .add_track(Track {
                 name: "Lead & co".to_owned(),
-                gain: 0.5,
-                pan: -1.0,
                 notes: vec![Note::default()],
                 ..Track::default()
             })
             .unwrap();
+        project.instruments[0].gain = 0.5;
+        project.instruments[0].pan = -1.0;
         project
             .add_track(Track {
                 name: "Muted".to_owned(),
@@ -280,10 +298,13 @@ mod tests {
                 ..Track::default()
             })
             .unwrap();
+        let drums = project
+            .add_instrument(evil_project::Instrument::synth("Drums", "kick"))
+            .unwrap();
         project
             .add_track(Track {
                 name: "Drums".to_owned(),
-                patch: "kick".to_owned(),
+                instrument: drums,
                 notes: vec![Note {
                     pitch: 36,
                     ..Note::default()
@@ -335,6 +356,36 @@ mod tests {
     }
 
     #[test]
+    fn tracks_sharing_an_instrument_reuse_its_channel() {
+        let mut project = evil_project::Project::new("Shared channels");
+        let instrument = project
+            .add_instrument(evil_project::Instrument::default())
+            .unwrap();
+        for index in 0..64 {
+            project
+                .add_track(Track {
+                    name: format!("Part {index}"),
+                    instrument,
+                    notes: vec![Note::default()],
+                    ..Track::default()
+                })
+                .unwrap();
+        }
+        let report = export_native_project(&project, Path::new(".")).unwrap();
+        assert_eq!(report.note_count, 64);
+        assert_eq!(report.track_count, 64);
+        let smf = Smf::parse(&report.data).unwrap();
+        assert!(smf.tracks.iter().skip(1).all(|track| {
+            track.iter().all(|event| {
+                matches!(event.kind, TrackEventKind::Midi { channel, .. } if channel.as_int() == 0)
+                    || matches!(event.kind, TrackEventKind::Meta(_))
+            })
+        }));
+        assert!(has_track_name(&smf.tracks[1], "Part 0"));
+        assert!(has_track_name(&smf.tracks[64], "Part 63"));
+    }
+
+    #[test]
     fn native_pitch_bend_round_trip_preserves_signed_values() {
         let mut project = evil_project::Project::new("Bend");
         project
@@ -374,12 +425,12 @@ mod tests {
                         value: 90,
                     },
                 ],
-                pitch_bend_range_semitones: 12.5,
                 ..Track::default()
             })
             .unwrap();
+        project.instruments[0].pitch_bend_range_semitones = 12.5;
         let report = export_native_project(&project, Path::new(".")).unwrap();
-        let performance = crate::import_midi(&report.data).unwrap();
+        let performance = evil_imports::import_midi(&report.data).unwrap();
         assert_eq!(performance.pitch_bend_count(), 2);
         assert_eq!(
             performance.tracks[0].pitch_bends,
@@ -397,7 +448,7 @@ mod tests {
         );
         assert_eq!(performance.skipped_controller_events(), 1);
         assert_eq!(performance.tracks[0].pitch_bend_range_semitones, 12.5);
-        assert_eq!(project.tracks[0].pitch_bend_range_semitones, 12.5);
+        assert_eq!(project.instruments[0].pitch_bend_range_semitones, 12.5);
     }
 
     #[test]

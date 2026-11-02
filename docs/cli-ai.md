@@ -25,7 +25,7 @@ Successful commands exit 0. Invalid input and I/O failures print an error to std
 | `oracle midi inspect INPUT.mid --json` | Timing, duration, track, note, and automation counts |
 | `oracle synth list --json` | Built-in preset name array |
 | `oracle synth render PATCH OUT.wav --json` | Mono render report with patch, sample count, and sample rate |
-| `oracle project render SONG.evil OUT.wav --json` | Stereo render report with notes, tracks, frames, and unsupported-controller count |
+| `oracle project render SONG.evil OUT.wav --json` | Stereo render report with notes, tracks, frames, unsupported-controller count, and skipped drum-note count |
 
 Other JSON workflows already available:
 
@@ -46,6 +46,18 @@ oracle project render a17.evil a17.wav --json
 ```
 
 The built-in `nasty` preset is an original approximation, not a claim of sample-identical NanoStudio audio. Use a NanoStudio reference render when evaluating compatibility.
+
+## Create and render a drum track
+
+```bash
+oracle project new "Kit Test" kit.evil --tempo 120
+oracle project add-drum-track kit.evil Drums --kit maxwell --base-note 36
+oracle project add-note kit.evil 0 36 0 480 --velocity 110
+oracle project render kit.evil kit.wav --json
+oracle project export-midi kit.evil kit.mid
+```
+
+Use a relative `.evilkit` path instead of `maxwell` for a saved bank. The default mapping assigns notes 36–51 to the 16 pads. `skipped_drum_notes` reports notes outside that mapping or targeting empty pads; those notes remain preserved in the project and MIDI export.
 
 ## Agent workflow
 

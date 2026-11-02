@@ -1,13 +1,15 @@
 [package]
-name = "evil-midi"
+name = "evil-imports"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+hound = "3"
 midly = "0.5"
 evil-performance = { path = "../evil-performance", version = "0.1.0" }
 evil-project = { path = "../evil-project", version = "0.1.0" }
-evil-render = { path = "../evil-render", version = "0.1.0" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 thiserror = "2"
 
 [dev-dependencies]

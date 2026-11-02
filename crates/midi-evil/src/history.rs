@@ -63,11 +63,30 @@ mod tests {
     }
 
     #[test]
-    fn repeated_snapshots_are_not_duplicated() {
+    fn pattern_edits_restore_shared_and_unique_part_snapshots() {
+        use evil_project::{Part, Pattern, Track};
+
+        let mut original = Project::new("Patterns");
+        original.add_track(Track::default()).unwrap();
+        let pattern = original.add_pattern(Pattern::default()).unwrap();
+        original
+            .add_part(
+                0,
+                Part {
+                    pattern,
+                    start_tick: 0,
+                    length_ticks: 1920,
+                },
+            )
+            .unwrap();
+        let mut edited = original.clone();
+        edited.make_part_unique(0, 0).unwrap();
+        edited.patterns[1].notes.push(evil_project::Note::default());
         let mut history = EditorHistory::default();
-        let project = Project::default();
-        history.record(project.clone());
-        history.record(project);
-        assert_eq!(history.undo.len(), 1);
+        history.record(original.clone());
+        let restored = history.undo(&edited).unwrap();
+        assert_eq!(restored.patterns.len(), 1);
+        assert!(restored.patterns[0].notes.is_empty());
+        assert_eq!(history.redo(&restored).unwrap(), edited);
     }
 }

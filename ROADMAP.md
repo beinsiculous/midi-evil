@@ -1,6 +1,17 @@
 # MIDI Evil Roadmap
 
-Living tracker for planned native features and follow-up fixes. NanoStudio backporting is retired as an active goal; local reference renders may still guide original sound recreation. Completed work moves to `ARCHIVE.md`. Engine-integration order follows `docs/insiculous-crossing.md`.
+Living tracker for planned native features and follow-up fixes. NanoStudio backporting is retired as an active goal; local reference renders may still guide original sound recreation and native NanoStudio 1 feature parity. The capability checklist and status ledger live in `docs/nanostudio1-parity.md`. Completed work moves to `ARCHIVE.md`. Engine-integration order follows `docs/insiculous-crossing.md`.
+
+## Native NanoStudio 1 feature parity
+
+- [ ] Build the complete native instrument, pattern, sampling, mixer/effects, and arrangement workflow
+  - Phase 1: versioned shared instruments, reusable pattern parts, native drum-track rendering, and shared-instrument MIDI channels.
+    - Completed: schema v2 with v1/legacy migration, repeated/cropped pattern expansion, 64-track shared-instrument tests, offline stereo kit rendering, `+KIT`/`add-drum-track`, and CLI WAV/MIDI smoke verification. Pattern editing and pad-performance linking remain in phase 2.
+  - Phase 2: pattern/arranger editing and keyboard/pad/MIDI recording integrated with history and transport.
+    - Progress: added shared/unique part arranging, move/crop/duplicate/make-unique/merge and section duplication, pattern-aware piano-roll/automation editing, quantize/transpose/copy/cleanup, one-take history, loop recording from keyboard/pads/desktop `midir` input, and model/parser/history tests. Interactive desktop and hardware-MIDI smoke verification remains; explicit ramp controller editing, held-pad audio-repeat capture, and automatic Pads-bank linking remain open.
+  - Phases 3–5: Eden-style modulation/sampling, complete TRG voices/sample editing, and one shared automatable effects graph.
+  - Phase 6: stem/part export, favorite-sound calibration, and the final verified parity audit.
+  - Track individual capabilities in `docs/nanostudio1-parity.md`; do not claim parity from format round trips alone.
 
 ## Preferred sound recreations
 
@@ -22,16 +33,18 @@ Living tracker for planned native features and follow-up fixes. NanoStudio backp
 
 - [ ] Finish `evil-beats` song and rendering integration
   - Add native song-track bank references, recording into patterns, per-pad/output filters, and CLI bank/project rendering without Oracle dependencies.
-  - Progress: tuned sample pads, velocity, gate/release envelopes, overlapping hits, portable `.evilkit` banks with embedded audio, WAV import/export, original 16-pad kit, stereo gain/pan/mute, and the desktop Pads workspace with held-pad repeat.
+  - Progress: tuned sample pads, velocity, gate/release envelopes, overlapping hits, portable `.evilkit` banks with embedded audio, WAV import/export, original 16-pad kit, stereo gain/pan/mute, the desktop Pads workspace with held-pad repeat, native song-track bank references, deterministic offline stereo kit rendering, `+KIT`, CLI `add-drum-track`/project rendering, and pad recording into timeline/pattern targets. Per-pad/output filters, held-repeat take capture, and linking the independent Pads audition bank to song instruments remain open.
 
 ## Editor and composition workflow
 
 - [ ] Continue polishing Evil Synth and Evil Beats
   - Keep grouped controls responsive at small and large window sizes, retain every JSON/bank parameter, and add useful ADSR/LFO/filter feedback without obstructing editing or audition.
   - Integrate pad recording with section play/repeat, piano-roll editing, and native project history.
+    - Progress: physical pad hits record into the selected repeating range and commit as one undoable take; automatic repeat-roll capture remains open.
 
 - [ ] Add arrangement conveniences for bar-based writing
   - Section duplicate, loop-aware note duplication, optional recording into the selected range, and clear playhead/selection behavior.
+    - Progress: loop duplication copies unique events/controllers and cropped linked parts; shared-part duplication and quantized range recording are implemented.
   - Preserve exact section rendering and the existing audio-clocked playhead through tempo changes.
 
 ## Recover editable songs from WAV exports
@@ -43,7 +56,7 @@ Living tracker for planned native features and follow-up fixes. NanoStudio backp
   - Add polyphonic/chord transcription as a later stage with voice separation, ambiguous-note review, and manual editing.
   - Match native patches by comparing rendered candidates with the source, then render the recovered arrangement for iterative A/B listening.
   - Export `.evil` and Standard MIDI with source-audio provenance. Recovered projects are editable approximations, not exact replacements for lost master files.
-  - Progress (2026-10-30): created `evil-recovery` with PCM WAV loading, activity/onset detection, tempo candidates, JSON inspection, and quantized `.evil` draft generation with tempo/grid overrides. Generated validated onset projects for Dreams (110 BPM), Foolish Thoughts (120 BPM), and The Dagobah Vision (140 BPM) under `target/recovery/`. Spectrogram review, loop detection, pitch tracking, and patch matching remain open.
+  - Progress (2026-10-30): created `evil-imports` with PCM WAV loading, activity/onset detection, tempo candidates, JSON inspection, and quantized `.evil` draft generation with tempo/grid overrides. Generated validated onset projects for Dreams (110 BPM), Foolish Thoughts (120 BPM), and The Dagobah Vision (140 BPM) under `target/recovery/`. Spectrogram review, loop detection, pitch tracking, and patch matching remain open.
 
 ## Packaging and release
 

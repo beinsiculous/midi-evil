@@ -1,9 +1,10 @@
 use std::path::{Path, PathBuf};
 
-use evil_project::Project;
+use evil_beats::{DrumKit, KitHit};
+use evil_project::{InstrumentSource, Project};
 use evil_synth::{
-    MonoTrack, Patch, StereoSound, SynthAftertouch, SynthController, SynthNote, SynthPitchBend,
-    SynthTempoChange, mix_stereo,
+    MonoTrack, Patch, StereoSound, StereoTrack, SynthAftertouch, SynthController, SynthNote,
+    SynthPitchBend, SynthTempoChange, mix_stereo, mix_stereo_with_tracks,
 };
 use thiserror::Error;
 
@@ -13,6 +14,8 @@ pub enum Error {
     Project(#[from] evil_project::Error),
     #[error(transparent)]
     Synth(#[from] evil_synth::Error),
+    #[error(transparent)]
+    Beats(#[from] evil_beats::Error),
     #[error("could not read synth patch {path}: {source}")]
     PatchIo {
         path: PathBuf,
@@ -30,6 +33,7 @@ pub struct RenderOutput {
     pub note_count: usize,
     pub track_count: usize,
     pub unsupported_controller_events: usize,
+    pub skipped_drum_notes: usize,
 }
 
 pub fn load_patch(source: &str, base: &Path) -> Result<Patch, Error> {
@@ -46,6 +50,14 @@ pub fn load_patch_file(path: &Path) -> Result<Patch, Error> {
         source,
     })?;
     Ok(Patch::from_json(&json)?)
+}
+
+pub fn load_drum_kit(source: &str, base: &Path) -> Result<DrumKit, Error> {
+    if source == "maxwell" {
+        Ok(evil_beats::maxwell_kit()?)
+    } else {
+        Ok(DrumKit::read(base.join(source))?)
+    }
 }
 
 pub fn render_audition(patch: &Patch) -> Result<RenderOutput, Error> {
@@ -73,6 +85,7 @@ pub fn render_audition(patch: &Patch) -> Result<RenderOutput, Error> {
         note_count: 1,
         track_count: 1,
         unsupported_controller_events: 0,
+        skipped_drum_notes: 0,
     })
 }
 
@@ -95,12 +108,7 @@ pub fn render_project_range(
     let end_seconds = end_tick.map(|end| performance.seconds_at(end));
     let mut input = project.clone();
     if let Some(end) = end_tick {
-        for track in &mut input.tracks {
-            track.notes.retain(|note| note.start_tick < end);
-            track.pitch_bends.retain(|event| event.tick < end);
-            track.aftertouch.retain(|event| event.tick < end);
-            track.controllers.retain(|event| event.tick < end);
-        }
+        input.truncate_timeline(end);
     }
     let mut output = render_project(&input, patch_base)?;
     let sample_rate = output.sound.sample_rate;
@@ -112,10 +120,9 @@ pub fn render_project_range(
     let end_frame = end_frame.min(output.sound.left.len());
     output.sound.left = output.sound.left[start_frame..end_frame].to_vec();
     output.sound.right = output.sound.right[start_frame..end_frame].to_vec();
-    output.note_count = project
+    output.note_count = performance
         .tracks
         .iter()
-        .filter(|track| !track.muted)
         .flat_map(|track| &track.notes)
         .filter(|note| {
             note.start_tick < end_tick.unwrap_or(u64::MAX)
@@ -131,7 +138,10 @@ pub fn render_project(project: &Project, patch_base: &Path) -> Result<RenderOutp
         return Err(Error::NoNotes);
     }
     let mut rendered = Vec::new();
+    let mut stereo_rendered = Vec::new();
     let mut note_count = 0;
+    let mut skipped_drum_notes = 0;
+    let mut unsupported_controller_events = 0;
     let tempo_changes: Vec<_> = performance
         .tempo_changes
         .iter()
@@ -141,65 +151,103 @@ pub fn render_project(project: &Project, patch_base: &Path) -> Result<RenderOutp
         })
         .collect();
     for track in &performance.tracks {
-        let settings = &project.tracks[track.track_index];
-        let mut patch = load_patch(&settings.patch, patch_base)?;
-        patch.sample_rate = project.sample_rate;
-        patch.pitch_bend_range_semitones = settings.pitch_bend_range_semitones;
-        let notes: Vec<_> = track
-            .notes
-            .iter()
-            .map(|note| {
-                let (start_seconds, duration_seconds) = performance.note_timing(note);
-                SynthNote {
-                    start_seconds,
-                    duration_seconds,
-                    pitch: note.note,
-                    velocity: note.velocity,
+        let settings = project.instrument_for_track(track.track_index)?;
+        match &settings.source {
+            InstrumentSource::Synth { patch: source } => {
+                let mut patch = load_patch(source, patch_base)?;
+                patch.sample_rate = project.sample_rate;
+                patch.pitch_bend_range_semitones = settings.pitch_bend_range_semitones;
+                let notes: Vec<_> = track
+                    .notes
+                    .iter()
+                    .map(|note| {
+                        let (start_seconds, duration_seconds) = performance.note_timing(note);
+                        SynthNote {
+                            start_seconds,
+                            duration_seconds,
+                            pitch: note.note,
+                            velocity: note.velocity,
+                        }
+                    })
+                    .collect();
+                note_count += notes.len();
+                let pitch_bends: Vec<_> = track
+                    .pitch_bends
+                    .iter()
+                    .map(|bend| SynthPitchBend {
+                        time_seconds: performance.seconds_at(bend.tick),
+                        value: bend.value,
+                    })
+                    .collect();
+                let aftertouch: Vec<_> = track
+                    .aftertouch
+                    .iter()
+                    .map(|pressure| SynthAftertouch {
+                        time_seconds: performance.seconds_at(pressure.tick),
+                        note: pressure.note,
+                        value: pressure.value,
+                    })
+                    .collect();
+                let controllers: Vec<_> = track
+                    .controllers
+                    .iter()
+                    .map(|event| SynthController {
+                        time_seconds: performance.seconds_at(event.tick),
+                        controller: event.controller,
+                        value: event.value,
+                    })
+                    .collect();
+                unsupported_controller_events += track
+                    .controllers
+                    .iter()
+                    .filter(|event| !evil_project::controller_is_rendered(event.controller))
+                    .count();
+                let sound = evil_synth::render_notes_dry_with_tempo_and_full_automation(
+                    &patch,
+                    &notes,
+                    &pitch_bends,
+                    &aftertouch,
+                    &controllers,
+                    &tempo_changes,
+                )?;
+                rendered.push((
+                    sound,
+                    settings.gain,
+                    settings.pan,
+                    patch.delay.clone(),
+                    patch.sync.is_some(),
+                ));
+            }
+            InstrumentSource::DrumKit { kit, base_note } => {
+                let kit = load_drum_kit(kit, patch_base)?;
+                let mut hits = Vec::new();
+                for note in &track.notes {
+                    let Some(pad_index) = note
+                        .note
+                        .checked_sub(*base_note)
+                        .filter(|offset| *offset < evil_project::DRUM_PAD_COUNT)
+                    else {
+                        skipped_drum_notes += 1;
+                        continue;
+                    };
+                    if kit.pads[usize::from(pad_index)].is_none() {
+                        skipped_drum_notes += 1;
+                        continue;
+                    }
+                    let (start_seconds, _) = performance.note_timing(note);
+                    hits.push(KitHit {
+                        pad_index: usize::from(pad_index),
+                        start_seconds,
+                        duration_seconds: None,
+                        velocity: note.velocity,
+                    });
                 }
-            })
-            .collect();
-        note_count += notes.len();
-        let pitch_bends: Vec<_> = track
-            .pitch_bends
-            .iter()
-            .map(|bend| SynthPitchBend {
-                time_seconds: performance.seconds_at(bend.tick),
-                value: bend.value,
-            })
-            .collect();
-        let aftertouch: Vec<_> = track
-            .aftertouch
-            .iter()
-            .map(|pressure| SynthAftertouch {
-                time_seconds: performance.seconds_at(pressure.tick),
-                note: pressure.note,
-                value: pressure.value,
-            })
-            .collect();
-        let controllers: Vec<_> = track
-            .controllers
-            .iter()
-            .map(|event| SynthController {
-                time_seconds: performance.seconds_at(event.tick),
-                controller: event.controller,
-                value: event.value,
-            })
-            .collect();
-        let sound = evil_synth::render_notes_dry_with_tempo_and_full_automation(
-            &patch,
-            &notes,
-            &pitch_bends,
-            &aftertouch,
-            &controllers,
-            &tempo_changes,
-        )?;
-        rendered.push((
-            sound,
-            settings.gain,
-            settings.pan,
-            patch.delay.clone(),
-            patch.sync.is_some(),
-        ));
+                note_count += hits.len();
+                unsupported_controller_events += track.controllers.len();
+                let sound = evil_beats::render_kit(&kit, &hits, project.sample_rate)?;
+                stereo_rendered.push((sound, settings.gain, settings.pan));
+            }
+        }
     }
 
     let tracks: Vec<_> = rendered
@@ -212,19 +260,22 @@ pub fn render_project(project: &Project, patch_base: &Path) -> Result<RenderOutp
             dc_block: *dc_block,
         })
         .collect();
-    let track_count = tracks.len();
-    let unsupported_controller_events = performance
-        .tracks
+    let stereo_tracks: Vec<_> = stereo_rendered
         .iter()
-        .flat_map(|track| &track.controllers)
-        .filter(|event| !evil_project::controller_is_rendered(event.controller))
-        .count();
-    let sound = mix_stereo(&tracks, project.master_gain)?;
+        .map(|(sound, gain, pan)| StereoTrack {
+            sound,
+            gain: *gain,
+            pan: *pan,
+        })
+        .collect();
+    let track_count = tracks.len() + stereo_tracks.len();
+    let sound = mix_stereo_with_tracks(&tracks, &stereo_tracks, project.master_gain)?;
     Ok(RenderOutput {
         sound,
         note_count,
         track_count,
         unsupported_controller_events,
+        skipped_drum_notes,
     })
 }
 
@@ -239,11 +290,11 @@ mod tests {
         let mut project = Project::new("Render Test");
         project
             .add_track(Track {
-                pan: -0.5,
                 notes: vec![Note::default()],
                 ..Track::default()
             })
             .unwrap();
+        project.instruments[0].pan = -0.5;
         let output = render_project(&project, Path::new(".")).unwrap();
         assert_eq!(output.note_count, 1);
         assert_eq!(output.track_count, 1);
@@ -350,10 +401,10 @@ mod tests {
                     tick: 0,
                     value: 8191,
                 }],
-                pitch_bend_range_semitones: 12.0,
                 ..Track::default()
             })
             .unwrap();
+        project.instruments[0].pitch_bend_range_semitones = 12.0;
         let bent = render_project(&project, Path::new(".")).unwrap();
         project.tracks[0].pitch_bends.clear();
         let plain = render_project(&project, Path::new(".")).unwrap();
@@ -433,6 +484,42 @@ mod tests {
             .unwrap();
         let rendered = render_project(&project, Path::new(".")).unwrap();
         assert_eq!(rendered.unsupported_controller_events, 2);
+    }
+
+    #[test]
+    fn renders_drum_kit_tracks_and_reports_unmapped_notes() {
+        let mut project = Project::new("Drums");
+        let instrument = project
+            .add_instrument(evil_project::Instrument::drum_kit("Kit", "maxwell"))
+            .unwrap();
+        project
+            .add_track(Track {
+                instrument,
+                notes: vec![
+                    Note {
+                        pitch: 36,
+                        ..Note::default()
+                    },
+                    Note {
+                        pitch: 60,
+                        ..Note::default()
+                    },
+                ],
+                controllers: vec![evil_project::ControllerEvent {
+                    tick: 0,
+                    controller: 1,
+                    value: 100,
+                }],
+                ..Track::default()
+            })
+            .unwrap();
+        let output = render_project(&project, Path::new(".")).unwrap();
+        assert_eq!(output.note_count, 1);
+        assert_eq!(output.skipped_drum_notes, 1);
+        assert_eq!(output.unsupported_controller_events, 1);
+        assert_eq!(output.track_count, 1);
+        assert!(output.sound.left.iter().any(|sample| sample.abs() > 0.001));
+        assert_eq!(output.sound.left.len(), output.sound.right.len());
     }
 
     #[test]

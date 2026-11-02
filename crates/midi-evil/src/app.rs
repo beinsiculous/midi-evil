@@ -4,12 +4,13 @@ use eframe::egui::{self, RichText, TextureHandle};
 
 mod chrome;
 mod keyboard_page;
+mod recording;
 
 use crate::{
     theme,
     workspace::{self, View},
 };
-use evil_project::{Project, Track};
+use evil_project::{Instrument, InstrumentSource, Project, Track};
 
 use crate::art;
 use crate::automation::{self, AutomationState};
@@ -53,6 +54,12 @@ pub struct StudioApp {
     keyboard_binding: Option<(usize, String)>,
     keyboard_error: Option<String>,
     beats: crate::beats::BeatsPage,
+    beats_binding: Option<(usize, String)>,
+    recorder: Option<crate::recording::Recorder>,
+    recording_snapshot: Option<Project>,
+    record_quantize: bool,
+    midi_input: crate::midi_input::MidiInput,
+    pending_midi_notes: Vec<crate::keyboard::NoteEvent>,
 }
 
 enum PendingRender {
@@ -112,6 +119,12 @@ impl StudioApp {
             keyboard_binding: None,
             keyboard_error: None,
             beats: crate::beats::BeatsPage::new(&context.egui_ctx),
+            beats_binding: None,
+            recorder: None,
+            recording_snapshot: None,
+            record_quantize: true,
+            midi_input: crate::midi_input::MidiInput::default(),
+            pending_midi_notes: Vec::new(),
         };
         app.add_track();
         app.dirty = false;
@@ -162,6 +175,13 @@ impl StudioApp {
     }
 
     fn undo(&mut self) {
+        let recording_snapshot = self.recording_snapshot.clone();
+        if self.recorder.is_some() {
+            self.stop_preview();
+            if let Some(snapshot) = recording_snapshot {
+                self.history.record(snapshot);
+            }
+        }
         if let Some(project) = self.history.undo(&self.project) {
             self.project = project;
             self.roll.clamp(&self.project);
@@ -172,6 +192,10 @@ impl StudioApp {
     }
 
     fn redo(&mut self) {
+        if self.recorder.is_some() {
+            self.stop_preview();
+            return;
+        }
         if let Some(project) = self.history.redo(&self.project) {
             self.project = project;
             self.roll.clamp(&self.project);
@@ -220,11 +244,12 @@ impl StudioApp {
     }
 
     fn can_discard_changes(&mut self) -> bool {
-        if self.dirty {
+        let unsaved = self.dirty || self.recorder.is_some();
+        if unsaved {
             self.stop_keyboard();
             self.beats.stop();
         }
-        !self.dirty
+        !unsaved
             || rfd::MessageDialog::new()
                 .set_title("Unsaved changes")
                 .set_description("Discard unsaved changes?")
@@ -245,6 +270,7 @@ impl StudioApp {
         if command(egui::Key::S) {
             if self.view == View::Pads {
                 self.beats.save();
+                self.link_saved_beats_bank();
             } else {
                 self.save_project();
             }
@@ -273,13 +299,49 @@ impl StudioApp {
 
     fn add_track(&mut self) {
         let number = self.project.tracks.len() + 1;
-        self.project.tracks.push(Track {
-            name: format!("Track {number}"),
-            ..Track::default()
-        });
-        self.roll.select_track(self.project.tracks.len() - 1);
-        self.dirty = true;
-        self.status = "Track added".to_owned();
+        let name = format!("Track {number}");
+        let result = self
+            .project
+            .add_instrument(Instrument::synth(&name, "lead"))
+            .and_then(|instrument| {
+                self.project.add_track(Track {
+                    name,
+                    instrument,
+                    ..Track::default()
+                })
+            });
+        match result {
+            Ok(index) => {
+                self.roll.select_track(index);
+                self.dirty = true;
+                self.status = "Track added".to_owned();
+            }
+            Err(error) => self.status = format!("Could not add track: {error}"),
+        }
+    }
+
+    fn add_drum_track(&mut self) {
+        let number = self.project.tracks.len() + 1;
+        let name = format!("Drums {number}");
+        let result = self
+            .project
+            .add_instrument(Instrument::drum_kit(&name, "maxwell"))
+            .and_then(|instrument| {
+                self.project.add_track(Track {
+                    name,
+                    instrument,
+                    ..Track::default()
+                })
+            });
+        match result {
+            Ok(index) => {
+                self.roll.select_track(index);
+                self.view = View::Pads;
+                self.dirty = true;
+                self.status = "Drum track added with the Maxwell kit".to_owned();
+            }
+            Err(error) => self.status = format!("Could not add drum track: {error}"),
+        }
     }
 
     fn new_project(&mut self) {
@@ -295,6 +357,8 @@ impl StudioApp {
         self.roll = RollState::default();
         self.transport = Transport::new(piano_roll::bar_ticks(&self.project));
         self.automation = AutomationState::default();
+        self.beats_binding = None;
+        self.beats.clear_instrument_link();
         self.add_track();
         self.reset_history();
         self.dirty = false;
@@ -303,15 +367,20 @@ impl StudioApp {
 
     fn open_patch_lab(&mut self) -> bool {
         let track_index = self.roll.selected_track;
-        let Some(track) = self.project.tracks.get(track_index) else {
+        let Ok(instrument) = self.project.instrument_for_track(track_index) else {
             return false;
         };
-        match evil_render::load_patch(&track.patch, self.patch_base()) {
+        let Some(source) = instrument.patch().map(str::to_owned) else {
+            self.status =
+                "The selected instrument is a drum kit; use the Pads workspace".to_owned();
+            return false;
+        };
+        match evil_render::load_patch(&source, self.patch_base()) {
             Ok(patch) => {
-                let file_name = if track.patch.ends_with(".json") {
-                    track.patch.clone()
+                let file_name = if source.ends_with(".json") {
+                    source
                 } else {
-                    format!("{}-custom.json", track.patch)
+                    format!("{source}-custom.json")
                 };
                 self.patch_lab = Some(PatchLab::new(patch, file_name, track_index));
                 self.view = View::Synth;
@@ -375,9 +444,17 @@ impl StudioApp {
             .unwrap_or(&output)
             .to_string_lossy()
             .into_owned();
-        let track = &mut self.project.tracks[lab.track_index];
-        track.patch = reference.clone();
-        track.midi_program = lab.patch.midi_program;
+        let instrument = match self.project.instrument_for_track_mut(lab.track_index) {
+            Ok(instrument) => instrument,
+            Err(error) => {
+                self.status = format!("Could not assign synth patch: {error}");
+                return;
+            }
+        };
+        instrument.source = InstrumentSource::Synth {
+            patch: reference.clone(),
+        };
+        instrument.midi_program = lab.patch.midi_program;
         lab.mark_saved(reference);
         self.dirty = true;
         self.status = format!("Saved synth patch to {}", output.display());
@@ -514,7 +591,7 @@ impl StudioApp {
     fn save_to(&mut self, path: PathBuf) {
         let midi_output = match &self.source_midi {
             Some(midi_path) => {
-                match evil_midi::export_native_project(&self.project, self.patch_base()) {
+                match evil_exports::export_native_project(&self.project, self.patch_base()) {
                     Ok(report) => Some((midi_path.clone(), report)),
                     Err(error) => {
                         self.status = format!("Could not export MIDI: {error}");
@@ -577,7 +654,8 @@ impl StudioApp {
         else {
             return;
         };
-        match evil_midi::export_native_project_to_path(&self.project, self.patch_base(), &output) {
+        match evil_exports::export_native_project_to_path(&self.project, self.patch_base(), &output)
+        {
             Ok(report) => {
                 self.status = format!(
                     "Exported {} notes from {} tracks to {}",
@@ -610,7 +688,7 @@ impl StudioApp {
             .and_then(|stem| stem.to_str())
             .unwrap_or("Imported MIDI")
             .to_owned();
-        let result = evil_midi::import_midi_file(path)
+        let result = evil_imports::import_midi_file(path)
             .map_err(|error| error.to_string())
             .and_then(|performance| {
                 let skipped = performance.skipped_controller_events();
@@ -670,6 +748,10 @@ impl StudioApp {
     }
 
     fn song_playhead_tick(&self) -> u64 {
+        self.song_playhead_tick_offset(0.0)
+    }
+
+    fn song_playhead_tick_offset(&self, offset_seconds: f64) -> u64 {
         let Some(preview) = &self.preview else {
             return self.transport.start_tick;
         };
@@ -678,12 +760,12 @@ impl StudioApp {
         };
         let (start_tick, end_tick) = self.transport.range();
         let start_seconds = performance.seconds_at(start_tick);
-        let elapsed = preview.position().as_secs_f64();
+        let elapsed = preview.position().as_secs_f64() + offset_seconds;
         if let Some(end_tick) = end_tick {
             let duration = (performance.seconds_at(end_tick) - start_seconds).max(f64::EPSILON);
-            performance.tick_at_seconds(start_seconds + elapsed % duration)
+            performance.tick_at_seconds(start_seconds + elapsed.rem_euclid(duration))
         } else {
-            performance.tick_at_seconds(start_seconds + elapsed)
+            performance.tick_at_seconds(start_seconds + elapsed.max(0.0))
         }
     }
 
@@ -739,6 +821,7 @@ impl StudioApp {
                 let status = automation::render_status(
                     format!("Previewing {} notes", rendered.note_count),
                     rendered.unsupported_controller_events,
+                    rendered.skipped_drum_notes,
                 );
                 self.play_render(rendered, status, repeat);
             }
@@ -756,6 +839,7 @@ impl StudioApp {
                                 output.display()
                             ),
                             rendered.unsupported_controller_events,
+                            rendered.skipped_drum_notes,
                         );
                     }
                     Err(error) => self.status = format!("Could not write audio: {error}"),
@@ -782,6 +866,7 @@ impl StudioApp {
     }
 
     fn stop_preview(&mut self) {
+        self.finish_recording();
         self.stop_keyboard();
         self.beats.stop();
         self.render_job = None;
@@ -835,10 +920,15 @@ impl StudioApp {
             .show(ui, |ui| {
                 if automation::show(ui, &mut self.project, &mut self.automation, &self.roll) {
                     self.dirty = true;
-                    self.status = automation::edit_status(
-                        &self.project.tracks[self.roll.selected_track],
-                        &self.automation,
-                    );
+                    let track = &self.project.tracks[self.roll.selected_track];
+                    let sequence: &dyn evil_project::EventSequence = self
+                        .roll
+                        .selected_part
+                        .and_then(|part| track.parts.get(part))
+                        .map_or(track as &dyn evil_project::EventSequence, |part| {
+                            &self.project.patterns[part.pattern]
+                        });
+                    self.status = automation::edit_status(sequence, &self.automation);
                 }
             });
     }
@@ -873,6 +963,7 @@ impl eframe::App for StudioApp {
 
         self.poll_render();
         self.poll_instance(root.ctx());
+        self.poll_midi_input();
         self.shortcuts(root.ctx());
         if self
             .preview
@@ -890,7 +981,7 @@ impl eframe::App for StudioApp {
         if self.view != View::Keyboard || self.project.tracks.is_empty() {
             self.stop_keyboard();
         }
-        if matches!(self.view, View::Keyboard | View::Pads) {
+        if matches!(self.view, View::Keyboard | View::Pads) || self.recorder.is_some() {
             root.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(16));
         }
@@ -913,38 +1004,68 @@ impl eframe::App for StudioApp {
                 }
                 match self.view {
                     View::Song => {
-                        let mut selected = self.roll.selected_track;
                         let previous_transport = self.transport;
                         let playhead_tick = self.song_playhead_tick();
-                        if workspace::song(
+                        let result = workspace::song(
                             ui,
-                            &self.project,
-                            &mut selected,
+                            &mut self.project,
+                            &mut self.roll,
                             &mut self.transport,
                             playhead_tick,
-                        ) {
+                        );
+                        if result.edit_notes {
                             self.view = View::Notes;
+                        }
+                        if let Some(status) = result.status {
+                            self.status = status;
                         }
                         if self.transport != previous_transport {
                             self.stop_preview();
                         }
-                        if selected != self.roll.selected_track {
-                            self.roll.select_track(selected);
-                        }
                     }
                     View::Notes => {
+                        let track = &self.project.tracks[self.roll.selected_track];
+                        let part = self
+                            .roll
+                            .selected_part
+                            .filter(|part| *part < track.parts.len());
+                        let pattern = part.map(|part| track.parts[part].pattern);
                         ui.horizontal(|ui| {
-                            ui.heading(&self.project.tracks[self.roll.selected_track].name);
+                            ui.heading(&track.name);
+                            if let Some(pattern) = pattern {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "/ {} (shared P{:03})",
+                                        self.project.patterns[pattern].name,
+                                        pattern + 1
+                                    ))
+                                    .color(theme::PURPLE),
+                                );
+                            }
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     ui.toggle_value(&mut self.show_automation, "Automation");
+                                    if ui.button("Arranger").clicked() {
+                                        self.view = View::Song;
+                                    }
                                 },
                             );
                         });
-                        if piano_roll::show(ui, &mut self.project, &mut self.roll) {
+                        let context = piano_roll::RollContext::new(&self.project);
+                        let pattern_length =
+                            pattern.map(|index| self.project.patterns[index].length_ticks);
+                        let sequence: &mut dyn evil_project::EventSequence = match pattern {
+                            Some(index) => &mut self.project.patterns[index],
+                            None => &mut self.project.tracks[self.roll.selected_track],
+                        };
+                        if piano_roll::show(ui, context, sequence, &mut self.roll, pattern_length) {
                             self.dirty = true;
-                            self.status = "Notes edited".to_owned();
+                            self.status = if pattern.is_some() {
+                                "Shared pattern edited; all linked parts were updated".to_owned()
+                            } else {
+                                "Unique timeline notes edited".to_owned()
+                            };
                         }
                     }
                     View::Mixer => {
@@ -956,7 +1077,10 @@ impl eframe::App for StudioApp {
                     }
                     View::Synth => self.patch_lab_panel(ui),
                     View::Keyboard => self.keyboard_panel(ui),
-                    View::Pads => self.beats.show(ui, self.project.tempo_bpm),
+                    View::Pads => {
+                        let hits = self.beats.show(ui, self.project.tempo_bpm);
+                        self.record_pad_hits(&hits);
+                    }
                 }
             });
         self.about_window(root.ctx());

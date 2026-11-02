@@ -1,4 +1,5 @@
 mod app;
+mod arranger;
 mod art;
 mod automation;
 mod beats;
@@ -8,9 +9,11 @@ mod instance;
 mod keyboard;
 mod launch;
 mod live_player;
+mod midi_input;
 mod patch_lab;
 mod piano_roll;
 mod preview;
+mod recording;
 mod render_job;
 mod theme;
 mod transport;

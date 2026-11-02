@@ -23,32 +23,6 @@ pub fn import_midi_file(path: impl AsRef<Path>) -> Result<Performance, Error> {
     import_midi(&data)
 }
 
-pub fn rename_midi_track(data: &[u8], track_index: usize, name: &str) -> Result<Vec<u8>, Error> {
-    let mut smf = Smf::parse(data)?;
-    let track = smf
-        .tracks
-        .get_mut(track_index)
-        .ok_or(Error::MissingTrack(track_index))?;
-    let track_name = TrackEventKind::Meta(MetaMessage::TrackName(name.as_bytes()));
-    if let Some(event) = track
-        .iter_mut()
-        .find(|event| matches!(event.kind, TrackEventKind::Meta(MetaMessage::TrackName(_))))
-    {
-        event.kind = track_name;
-    } else {
-        track.insert(
-            0,
-            midly::TrackEvent {
-                delta: midly::num::u28::new(0),
-                kind: track_name,
-            },
-        );
-    }
-    let mut output = Vec::new();
-    smf.write(&mut output).map_err(Error::Encode)?;
-    Ok(output)
-}
-
 pub fn import_midi(data: &[u8]) -> Result<Performance, Error> {
     let smf = Smf::parse(data)?;
     if smf.header.format == Format::Sequential {
@@ -400,9 +374,9 @@ mod tests {
         assert_eq!(track.volume, Some(100));
         assert_eq!(track.pan, Some(32));
         let project = evil_project::Project::from_performance("Mix", &performance).unwrap();
-        assert_eq!(project.tracks[0].midi_program, Some(80));
-        assert_eq!(project.tracks[0].gain, 100.0 / 127.0);
-        assert!(project.tracks[0].pan < 0.0);
+        assert_eq!(project.instruments[0].midi_program, Some(80));
+        assert_eq!(project.instruments[0].gain, 100.0 / 127.0);
+        assert!(project.instruments[0].pan < 0.0);
     }
 
     #[test]
@@ -446,7 +420,7 @@ mod tests {
             project.tracks[0].aftertouch,
             performance.tracks[0].aftertouch
         );
-        assert_eq!(project.tracks[0].pitch_bend_range_semitones, 2.0);
+        assert_eq!(project.instruments[0].pitch_bend_range_semitones, 2.0);
     }
 
     #[test]
@@ -468,7 +442,7 @@ mod tests {
         assert_eq!(performance.tracks[0].controllers[2].controller, 2);
 
         let project = evil_project::Project::from_performance("Controllers", &performance).unwrap();
-        assert_eq!(project.tracks[0].pitch_bend_range_semitones, 12.5);
+        assert_eq!(project.instruments[0].pitch_bend_range_semitones, 12.5);
         assert_eq!(
             project.tracks[0].controllers,
             performance.tracks[0].controllers
@@ -497,40 +471,6 @@ mod tests {
         assert_eq!(notes[1].start_tick, 64);
         assert_eq!(notes[1].duration_ticks, 128);
         assert_eq!(notes[1].velocity, 90);
-    }
-
-    #[test]
-    fn renaming_a_track_changes_only_its_name() {
-        let data = midi_file(vec![
-            vec![
-                event(
-                    0,
-                    TrackEventKind::Meta(MetaMessage::Tempo(u24::new(500_000))),
-                ),
-                event(0, TrackEventKind::Meta(MetaMessage::EndOfTrack)),
-            ],
-            vec![
-                event(0, TrackEventKind::Meta(MetaMessage::TrackName(b"Lead"))),
-                note_event(128, true, 60, 100),
-                note_event(64, false, 60, 0),
-                event(0, TrackEventKind::Meta(MetaMessage::EndOfTrack)),
-            ],
-        ]);
-        let renamed = rename_midi_track(&data, 1, "Lead & co").unwrap();
-        let original_performance = import_midi(&data).unwrap();
-        let renamed_performance = import_midi(&renamed).unwrap();
-        assert_eq!(renamed_performance.tracks[0].name, "Lead & co");
-        assert_eq!(
-            original_performance.note_count(),
-            renamed_performance.note_count()
-        );
-        let original = original_performance.tracks[0].notes[0];
-        let changed = renamed_performance.tracks[0].notes[0];
-        assert_eq!(original.start_tick, changed.start_tick);
-        assert_eq!(original.duration_ticks, changed.duration_ticks);
-        assert_eq!(original.note, changed.note);
-        assert_eq!(original.velocity, changed.velocity);
-        assert!(rename_midi_track(&data, 99, "Missing").is_err());
     }
 
     fn controller_event(delta: u32, controller: u8, value: u8) -> TrackEvent<'static> {

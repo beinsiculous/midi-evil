@@ -1,5 +1,5 @@
-//! Maxwell's pad instrument. Bank persistence is independent of the song document.
-use std::path::PathBuf;
+//! Maxwell's pad instrument with portable banks and song-instrument linking.
+use std::{path::PathBuf, time::Instant};
 
 use eframe::egui::{self, Key, Rect, RichText, TextureHandle, vec2};
 use evil_beats::{DrumKit, PAD_COUNT};
@@ -45,9 +45,18 @@ enum Action {
     Clear,
 }
 
+#[derive(Clone, Copy)]
+pub struct PadHit {
+    pub slot: u8,
+    pub velocity: u8,
+    pub at: Instant,
+}
+
 pub struct BeatsPage {
     kit: DrumKit,
     path: Option<PathBuf>,
+    saved_path: Option<PathBuf>,
+    track_index: Option<usize>,
     dirty: bool,
     selected: usize,
     page: Page,
@@ -55,6 +64,8 @@ pub struct BeatsPage {
     repeat: bool,
     rate: u8,
     held: u16,
+    midi_held: u16,
+    midi_velocity: u8,
     blocked: u16,
     last_hit: [f64; PAD_COUNT],
     player: Option<BeatsPlayer>,
@@ -76,6 +87,8 @@ impl BeatsPage {
         Self {
             kit,
             path: None,
+            saved_path: None,
+            track_index: None,
             dirty: false,
             selected: 0,
             page: Page::Play,
@@ -83,6 +96,8 @@ impl BeatsPage {
             repeat: false,
             rate: 16,
             held: 0,
+            midi_held: 0,
+            midi_velocity: 100,
             blocked: 0,
             last_hit: [f64::NEG_INFINITY; PAD_COUNT],
             player: None,
@@ -96,13 +111,58 @@ impl BeatsPage {
         self.player = None;
         self.blocked |= self.held;
         self.held = 0;
+        self.midi_held = 0;
+    }
+
+    pub fn has_unsaved_changes(&self) -> bool {
+        self.dirty
+    }
+
+    pub fn load_instrument(
+        &mut self,
+        kit: DrumKit,
+        path: Option<PathBuf>,
+        track_index: usize,
+    ) {
+        self.stop();
+        self.kit = kit;
+        self.path = path;
+        self.saved_path = None;
+        self.track_index = Some(track_index);
+        self.dirty = false;
+        self.selected = 0;
+        self.message = format!("Linked to song track {:02}", track_index + 1);
+        self.peaks = kit_peaks(&self.kit);
+    }
+
+    pub fn clear_instrument_link(&mut self) {
+        self.track_index = None;
+        self.saved_path = None;
+    }
+
+    pub fn take_saved_bank(&mut self) -> Option<(usize, PathBuf)> {
+        let path = self.saved_path.take()?;
+        self.track_index.map(|track| (track, path))
+    }
+
+    pub fn midi_input(&mut self, slot: u8, on: bool, velocity: u8) {
+        let mask = 1_u16 << slot.min(15);
+        if on {
+            self.midi_held |= mask;
+            self.midi_velocity = velocity;
+            self.selected = usize::from(slot.min(15));
+        } else {
+            self.midi_held &= !mask;
+        }
     }
 
     pub fn save(&mut self) {
         self.action(Action::Save);
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, tempo: f32) {
+    pub fn show(&mut self, ui: &mut egui::Ui, tempo: f32) -> Vec<PadHit> {
+        let mut hits = Vec::new();
+        let wall_now = Instant::now();
         let now = ui.input(|i| i.time);
         let accepts =
             !ui.ctx().egui_wants_keyboard_input() && ui.input(|i| i.focused && !i.modifiers.any());
@@ -136,7 +196,7 @@ impl BeatsPage {
             260.0
         };
         let grid_width = ui.available_width() - left_width - 16.0;
-        let mut desired = 0_u16;
+        let mut desired = self.midi_held;
         ui.horizontal_top(|ui| {
             ui.allocate_ui_with_layout(vec2(left_width, body_height), egui::Layout::top_down(egui::Align::Min), |ui| {
                 ui.set_width(left_width);
@@ -145,7 +205,13 @@ impl BeatsPage {
                         let width = if body_height < 500.0 { 105.0 } else { 150.0 };
                         ui.image((self.badge.id(), vec2(width, width * 0.6)));
                     });
-                    theme::label(ui, if self.dirty { "BANK / UNSAVED CHANGES" } else { "BANK" });
+                    let bank_label = match (self.track_index, self.dirty) {
+                        (Some(track), true) => format!("BANK / TRACK {:02} / UNSAVED", track + 1),
+                        (Some(track), false) => format!("BANK / TRACK {:02}", track + 1),
+                        (None, true) => "BANK / UNSAVED CHANGES".to_owned(),
+                        (None, false) => "BANK".to_owned(),
+                    };
+                    theme::label(ui, bank_label);
                     self.dirty |= ui.text_edit_singleline(&mut self.kit.name).changed();
                     ui.horizontal(|ui| {
                         if ui.button("Open bank").clicked() { action = Some(Action::Open); }
@@ -234,6 +300,13 @@ impl BeatsPage {
                             if down && self.held & (1 << slot) == 0 && self.blocked & (1 << slot) == 0 {
                                 self.selected = slot;
                                 self.last_hit[slot] = now;
+                                if self.midi_held & (1 << slot) == 0 {
+                                    hits.push(PadHit {
+                                        slot: slot as u8,
+                                        velocity: self.velocity,
+                                        at: wall_now,
+                                    });
+                                }
                             }
                             if response.secondary_clicked() || response.double_clicked() {
                                 self.selected = slot;
@@ -283,16 +356,30 @@ impl BeatsPage {
         if let Some(player) = &mut self.player {
             player.input(
                 desired,
-                self.velocity,
+                if self.midi_held != 0 {
+                    self.midi_velocity
+                } else {
+                    self.velocity
+                },
                 self.repeat.then_some(self.rate),
                 tempo,
                 self.kit.gain,
             );
         }
         self.held = desired;
+        if !panic
+            && let Some(player) = &self.player
+        {
+            hits.extend(player.repeated_hits().into_iter().map(|hit| PadHit {
+                slot: hit.slot,
+                velocity: hit.velocity,
+                at: hit.at,
+            }));
+        }
         if let Some(action) = action {
             self.action(action);
         }
+        hits
     }
 }
 

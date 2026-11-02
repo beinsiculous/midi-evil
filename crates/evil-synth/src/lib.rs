@@ -20,7 +20,7 @@ pub use delay::{Delay, DelayMode};
 pub use envelope::Envelope;
 pub use filter::{Filter, FilterMode};
 pub use lfo::{Lfo, LfoDestination, LfoWaveform};
-pub use mix::{MonoTrack, StereoSound, mix_stereo};
+pub use mix::{MonoTrack, StereoSound, StereoTrack, mix_stereo, mix_stereo_with_tracks};
 pub use modal::ModalPartial;
 pub use oscillator::{Oscillator, Waveform};
 pub use patch::Patch;

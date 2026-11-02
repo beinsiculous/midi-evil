@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Workspace
 
-MIDI Evil is a Rust music workstation with a native `.evil` JSON project format, Standard MIDI import/export, original synthesis, offline stereo rendering, and an `eframe`/`egui` desktop editor. Active work targets native sound-recreation features and assisted recovery of user-owned WAV exports, not NanoStudio backporting. Keep the code DRY, simple (KISS), and divided by responsibility rather than duplicating CLI and GUI logic.
+MIDI Evil is a Rust music workstation with a native `.evil` JSON project format, Standard MIDI import/export, original synthesis, offline stereo rendering, and an `eframe`/`egui` desktop editor. Active work targets native sound recreation, NanoStudio 1-inspired feature parity tracked in `docs/nanostudio1-parity.md`, and assisted recovery of user-owned WAV exports, not NanoStudio backporting. Keep the code DRY, simple (KISS), and divided by responsibility rather than duplicating CLI and GUI logic.
 
 ## Common commands
 
@@ -79,30 +79,29 @@ cargo run --manifest-path compat/Cargo.toml -p oracle -- project render song.evi
 
 | Crate | Responsibility |
 | --- | --- |
-| `midi-evil` | Desktop app: project/file state, track controls, interactive piano roll, MIDI import, audio preview, and branding. Uses `eframe`, `rfd`, and `rodio`. |
+| `midi-evil` | Desktop app: project/file state, track controls, interactive pattern arranger and piano roll, MIDI import, keyboard/pad/desktop-MIDI recording, audio preview, and branding. Uses `eframe`, `rfd`, `rodio`, and `midir`. |
 | `oracle` | Unified CLI for native projects, synthesis, MIDI, and compatibility commands. CLI parsing, command modules, and atomic compatibility I/O are separate responsibilities. |
-| `evil-project` | Native `.evil` model and validation, direct notes/tracks/tempo changes, MIDI-performance conversion, and atomic JSON saves. Handles legacy migration. |
+| `evil-project` | Native `.evil` model and validation, reusable instruments/patterns, direct unique performances and arrangement parts, MIDI-performance conversion, and atomic JSON saves. Handles version-1 and legacy migration. |
 | `evil-performance` | Neutral note/track and tempo-map representation with tick-to-seconds conversion. This is the shared performance model, not a NanoStudio-specific model. |
-| `evil-midi` | Standard MIDI import/export for native projects and shared performance data. Contains no NanoStudio compatibility dependencies and is used by the desktop app. |
+| `evil-imports` | Standard MIDI loading plus assisted WAV analysis and reconstruction: PCM loading, activity/onset detection, tempo candidates, and quantized native `.evil` drafts with JSON reports. Used by the desktop app and native CLI. |
+| `evil-exports` | Standard MIDI export for native projects and shared performance data, plus event-preserving MIDI track edits. Contains no NanoStudio compatibility dependencies and is used by the desktop app. |
 | `evil-synth` | Oscillators, pitch sweeps, ADSR envelopes, filters, deterministic noise, polyphony, stereo mixing, and WAV writing. |
-| `evil-beats` | Original sample-pad and TRG-style drum voices with tuning, velocity, gate/release envelopes, and overlapping-hit rendering. Independent of NanoStudio compatibility code. |
-| `evil-render` | Shared native-project renderer and patch loader used by both CLI and GUI. Resolves preset names and relative JSON patch paths, then produces a stereo mix. |
-| `evil-recovery` | Assisted WAV analysis and reconstruction: PCM loading, activity/onset detection, tempo candidates, and quantized native `.evil` drafts with JSON reports. |
-| `oracle-format` | Reverse-engineered `Package.prj` / `Package.sng` parsing and serialization plus safe `.nsp` archive handling. Treat this as a compatibility/validation oracle, not the native architecture. |
-| `oracle-midi` | NanoStudio timeline expansion and compatibility MIDI export. Reuses `evil-midi` for Standard MIDI interchange but remains outside the native desktop dependency chain. |
+| `evil-beats` | Original sample-pad and TRG-style drum voices with tuning, velocity, gate/release envelopes, overlapping-hit rendering, portable kits, and deterministic offline stereo kit rendering. Independent of NanoStudio compatibility code. |
+| `evil-render` | Shared native-project renderer and instrument loader used by both CLI and GUI. Resolves synth presets, relative JSON patches, and drum kits, then produces a stereo mix. |
+| `evil-porting` | Private NanoStudio compatibility: reverse-engineered `Package.prj` / `Package.sng` parsing and serialization, safe `.nsp` archive handling, timeline expansion, and compatibility MIDI conversion. Treat this as a porting/validation oracle, not the native architecture. |
 
 ### Main data flow
 
-Native `.evil` documents and Standard MIDI Files are converted into `evil-performance` notes. `evil-render` maps those notes to seconds using the tempo map, renders each track with `evil-synth`, applies patch/gain/pan settings, and mixes stereo output. The same path serves CLI WAV export, desktop WAV export, and desktop `rodio` preview.
+Native `.evil` documents and Standard MIDI Files are converted into `evil-performance` notes. Reusable pattern parts expand into the same neutral performance, so CLI/GUI audio and MIDI export share timing. `evil-render` maps those notes to seconds using the tempo map, renders synth tracks with `evil-synth` and drum tracks with `evil-beats`, applies instrument/gain/pan settings, and mixes stereo output. The same path serves CLI WAV export, desktop WAV export, and desktop `rodio` preview.
 
-NanoStudio projects take a separate compatibility path through `oracle-format` and `oracle-midi`, after which they can use the shared performance and audio engines. Avoid making native features depend on NanoStudio formats unnecessarily.
+NanoStudio projects take a separate compatibility path through `evil-porting`, after which they can use the shared performance and audio engines. Avoid making native features depend on NanoStudio formats unnecessarily.
 
 ## Native and interchange formats
 
 - `docs/insiculous-crossing.md` is the game-engine integration contract. Preserve its MIDI export requirements: exact track names, composed meter and tempo at tick 0, gain/pan controllers, muted tracks as empty named tracks, percussion-safe channel assignment, complete tracks, and atomic writes. Never write the engine's `.mid.ron` sidecar.
 - Canonical native extension: `.evil`; JSON format identifier: `midi-evil-project`.
 - Preserve compatibility with `.rmp` files and `rusty-music-project` JSON. They load and migrate to the new canonical identifier when saved.
-- Native projects store direct timeline notes, patch references, gain, pan, mute state, and master audio settings. Patch paths ending in `.json` are relative to the project file.
+- Native projects store reusable instruments/patterns, direct unique timeline performances, arrangement parts, gain, pan, mute state, and master audio settings. Synth patch paths ending in `.json` and drum-kit paths ending in `.evilkit` are relative to the project file. Tracks sharing an instrument share its MIDI channel without losing their exact track names.
 - Native timing defaults to 480 ticks per quarter note, but MIDI files retain their own division. Tempo changes after the initial tempo are represented explicitly.
 - MIDI contains performance data, not instrument audio. Use original synth patches for sound and WAV for rendered audio interchange.
 - Preserve deterministic synthesis: the same patch and seed must produce identical audio.

@@ -8,9 +8,11 @@ use thiserror::Error;
 mod kit;
 mod machine;
 mod presets;
+mod render;
 pub use kit::{DrumKit, KitPad, PAD_COUNT};
 pub use machine::{DrumMachine, PreparedPad};
 pub use presets::maxwell_kit;
+pub use render::{KitHit, render_kit};
 
 const MAX_RENDER_SECONDS: f64 = 3_600.0;
 

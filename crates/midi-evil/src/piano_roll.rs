@@ -1,5 +1,5 @@
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
-use evil_project::{Note, Project, Track};
+use evil_project::{EventSequence, Note, Project};
 
 use crate::theme;
 
@@ -12,7 +12,9 @@ const DEFAULT_NOTE_VELOCITY: u8 = 100;
 #[derive(Debug)]
 pub struct RollState {
     pub selected_track: usize,
+    pub selected_part: Option<usize>,
     pub selected_note: Option<usize>,
+    clipboard: Vec<Note>,
     dragging_note: Option<usize>,
     resizing_note: Option<usize>,
     zoom: f32,
@@ -23,7 +25,9 @@ impl Default for RollState {
     fn default() -> Self {
         Self {
             selected_track: 0,
+            selected_part: None,
             selected_note: None,
+            clipboard: Vec::new(),
             dragging_note: None,
             resizing_note: None,
             zoom: 1.0,
@@ -35,10 +39,22 @@ impl Default for RollState {
 impl RollState {
     pub fn select_track(&mut self, index: usize) {
         self.selected_track = index;
+        self.selected_part = None;
         self.selected_note = None;
         self.dragging_note = None;
         self.resizing_note = None;
         self.scroll_to_middle = true;
+    }
+
+    pub fn select_part(&mut self, track: usize, part: Option<usize>) {
+        if self.selected_track != track || self.selected_part != part {
+            self.selected_note = None;
+            self.dragging_note = None;
+            self.resizing_note = None;
+            self.scroll_to_middle = true;
+        }
+        self.selected_track = track;
+        self.selected_part = part;
     }
 
     pub fn clamp(&mut self, project: &Project) {
@@ -46,11 +62,18 @@ impl RollState {
         self.resizing_note = None;
         if project.tracks.is_empty() {
             self.selected_track = 0;
+            self.selected_part = None;
             self.selected_note = None;
             return;
         }
         self.selected_track = self.selected_track.min(project.tracks.len() - 1);
-        let note_count = project.tracks[self.selected_track].notes.len();
+        let track = &project.tracks[self.selected_track];
+        self.selected_part = self
+            .selected_part
+            .filter(|index| *index < track.parts.len());
+        let note_count = self.selected_part.map_or(track.notes.len(), |part| {
+            project.patterns[track.parts[part].pattern].notes.len()
+        });
         self.selected_note = self.selected_note.filter(|index| *index < note_count);
     }
 
@@ -59,15 +82,15 @@ impl RollState {
     }
 }
 
-pub fn timeline_ticks(track: &Track, ticks_per_quarter: u16) -> u64 {
+pub fn timeline_ticks(sequence: &(impl EventSequence + ?Sized), ticks_per_quarter: u16) -> u64 {
     let beat = u64::from(ticks_per_quarter.max(1));
-    let longest_event = track
-        .notes
+    let longest_event = sequence
+        .notes()
         .iter()
         .map(|note| note.start_tick + note.duration_ticks)
-        .chain(track.pitch_bends.iter().map(|event| event.tick))
-        .chain(track.aftertouch.iter().map(|event| event.tick))
-        .chain(track.controllers.iter().map(|event| event.tick))
+        .chain(sequence.pitch_bends().iter().map(|event| event.tick))
+        .chain(sequence.aftertouch().iter().map(|event| event.tick))
+        .chain(sequence.controllers().iter().map(|event| event.tick))
         .max()
         .unwrap_or(0);
     (longest_event.saturating_add(4 * beat)).max(16 * beat)
@@ -79,27 +102,108 @@ pub fn bar_ticks(project: &Project) -> u64 {
     .max(1)
 }
 
-pub fn show(ui: &mut egui::Ui, project: &mut Project, state: &mut RollState) -> bool {
-    if project.tracks.get(state.selected_track).is_none() {
-        ui.label("Select a track to edit its notes");
-        return false;
+#[derive(Clone, Copy)]
+pub struct RollContext {
+    pub ticks_per_quarter: u16,
+    pub bar_ticks: u64,
+}
+
+impl RollContext {
+    pub fn new(project: &Project) -> Self {
+        Self {
+            ticks_per_quarter: project.ticks_per_quarter,
+            bar_ticks: bar_ticks(project),
+        }
     }
+}
+
+pub fn show(
+    ui: &mut egui::Ui,
+    context: RollContext,
+    sequence: &mut dyn EventSequence,
+    state: &mut RollState,
+    pattern_length: Option<u64>,
+) -> bool {
+    let original_notes = sequence.notes().to_vec();
     ui.horizontal_wrapped(|ui| {
-        theme::label(ui, "GRID  1/16");
+        theme::label(
+            ui,
+            if pattern_length.is_some() {
+                "SHARED PATTERN"
+            } else {
+                "UNIQUE TIMELINE"
+            },
+        );
         ui.add(egui::Slider::new(&mut state.zoom, 0.25..=3.0).text("Zoom"));
+        let selected = state.selected_note;
+        if ui.button("Quantize").clicked() {
+            let _ = evil_project::quantize_notes(
+                sequence,
+                (u64::from(context.ticks_per_quarter.max(1)) / 4).max(1),
+                selected,
+                pattern_length,
+            );
+        }
+        for (label, semitones) in [("−12", -12), ("−1", -1), ("+1", 1), ("+12", 12)] {
+            if ui.button(label).clicked() {
+                let _ = evil_project::transpose_notes(sequence, semitones, selected);
+            }
+        }
+        if ui.button("Clean overlaps").clicked() {
+            evil_project::clean_overlaps(sequence);
+        }
+        if ui.button("Copy").clicked() {
+            state.clipboard = match selected.and_then(|index| sequence.notes().get(index)) {
+                Some(note) => vec![*note],
+                None => sequence.notes().to_vec(),
+            };
+        }
+        let paste = !state.clipboard.is_empty() && ui.button("Paste").clicked();
+        if paste {
+            let origin = state
+                .clipboard
+                .iter()
+                .map(|note| note.start_tick)
+                .min()
+                .unwrap_or(0);
+            let destination = selected
+                .and_then(|index| sequence.notes().get(index))
+                .map_or(0, |note| note.start_tick + note.duration_ticks);
+            let additions: Vec<_> = state
+                .clipboard
+                .iter()
+                .filter_map(|note| {
+                    let start_tick = destination.checked_add(note.start_tick - origin)?;
+                    start_tick.checked_add(note.duration_ticks)?;
+                    Some(Note {
+                        start_tick,
+                        ..*note
+                    })
+                })
+                .filter(|note| pattern_length.is_none_or(|length| note.start_tick < length))
+                .collect();
+            state.selected_note = (!additions.is_empty()).then_some(sequence.notes().len());
+            sequence.notes_mut().extend(additions);
+        }
         ui.label(
-            egui::RichText::new("Click to draw · Drag to move · Drag edge to resize")
-                .size(11.0)
-                .color(theme::MUTED),
+            egui::RichText::new(if selected.is_some() {
+                "Operations affect the selected note · Copy/Paste inserts after it"
+            } else {
+                "Operations affect all notes · Click to draw · Drag to move/resize"
+            })
+            .size(11.0)
+            .color(theme::MUTED),
         );
     });
     ui.add_space(4.0);
 
-    let ticks_per_quarter = project.ticks_per_quarter.max(1);
+    let ticks_per_quarter = context.ticks_per_quarter.max(1);
     let beat = u64::from(ticks_per_quarter);
     let snap = (beat / 4).max(1);
-    let bar = bar_ticks(project);
-    let timeline_ticks = timeline_ticks(&project.tracks[state.selected_track], ticks_per_quarter);
+    let bar = context.bar_ticks;
+    let timeline_ticks = pattern_length
+        .unwrap_or_else(|| timeline_ticks(sequence, ticks_per_quarter))
+        .max(beat);
     let pixels_per_tick = state.pixels_per_tick(ticks_per_quarter);
     let size = Vec2::new(
         KEYBOARD_WIDTH + timeline_ticks as f32 * pixels_per_tick,
@@ -109,7 +213,7 @@ pub fn show(ui: &mut egui::Ui, project: &mut Project, state: &mut RollState) -> 
         .id_salt("piano-roll")
         .auto_shrink([false, false]);
     if state.scroll_to_middle {
-        let notes = &project.tracks[state.selected_track].notes;
+        let notes = sequence.notes();
         let middle = match (
             notes.iter().map(|n| n.pitch).min(),
             notes.iter().map(|n| n.pitch).max(),
@@ -142,11 +246,7 @@ pub fn show(ui: &mut egui::Ui, project: &mut Project, state: &mut RollState) -> 
             painter.rect_filled(rect, 0.0, theme::BACKGROUND);
             draw_grid(&painter, rect, timeline_ticks, beat, bar, pixels_per_tick);
 
-            for (index, note) in project.tracks[state.selected_track]
-                .notes
-                .iter()
-                .enumerate()
-            {
+            for (index, note) in sequence.notes().iter().enumerate() {
                 let note_rect = note_rect(note, rect, pixels_per_tick);
                 let selected = state.selected_note == Some(index);
                 painter.rect_filled(
@@ -189,14 +289,9 @@ pub fn show(ui: &mut egui::Ui, project: &mut Project, state: &mut RollState) -> 
                 && let Some(position) = ui.input(|input| input.pointer.press_origin())
                 && edit_area.contains(position)
             {
-                if let Some(index) = note_at(
-                    &project.tracks[state.selected_track],
-                    position,
-                    rect,
-                    pixels_per_tick,
-                ) {
+                if let Some(index) = note_at(sequence, position, rect, pixels_per_tick) {
                     state.selected_note = Some(index);
-                    let note = &project.tracks[state.selected_track].notes[index];
+                    let note = &sequence.notes()[index];
                     let right_edge = note_rect(note, rect, pixels_per_tick).max.x;
                     if (position.x - right_edge).abs() <= 4.0 {
                         state.resizing_note = Some(index);
@@ -214,9 +309,11 @@ pub fn show(ui: &mut egui::Ui, project: &mut Project, state: &mut RollState) -> 
             if response.dragged()
                 && let (Some(index), Some(position)) =
                     (state.dragging_note, response.interact_pointer_pos())
-                && let Some(note) = project.tracks[state.selected_track].notes.get_mut(index)
+                && let Some(note) = sequence.notes_mut().get_mut(index)
             {
                 let (pitch, tick) = position_to_note(position, rect, pixels_per_tick, snap);
+                let tick =
+                    pattern_length.map_or(tick, |length| tick.min(length.saturating_sub(snap)));
                 if note.pitch != pitch || note.start_tick != tick {
                     note.pitch = pitch;
                     note.start_tick = tick;
@@ -226,7 +323,7 @@ pub fn show(ui: &mut egui::Ui, project: &mut Project, state: &mut RollState) -> 
             if response.dragged()
                 && let (Some(index), Some(position)) =
                     (state.resizing_note, response.interact_pointer_pos())
-                && let Some(note) = project.tracks[state.selected_track].notes.get_mut(index)
+                && let Some(note) = sequence.notes_mut().get_mut(index)
             {
                 let (_, end_tick) = position_to_note(position, rect, pixels_per_tick, snap);
                 let duration = end_tick.saturating_sub(note.start_tick).max(snap);
@@ -243,18 +340,16 @@ pub fn show(ui: &mut egui::Ui, project: &mut Project, state: &mut RollState) -> 
                 && let Some(position) = response.interact_pointer_pos()
                 && edit_area.contains(position)
             {
-                if let Some(index) = note_at(
-                    &project.tracks[state.selected_track],
-                    position,
-                    rect,
-                    pixels_per_tick,
-                ) {
+                if let Some(index) = note_at(sequence, position, rect, pixels_per_tick) {
                     state.selected_note = Some(index);
                 } else {
                     let (pitch, start_tick) =
                         position_to_note(position, rect, pixels_per_tick, snap);
-                    let index = project.tracks[state.selected_track].notes.len();
-                    project.tracks[state.selected_track].notes.push(Note {
+                    let start_tick = pattern_length.map_or(start_tick, |length| {
+                        start_tick.min(length.saturating_sub(snap))
+                    });
+                    let index = sequence.notes().len();
+                    sequence.notes_mut().push(Note {
                         pitch,
                         start_tick,
                         duration_ticks: beat,
@@ -268,14 +363,15 @@ pub fn show(ui: &mut egui::Ui, project: &mut Project, state: &mut RollState) -> 
                 && !ui.ctx().egui_wants_keyboard_input()
                 && ui.input(|input| input.key_pressed(egui::Key::Delete))
                 && let Some(index) = state.selected_note.take()
-                && index < project.tracks[state.selected_track].notes.len()
+                && index < sequence.notes().len()
             {
-                project.tracks[state.selected_track].notes.remove(index);
+                sequence.notes_mut().remove(index);
                 changed = true;
             }
             changed
         })
         .inner
+        || original_notes != sequence.notes()
 }
 
 fn draw_grid(
@@ -425,13 +521,18 @@ fn note_rect(note: &Note, rect: Rect, pixels_per_tick: f32) -> Rect {
     )
 }
 
-fn note_at(track: &Track, position: Pos2, rect: Rect, pixels_per_tick: f32) -> Option<usize> {
+fn note_at(
+    sequence: &(impl EventSequence + ?Sized),
+    position: Pos2,
+    rect: Rect,
+    pixels_per_tick: f32,
+) -> Option<usize> {
     if !rect.contains(position) {
         return None;
     }
     let tick = ((position.x - rect.left()) / pixels_per_tick) as u64;
     let pitch = pitch_at(position, rect);
-    track.notes.iter().position(|note| {
+    sequence.notes().iter().position(|note| {
         note.pitch == pitch
             && tick >= note.start_tick
             && tick < note.start_tick + note.duration_ticks
@@ -463,6 +564,7 @@ fn is_black_key(pitch: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use evil_project::Track;
 
     #[test]
     fn bar_lengths_follow_the_imported_time_signature() {
@@ -482,7 +584,7 @@ mod tests {
         let context = egui::Context::default();
         theme::install(&context);
         let mut project = Project::new("Hit testing");
-        project.tracks.push(Track::default());
+        project.add_track(Track::default()).unwrap();
         let mut state = RollState::default();
         let mut time = 0.0;
         let mut frame = |events| {
@@ -495,7 +597,13 @@ mod tests {
                     ..Default::default()
                 },
                 |ui| {
-                    show(ui, &mut project, &mut state);
+                    show(
+                        ui,
+                        RollContext::new(&project),
+                        &mut project.tracks[0],
+                        &mut state,
+                        None,
+                    );
                 },
             );
             project.tracks[0].notes.len()

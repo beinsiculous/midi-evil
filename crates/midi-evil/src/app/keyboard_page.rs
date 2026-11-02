@@ -4,10 +4,12 @@ use crate::live_player::LivePlayer;
 
 impl StudioApp {
     pub(super) fn stop_keyboard(&mut self) {
+        self.record_note_events(&[NoteEvent::Panic]);
         self.keyboard_player = None;
         self.keyboard.reset();
         self.keyboard_binding = None;
         self.keyboard_error = None;
+        self.pending_midi_notes.clear();
     }
 
     pub(super) fn keyboard_panel(&mut self, ui: &mut egui::Ui) {
@@ -15,7 +17,16 @@ impl StudioApp {
         let Some(track) = self.project.tracks.get(index) else {
             return;
         };
-        let binding = (index, track.patch.clone());
+        let track_name = track.name.clone();
+        let track_muted = track.muted;
+        let Ok(instrument) = self.project.instrument_for_track(index).cloned() else {
+            return;
+        };
+        let Some(source) = instrument.patch().map(str::to_owned) else {
+            self.keyboard_error = Some("Select a synth instrument for the keyboard".to_owned());
+            return;
+        };
+        let binding = (index, source);
         if self.keyboard_binding.as_ref() != Some(&binding) {
             self.keyboard_player = None;
             self.keyboard.reset();
@@ -42,9 +53,8 @@ impl StudioApp {
         let Some(lab) = &mut self.patch_lab else {
             return;
         };
-        let track = &self.project.tracks[index];
         ui.horizontal_wrapped(|ui| {
-            theme::label(ui, format!("TRACK {:02}  /  {}", index + 1, track.name));
+            theme::label(ui, format!("TRACK {:02}  /  {}", index + 1, track_name));
             if ui.button("Edit / save synth patch").clicked() {
                 self.view = View::Synth;
             }
@@ -54,24 +64,26 @@ impl StudioApp {
                     .color(theme::MUTED),
             );
         });
-        let events = keyboard::show(
+        let mut events = keyboard::show(
             ui,
             &mut lab.patch,
             &mut self.keyboard,
             &self.keyboard_badge,
-            track.pitch_bend_range_semitones,
+            instrument.pitch_bend_range_semitones,
         );
         let mut patch = lab.patch.clone();
-        patch.pitch_bend_range_semitones = track.pitch_bend_range_semitones;
+        self.record_note_events(&events);
+        events.append(&mut self.pending_midi_notes);
+        patch.pitch_bend_range_semitones = instrument.pitch_bend_range_semitones;
         let controls = evil_synth::LiveControls {
             bend: self.keyboard.bend,
-            bend_range_semitones: track.pitch_bend_range_semitones,
-            gain: if track.muted {
+            bend_range_semitones: instrument.pitch_bend_range_semitones,
+            gain: if track_muted {
                 0.0
             } else {
-                track.gain * self.project.master_gain
+                instrument.gain * self.project.master_gain
             },
-            pan: track.pan,
+            pan: instrument.pan,
             tempo_bpm: self.project.tempo_bpm,
             filter: patch.filter.clone(),
             delay: patch.delay.clone(),

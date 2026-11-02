@@ -1,7 +1,7 @@
 use std::{
     num::NonZero,
     sync::mpsc::{self, Receiver, Sender, TryRecvError},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use evil_beats::{DrumKit, DrumMachine, PreparedPad};
@@ -14,10 +14,25 @@ enum Command {
     Stop,
 }
 
+#[derive(Clone, Copy)]
+struct AudioRepeat {
+    slot: usize,
+    frame: u64,
+}
+
+#[derive(Clone, Copy)]
+pub struct RepeatHit {
+    pub slot: u8,
+    pub velocity: u8,
+    pub at: Instant,
+}
+
 pub struct BeatsPlayer {
     _stream: MixerDeviceSink,
     _player: Player,
     sender: Sender<Command>,
+    repeat_receiver: Receiver<AudioRepeat>,
+    clock_origin: Instant,
     input: Option<(u16, u8, Option<u8>, f32)>,
     gain: f32,
 }
@@ -39,9 +54,12 @@ impl BeatsPlayer {
         stream.log_on_drop(false);
         let player = Player::connect_new(stream.mixer());
         let (sender, receiver) = mpsc::channel();
+        let (repeat_sender, repeat_receiver) = mpsc::channel();
+        let clock_origin = Instant::now();
         player.append(BeatsSource {
             machine,
             receiver,
+            repeat_sender,
             right: None,
             frame: 0,
         });
@@ -49,6 +67,8 @@ impl BeatsPlayer {
             _stream: stream,
             _player: player,
             sender,
+            repeat_receiver,
+            clock_origin,
             input: None,
             gain: kit.gain,
         })
@@ -79,6 +99,21 @@ impl BeatsPlayer {
         }
     }
 
+    pub fn repeated_hits(&self) -> Vec<RepeatHit> {
+        let velocity = self.input.map_or(100, |input| input.1);
+        self.repeat_receiver
+            .try_iter()
+            .map(|event| RepeatHit {
+                slot: event.slot as u8,
+                velocity,
+                at: self.clock_origin
+                    + Duration::from_secs_f64(
+                        event.frame as f64 / f64::from(DrumMachine::SAMPLE_RATE),
+                    ),
+            })
+            .collect()
+    }
+
     pub fn stop(&mut self) {
         let _ = self.sender.send(Command::Stop);
         self.input = None;
@@ -88,6 +123,7 @@ impl BeatsPlayer {
 struct BeatsSource {
     machine: DrumMachine,
     receiver: Receiver<Command>,
+    repeat_sender: Sender<AudioRepeat>,
     right: Option<f32>,
     frame: u64,
 }
@@ -112,8 +148,16 @@ impl Iterator for BeatsSource {
                 }
             }
         }
+        let ([left, right], repeated) = self.machine.next_frame_with_repeats();
+        for slot in 0..evil_beats::PAD_COUNT {
+            if repeated & (1 << slot) != 0 {
+                let _ = self.repeat_sender.send(AudioRepeat {
+                    slot,
+                    frame: self.frame,
+                });
+            }
+        }
         self.frame = self.frame.wrapping_add(1);
-        let [left, right] = self.machine.next_frame();
         self.right = Some(right);
         Some(left)
     }

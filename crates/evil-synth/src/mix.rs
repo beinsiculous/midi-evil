@@ -18,8 +18,23 @@ pub struct StereoSound {
     pub sample_rate: u32,
 }
 
+pub struct StereoTrack<'a> {
+    pub sound: &'a StereoSound,
+    pub gain: f32,
+    /// Stereo balance from -1 (left) to 1 (right).
+    pub pan: f32,
+}
+
 pub fn mix_stereo(tracks: &[MonoTrack<'_>], master_gain: f32) -> Result<StereoSound, Error> {
-    if tracks.is_empty() {
+    mix_stereo_with_tracks(tracks, &[], master_gain)
+}
+
+pub fn mix_stereo_with_tracks(
+    tracks: &[MonoTrack<'_>],
+    stereo_tracks: &[StereoTrack<'_>],
+    master_gain: f32,
+) -> Result<StereoSound, Error> {
+    if tracks.is_empty() && stereo_tracks.is_empty() {
         return Err(Error::InvalidMix(
             "a mix needs at least one track".to_owned(),
         ));
@@ -29,10 +44,14 @@ pub fn mix_stereo(tracks: &[MonoTrack<'_>], master_gain: f32) -> Result<StereoSo
             "master gain must be between 0 and 1".to_owned(),
         ));
     }
-    let sample_rate = tracks[0].sound.sample_rate;
+    let sample_rate = tracks.first().map_or_else(
+        || stereo_tracks[0].sound.sample_rate,
+        |track| track.sound.sample_rate,
+    );
     let frame_count = tracks
         .iter()
         .map(|track| track.sound.samples.len())
+        .chain(stereo_tracks.iter().map(|track| track.sound.left.len()))
         .max()
         .unwrap_or(0);
     let mut left = vec![0.0; frame_count];
@@ -74,6 +93,39 @@ pub fn mix_stereo(tracks: &[MonoTrack<'_>], master_gain: f32) -> Result<StereoSo
         for frame in 0..track_left.len() {
             left[frame] += track_left[frame];
             right[frame] += track_right[frame];
+        }
+    }
+    for track in stereo_tracks {
+        if track.sound.sample_rate != sample_rate
+            || track.sound.left.len() != track.sound.right.len()
+        {
+            return Err(Error::InvalidMix(
+                "stereo tracks must have matching channels and sample rates".to_owned(),
+            ));
+        }
+        if !track.gain.is_finite() || !(0.0..=1.0).contains(&track.gain) {
+            return Err(Error::InvalidMix(
+                "track gain must be between 0 and 1".to_owned(),
+            ));
+        }
+        if !track.pan.is_finite() || !(-1.0..=1.0).contains(&track.pan) {
+            return Err(Error::InvalidMix(
+                "track pan must be between -1 and 1".to_owned(),
+            ));
+        }
+        let left_balance = if track.pan < 0.0 {
+            1.0
+        } else {
+            1.0 - track.pan
+        };
+        let right_balance = if track.pan > 0.0 {
+            1.0
+        } else {
+            1.0 + track.pan
+        };
+        for frame in 0..track.sound.left.len() {
+            left[frame] += track.sound.left[frame] * track.gain * master_gain * left_balance;
+            right[frame] += track.sound.right[frame] * track.gain * master_gain * right_balance;
         }
     }
     for sample in left.iter_mut().chain(right.iter_mut()) {
@@ -167,6 +219,38 @@ mod tests {
         assert!(stereo.left[50].abs() < 0.001);
         assert!(stereo.left[100] > 0.2);
         assert!(stereo.right[100].abs() < 0.001);
+    }
+
+    #[test]
+    fn stereo_only_mix_preserves_center_channels_and_applies_balance() {
+        let sound = StereoSound {
+            left: vec![0.5, 0.25],
+            right: vec![0.25, 0.5],
+            sample_rate: 48_000,
+        };
+        let centered = mix_stereo_with_tracks(
+            &[],
+            &[StereoTrack {
+                sound: &sound,
+                gain: 1.0,
+                pan: 0.0,
+            }],
+            1.0,
+        )
+        .unwrap();
+        assert!((centered.left[0] - 0.5_f32.tanh()).abs() < 1e-6);
+        assert!((centered.right[0] - 0.25_f32.tanh()).abs() < 1e-6);
+        let left = mix_stereo_with_tracks(
+            &[],
+            &[StereoTrack {
+                sound: &sound,
+                gain: 1.0,
+                pan: -1.0,
+            }],
+            1.0,
+        )
+        .unwrap();
+        assert!(left.right.iter().all(|sample| *sample == 0.0));
     }
 
     #[test]

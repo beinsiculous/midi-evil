@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+evil-beats = { path = "../evil-beats", version = "0.1.0" }
 evil-project = { path = "../evil-project", version = "0.1.0" }
 evil-synth = { path = "../evil-synth", version = "0.1.0" }
 thiserror = "2"

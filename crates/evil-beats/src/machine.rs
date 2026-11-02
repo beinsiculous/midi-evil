@@ -153,10 +153,18 @@ impl DrumMachine {
     }
 
     pub fn next_frame(&mut self) -> [f32; 2] {
+        self.next_frame_with_repeats().0
+    }
+
+    /// Return the audio frame and a bitmask of hits fired by held-pad repeat.
+    /// Direct rising-edge hits are excluded so frontends do not record them twice.
+    pub fn next_frame_with_repeats(&mut self) -> ([f32; 2], u16) {
+        let mut repeated = 0_u16;
         if self.repeat.is_some() {
             for slot in 0..PAD_COUNT {
                 if self.held & (1 << slot) != 0 && self.frame as f64 >= self.next_repeat[slot] {
                     self.trigger(slot);
+                    repeated |= 1 << slot;
                     self.next_repeat[slot] += self.period();
                 }
             }
@@ -178,7 +186,7 @@ impl DrumMachine {
             voice.position += voice.step;
         }
         self.frame = self.frame.wrapping_add(1);
-        output.map(f32::tanh)
+        (output.map(f32::tanh), repeated)
     }
 }
 
@@ -206,6 +214,16 @@ mod tests {
         assert_eq!(onsets, vec![0, 6000, 12000]);
         machine.set_input(0, 127, Some(16), 120.0).unwrap();
         assert!((0..12000).all(|_| machine.next_frame() == [0.0; 2]));
+    }
+
+    #[test]
+    fn repeat_frames_report_only_automatic_retrigger_bits() {
+        let mut machine = machine();
+        machine.set_input(1, 127, Some(16), 120.0).unwrap();
+        let repeated: Vec<_> = (0..12_001)
+            .filter(|_| machine.next_frame_with_repeats().1 == 1)
+            .collect();
+        assert_eq!(repeated, [6_000, 12_000]);
     }
 
     #[test]
