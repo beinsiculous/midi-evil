@@ -82,18 +82,22 @@ impl VoiceState {
         let sample_rate = patch.sample_rate;
         let sweep_progress = (time / patch.duration_seconds).min(1.0);
         let amp_envelope = patch.envelope.amplitude(time, gate_seconds);
-        let (aux_amplitude, aux_pitch_cents, aux_filter_cutoff_octaves) =
+        let (aux_amplitude, aux_pitch_cents, aux_pulse_width, aux_filter_cutoff_octaves) =
             [patch.aux_envelope.as_ref(), patch.aux_envelope_2.as_ref()]
                 .into_iter()
                 .flatten()
-                .fold((0.0, 0.0, 0.0), |(amplitude, pitch, cutoff), aux| {
-                    let level = aux.envelope.amplitude(time, gate_seconds);
-                    (
-                        amplitude + aux.amplitude_depth * level,
-                        pitch + aux.pitch_depth_cents * level,
-                        cutoff + aux.filter_cutoff_depth_octaves * level,
-                    )
-                });
+                .fold(
+                    (0.0, 0.0, 0.0, 0.0),
+                    |(amplitude, pitch, pulse_width, cutoff), aux| {
+                        let level = aux.envelope.amplitude(time, gate_seconds);
+                        (
+                            amplitude + aux.amplitude_depth * level,
+                            pitch + aux.pitch_depth_cents * level,
+                            pulse_width + aux.pulse_width_depth * level,
+                            cutoff + aux.filter_cutoff_depth_octaves * level,
+                        )
+                    },
+                );
         let modulation = controls.modulation;
         let bend_semitones = controls.bend_semitones;
         let glide_semitones = if patch.glide_seconds > 0.0 && time < patch.glide_seconds {
@@ -106,6 +110,7 @@ impl VoiceState {
                 / 1200.0,
         );
         let oscillator_mode = patch.effective_oscillator_mode();
+        let pulse_width = modulation.pulse_width + aux_pulse_width;
         let sync_ratio = patch
             .uses_sync()
             .then(|| (patch.sync_ratio() + modulation.sync_ratio).clamp(0.01, 16.0));
@@ -127,14 +132,14 @@ impl VoiceState {
                     sweep_progress,
                     sample_rate,
                     voice_pitch,
-                    modulation.pulse_width,
+                    pulse_width,
                 );
                 let b = b.sample(
                     b_state,
                     sweep_progress,
                     sample_rate,
                     voice_pitch,
-                    modulation.pulse_width,
+                    pulse_width,
                 );
                 voice_sample = a * b
                     + oscillators
@@ -144,7 +149,7 @@ impl VoiceState {
                                 sweep_progress,
                                 sample_rate,
                                 voice_pitch,
-                                modulation.pulse_width,
+                                pulse_width,
                             )
                         })
                         .sum::<f32>();
@@ -163,7 +168,7 @@ impl VoiceState {
                         sweep_progress,
                         sample_rate,
                         multiplier,
-                        modulation.pulse_width,
+                        pulse_width,
                     );
                 }
             }
@@ -186,7 +191,7 @@ impl VoiceState {
                             sweep_progress,
                             sample_rate,
                             slave_pitch,
-                            modulation.pulse_width,
+                            pulse_width,
                         );
                         state.reset_phase(oscillator);
                     }

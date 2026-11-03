@@ -11,6 +11,8 @@ pub struct AuxEnvelope {
     pub amplitude_depth: f32,
     /// Pitch modulation in cents.
     pub pitch_depth_cents: f32,
+    /// Bipolar pulse-width offset added to the existing LFO contribution.
+    pub pulse_width_depth: f32,
     /// Filter cutoff modulation in octaves.
     pub filter_cutoff_depth_octaves: f32,
 }
@@ -21,6 +23,7 @@ impl Default for AuxEnvelope {
             envelope: Envelope::default(),
             amplitude_depth: 0.0,
             pitch_depth_cents: 0.0,
+            pulse_width_depth: 0.0,
             filter_cutoff_depth_octaves: 0.0,
         }
     }

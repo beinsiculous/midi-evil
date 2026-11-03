@@ -41,7 +41,7 @@ pub struct Patch {
     pub filter: Option<Filter>,
     /// Independent filter ADSR; `None` routes the amplitude envelope to the filter.
     pub filter_envelope: Option<Envelope>,
-    /// Optional auxiliary ADSR and its amplitude/pitch/filter matrix depths.
+    /// Optional auxiliary ADSR and its amplitude/pitch/pulse-width/filter matrix depths.
     pub aux_envelope: Option<AuxEnvelope>,
     /// Second independently optional auxiliary ADSR with the same signed routes.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -293,11 +293,13 @@ impl Patch {
                 || !(-1.0..=1.0).contains(&aux.amplitude_depth)
                 || !aux.pitch_depth_cents.is_finite()
                 || !(-2_400.0..=2_400.0).contains(&aux.pitch_depth_cents)
+                || !aux.pulse_width_depth.is_finite()
+                || !(-0.99..=0.99).contains(&aux.pulse_width_depth)
                 || !aux.filter_cutoff_depth_octaves.is_finite()
                 || !(-12.0..=12.0).contains(&aux.filter_cutoff_depth_octaves)
             {
                 return Err(invalid(
-                    "auxiliary-envelope amplitude, pitch, and cutoff depths must be valid",
+                    "auxiliary-envelope amplitude, pitch, pulse-width, and cutoff depths must be valid",
                 ));
             }
         }
@@ -401,6 +403,7 @@ mod tests {
                 },
                 amplitude_depth: -0.5,
                 pitch_depth_cents: 700.0,
+                pulse_width_depth: -0.35,
                 filter_cutoff_depth_octaves: -3.0,
             }),
             aux_envelope_2: Some(AuxEnvelope {
@@ -412,6 +415,7 @@ mod tests {
                 },
                 amplitude_depth: 0.25,
                 pitch_depth_cents: -450.0,
+                pulse_width_depth: 0.2,
                 filter_cutoff_depth_octaves: 2.0,
             }),
             delay: Some(Delay::default()),
@@ -475,6 +479,7 @@ mod tests {
         )
         .unwrap();
         assert!(patch.aux_envelope.is_some());
+        assert_eq!(patch.aux_envelope.as_ref().unwrap().pulse_width_depth, 0.0);
         assert_eq!(patch.aux_envelope_2, None);
         let json = patch.to_json_pretty().unwrap();
         assert!(json.contains("\"aux_envelope\""));
@@ -744,12 +749,14 @@ mod tests {
         let valid = AuxEnvelope {
             amplitude_depth: -1.0,
             pitch_depth_cents: 2_400.0,
+            pulse_width_depth: 0.99,
             filter_cutoff_depth_octaves: -12.0,
             ..AuxEnvelope::default()
         };
         let second_valid = AuxEnvelope {
             amplitude_depth: 0.5,
             pitch_depth_cents: -600.0,
+            pulse_width_depth: -0.5,
             filter_cutoff_depth_octaves: 4.0,
             ..AuxEnvelope::default()
         };
@@ -778,6 +785,14 @@ mod tests {
             },
             AuxEnvelope {
                 pitch_depth_cents: 2_400.01,
+                ..valid.clone()
+            },
+            AuxEnvelope {
+                pulse_width_depth: -0.991,
+                ..valid.clone()
+            },
+            AuxEnvelope {
+                pulse_width_depth: f32::NAN,
                 ..valid.clone()
             },
             AuxEnvelope {

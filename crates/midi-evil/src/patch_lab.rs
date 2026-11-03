@@ -890,6 +890,9 @@ fn show_auxiliary_envelope(ui: &mut Ui, index: usize, slot: &mut Option<AuxEnvel
                 .text("Pitch depth (cents)"),
         );
         ui.add(
+            egui::Slider::new(&mut aux.pulse_width_depth, -0.99..=0.99).text("Pulse width depth"),
+        );
+        ui.add(
             egui::Slider::new(&mut aux.filter_cutoff_depth_octaves, -12.0..=12.0)
                 .text("Cutoff depth (octaves)"),
         );

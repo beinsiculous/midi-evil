@@ -431,7 +431,7 @@ mod tests {
     #[test]
     fn both_auxiliary_matrix_slots_match_offline_at_multiple_pitches() {
         for second in [false, true] {
-            for route in 0..3 {
+            for route in 0..4 {
                 for sign in [-1.0, 1.0] {
                     for pitch in [48, 60, 72] {
                         let mut aux = crate::AuxEnvelope {
@@ -447,9 +447,13 @@ mod tests {
                             0 => aux.amplitude_depth = sign * 0.6,
                             1 => aux.pitch_depth_cents = sign * 600.0,
                             2 => aux.filter_cutoff_depth_octaves = sign * 3.0,
+                            3 => aux.pulse_width_depth = sign * 0.4,
                             _ => unreachable!(),
                         }
                         let mut patch = auxiliary_test_patch();
+                        if route == 3 {
+                            patch.oscillators[0].waveform = Waveform::Square;
+                        }
                         if second {
                             patch.aux_envelope_2 = Some(aux);
                         } else {
@@ -473,6 +477,7 @@ mod tests {
             },
             amplitude_depth: -0.25,
             pitch_depth_cents: -350.0,
+            pulse_width_depth: -0.2,
             filter_cutoff_depth_octaves: -1.5,
         };
         let second = crate::AuxEnvelope {
@@ -484,17 +489,19 @@ mod tests {
             },
             amplitude_depth: 0.2,
             pitch_depth_cents: 500.0,
+            pulse_width_depth: 0.35,
             filter_cutoff_depth_octaves: 2.0,
         };
         for mode in [VoiceMode::Poly, VoiceMode::Mono, VoiceMode::Legato] {
             for pitch in [48, 60, 72] {
-                let patch = Patch {
+                let mut patch = Patch {
                     voice_mode: mode,
                     glide_seconds: 0.025,
                     aux_envelope: Some(first.clone()),
                     aux_envelope_2: Some(second.clone()),
                     ..auxiliary_test_patch()
                 };
+                patch.oscillators[0].waveform = Waveform::Square;
                 let notes = [
                     test_note(pitch, 0.0, 0.1),
                     test_note(pitch + 4, 0.05, 0.1),

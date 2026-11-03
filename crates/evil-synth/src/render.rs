@@ -1528,16 +1528,21 @@ mod tests {
     #[test]
     fn both_auxiliary_matrix_slots_add_signed_routes_alongside_existing_modulation() {
         let base = auxiliary_test_patch();
-        let baseline = render(&base).unwrap().samples;
         for second in [false, true] {
             for (route, label, depths) in [
                 (0, "amplitude", [-0.6, 0.6]),
                 (1, "pitch", [-600.0, 600.0]),
                 (2, "filter cutoff", [-3.0, 3.0]),
+                (3, "pulse width", [-0.4, 0.4]),
             ] {
+                let mut route_base = base.clone();
+                if route == 3 {
+                    route_base.oscillators[0].waveform = Waveform::Square;
+                }
+                let baseline = render(&route_base).unwrap().samples;
                 let mut routed = Vec::new();
                 for depth in depths {
-                    let mut patch = base.clone();
+                    let mut patch = route_base.clone();
                     let mut aux = AuxEnvelope {
                         envelope: Envelope {
                             attack_seconds: 0.02,
@@ -1551,6 +1556,7 @@ mod tests {
                         0 => aux.amplitude_depth = depth,
                         1 => aux.pitch_depth_cents = depth,
                         2 => aux.filter_cutoff_depth_octaves = depth,
+                        3 => aux.pulse_width_depth = depth,
                         _ => unreachable!(),
                     }
                     if second {
@@ -1589,21 +1595,25 @@ mod tests {
             },
             amplitude_depth: 0.2,
             pitch_depth_cents: 180.0,
+            pulse_width_depth: 0.2,
             filter_cutoff_depth_octaves: 1.25,
         };
+        let mut base = auxiliary_test_patch();
+        base.oscillators[0].waveform = Waveform::Square;
         let combined = Patch {
             aux_envelope: Some(shared.clone()),
             aux_envelope_2: Some(shared.clone()),
-            ..auxiliary_test_patch()
+            ..base.clone()
         };
         let merged_depths = Patch {
             aux_envelope: Some(AuxEnvelope {
                 amplitude_depth: shared.amplitude_depth * 2.0,
                 pitch_depth_cents: shared.pitch_depth_cents * 2.0,
+                pulse_width_depth: shared.pulse_width_depth * 2.0,
                 filter_cutoff_depth_octaves: shared.filter_cutoff_depth_octaves * 2.0,
                 ..shared
             }),
-            ..auxiliary_test_patch()
+            ..base
         };
         let samples = render(&combined).unwrap().samples;
         assert_eq!(samples, render(&combined).unwrap().samples);
@@ -1618,22 +1628,25 @@ mod tests {
             sustain_level: 0.6,
             release_seconds: 0.03,
         };
-        let routed = Patch {
+        let mut routed = Patch {
             glide_seconds: 0.04,
             aux_envelope: Some(AuxEnvelope {
                 envelope: envelope.clone(),
                 amplitude_depth: 0.35,
                 pitch_depth_cents: 420.0,
+                pulse_width_depth: 0.35,
                 filter_cutoff_depth_octaves: 2.5,
             }),
             aux_envelope_2: Some(AuxEnvelope {
                 envelope,
                 amplitude_depth: -0.35,
                 pitch_depth_cents: -420.0,
+                pulse_width_depth: -0.35,
                 filter_cutoff_depth_octaves: -2.5,
             }),
             ..auxiliary_test_patch()
         };
+        routed.oscillators[0].waveform = Waveform::Square;
         let plain = Patch {
             aux_envelope: None,
             aux_envelope_2: None,
@@ -1719,6 +1732,53 @@ mod tests {
             render(&plain).unwrap().samples,
             render(&modulated).unwrap().samples
         );
+    }
+
+    #[test]
+    fn auxiliary_pulse_width_sums_with_and_cancels_lfo_modulation() {
+        let envelope = Envelope {
+            attack_seconds: 0.0,
+            decay_seconds: 0.0,
+            sustain_level: 1.0,
+            release_seconds: 0.0,
+        };
+        let plain = Patch {
+            duration_seconds: 0.12,
+            oscillators: vec![Oscillator {
+                waveform: Waveform::Square,
+                ..Oscillator::default()
+            }],
+            envelope: envelope.clone(),
+            lfo: Some(Lfo {
+                rate_hz: 0.0,
+                destination: LfoDestination::PulseWidth,
+                waveform: LfoWaveform::SawDown,
+                pulse_width_depth: -0.4,
+                ..Lfo::default()
+            }),
+            ..Patch::default()
+        };
+        let cancelled = Patch {
+            aux_envelope: Some(AuxEnvelope {
+                envelope: envelope.clone(),
+                pulse_width_depth: 0.2,
+                ..AuxEnvelope::default()
+            }),
+            aux_envelope_2: Some(AuxEnvelope {
+                envelope,
+                pulse_width_depth: 0.2,
+                ..AuxEnvelope::default()
+            }),
+            ..plain.clone()
+        };
+        let unmodulated = Patch {
+            lfo: None,
+            ..plain.clone()
+        };
+        let expected = render(&unmodulated).unwrap().samples;
+        assert_ne!(render(&plain).unwrap().samples, expected);
+        assert_eq!(render(&cancelled).unwrap().samples, expected);
+        assert_eq!(render(&cancelled).unwrap().samples, expected);
     }
 
     #[test]
