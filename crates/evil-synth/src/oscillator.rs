@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::SampleOscillator;
+use crate::{SampleOscillator, SampleZone};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -39,6 +39,9 @@ pub struct Oscillator {
     pub pulse_width: f32,
     /// Embedded source used only by the sample waveform.
     pub sample: Option<SampleOscillator>,
+    /// Optional multi-sample keyboard mapping. Legacy `sample` audio is one full-keyboard zone.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sample_zones: Vec<SampleZone>,
 }
 
 impl Default for Oscillator {
@@ -51,6 +54,7 @@ impl Default for Oscillator {
             detune_cents: 0.0,
             pulse_width: 0.5,
             sample: None,
+            sample_zones: Vec::new(),
         }
     }
 }
@@ -58,6 +62,7 @@ impl Default for Oscillator {
 pub(crate) struct OscillatorState {
     phase: f32,
     sample_position: f64,
+    sample_zone: Option<usize>,
     noise: XorShift32,
 }
 
@@ -66,15 +71,39 @@ impl OscillatorState {
         self.phase = 0.0;
         self.sample_position = 0.0;
     }
+
+    pub(crate) fn select_sample_zone(&mut self, oscillator: &Oscillator, note_pitch: u8) {
+        let selected = oscillator.sample_zone_index(note_pitch);
+        if self.sample_zone != selected {
+            self.sample_position = 0.0;
+        }
+        self.sample_zone = selected;
+    }
 }
 
 impl Oscillator {
-    pub(crate) fn state(&self, seed: u32) -> OscillatorState {
+    pub(crate) fn state(&self, seed: u32, note_pitch: u8) -> OscillatorState {
         OscillatorState {
             phase: 0.0,
             sample_position: 0.0,
+            sample_zone: self.sample_zone_index(note_pitch),
             noise: XorShift32::new(seed),
         }
+    }
+
+    /// Resolve a key without depending on zone ordering. Patches reject overlapping zones.
+    pub fn sample_for_key(&self, key: u8) -> Option<&SampleOscillator> {
+        if self.sample_zones.is_empty() {
+            return (key <= 127).then_some(self.sample.as_ref()).flatten();
+        }
+        self.sample_zones
+            .iter()
+            .find(|zone| zone.contains(key))
+            .map(|zone| &zone.sample)
+    }
+
+    fn sample_zone_index(&self, key: u8) -> Option<usize> {
+        self.sample_zones.iter().position(|zone| zone.contains(key))
     }
 
     pub(crate) fn frequency(&self, sweep_progress: f32, pitch_multiplier: f32) -> f32 {
@@ -126,7 +155,15 @@ impl Oscillator {
         pulse_width_offset: f32,
     ) -> f32 {
         if self.waveform == Waveform::Sample {
-            let Some(source) = &self.sample else {
+            let source = if self.sample_zones.is_empty() {
+                self.sample.as_ref()
+            } else {
+                state
+                    .sample_zone
+                    .and_then(|index| self.sample_zones.get(index))
+                    .map(|zone| &zone.sample)
+            };
+            let Some(source) = source else {
                 return 0.0;
             };
             let playback_rate = self.frequency(sweep_progress, pitch_multiplier)
@@ -134,14 +171,7 @@ impl Oscillator {
                 * source.sample_rate as f32
                 / sample_rate as f32;
             let sample = source.at(state.sample_position) * self.amplitude;
-            state.sample_position += f64::from(playback_rate);
-            state.sample_position = if source.loop_enabled {
-                state
-                    .sample_position
-                    .rem_euclid(source.samples.len() as f64)
-            } else {
-                state.sample_position.min(source.samples.len() as f64)
-            };
+            state.sample_position = source.advance(state.sample_position, f64::from(playback_rate));
             return sample;
         }
         if matches!(self.waveform, Waveform::Noise) {
@@ -211,12 +241,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sample_zone_selection_is_deterministic_at_inclusive_boundaries() {
+        let low = SampleOscillator {
+            name: "low".to_owned(),
+            ..SampleOscillator::new(vec![-0.25], 8_000)
+        };
+        let high = SampleOscillator {
+            name: "high".to_owned(),
+            ..SampleOscillator::new(vec![0.5], 8_000)
+        };
+        let oscillator = Oscillator {
+            waveform: Waveform::Sample,
+            sample_zones: vec![SampleZone::new(60, 127, high), SampleZone::new(0, 59, low)],
+            ..Oscillator::default()
+        };
+        for _ in 0..4 {
+            assert_eq!(oscillator.sample_for_key(0).unwrap().name, "low");
+            assert_eq!(oscillator.sample_for_key(59).unwrap().name, "low");
+            assert_eq!(oscillator.sample_for_key(60).unwrap().name, "high");
+            assert_eq!(oscillator.sample_for_key(127).unwrap().name, "high");
+        }
+        assert!(oscillator.sample_for_key(128).is_none());
+
+        let mut state = oscillator.state(1, 60);
+        assert_eq!(oscillator.sample(&mut state, 0.0, 8_000, 1.0, 0.0), 0.5);
+        state.select_sample_zone(&oscillator, 59);
+        assert_eq!(oscillator.sample(&mut state, 0.0, 8_000, 1.0, 0.0), -0.25);
+    }
+
+    #[test]
     fn sync_correction_smooths_square_reset_transitions() {
         let oscillator = Oscillator {
             waveform: Waveform::Square,
             ..Oscillator::default()
         };
-        let mut state = oscillator.state(1);
+        let mut state = oscillator.state(1, 69);
         state.phase = 0.75;
         let correction = oscillator.sync_correction(&state, 0.0, 0.0, 48_000, 1.0, 0.0);
         assert!((correction - 1.0).abs() < 0.000_001);

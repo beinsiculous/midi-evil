@@ -34,7 +34,7 @@ pub(crate) struct VoiceState {
 }
 
 impl VoiceState {
-    pub fn new(patch: &Patch) -> Self {
+    pub fn new(patch: &Patch, note_pitch: u8) -> Self {
         let count = patch
             .unison
             .as_ref()
@@ -52,6 +52,7 @@ impl VoiceState {
                                     .seed
                                     .wrapping_add((voice as u32).wrapping_mul(0x9e37_79b9))
                                     .wrapping_add(index as u32),
+                                note_pitch,
                             )
                         })
                         .collect()
@@ -60,6 +61,14 @@ impl VoiceState {
             filter: FilterState::default(),
             sync_phases: vec![0.0; count],
             modal_phases: vec![0.0; patch.modal_partials.len()],
+        }
+    }
+
+    pub fn select_note(&mut self, patch: &Patch, note_pitch: u8) {
+        for states in &mut self.oscillators {
+            for (oscillator, state) in patch.oscillators.iter().zip(states.iter_mut()) {
+                state.select_sample_zone(oscillator, note_pitch);
+            }
         }
     }
 
@@ -249,10 +258,10 @@ mod tests {
             },
             ..Patch::default()
         };
-        let mut mix = VoiceState::new(&patch);
-        let mut ring = VoiceState::new(&patch);
-        let mut a_state = patch.oscillators[0].state(1);
-        let mut b_state = patch.oscillators[1].state(2);
+        let mut mix = VoiceState::new(&patch, 69);
+        let mut ring = VoiceState::new(&patch, 69);
+        let mut a_state = patch.oscillators[0].state(1, 69);
+        let mut b_state = patch.oscillators[1].state(2, 69);
         let ring_patch = Patch {
             oscillator_mode: OscillatorMode::Ring,
             ..patch.clone()
@@ -295,8 +304,8 @@ mod tests {
             sync: Some(OscillatorSync { ratio: 2.0 }),
             ..patch.clone()
         };
-        let mut plain_state = VoiceState::new(&patch);
-        let mut sync_state = VoiceState::new(&synced);
+        let mut plain_state = VoiceState::new(&patch, 69);
+        let mut sync_state = VoiceState::new(&synced, 69);
         for frame in 0..256 {
             let time = frame as f32 / patch.sample_rate as f32;
             assert_eq!(

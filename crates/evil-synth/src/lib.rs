@@ -35,7 +35,7 @@ pub use render::{
     render_notes_dry_with_tempo_and_full_automation, render_notes_with_automation,
     render_notes_with_full_automation, render_notes_with_pitch_bend, render_notes_with_tempo,
 };
-pub use sample::SampleOscillator;
+pub use sample::{SampleOscillator, SampleZone};
 pub use sync::OscillatorSync;
 use thiserror::Error;
 pub use unison::Unison;

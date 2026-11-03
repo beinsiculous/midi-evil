@@ -5,7 +5,7 @@ use eframe::egui::{self, ComboBox, DragValue, Ui};
 
 use evil_synth::{
     AuxEnvelope, Delay, DelayMode, Envelope, FilterMode, Lfo, LfoDestination, LfoWaveform,
-    Oscillator, OscillatorMode, Patch, SampleOscillator, VoiceMode, Waveform,
+    Oscillator, OscillatorMode, Patch, SampleOscillator, SampleZone, VoiceMode, Waveform,
 };
 
 pub struct PatchLab {
@@ -212,7 +212,7 @@ fn show_voice(ui: &mut Ui, patch: &mut Patch) -> Option<String> {
                             ] {
                                 ui.selectable_value(&mut oscillator.waveform, waveform, label);
                             }
-                            if oscillator.sample.is_some()
+                            if (oscillator.sample.is_some() || !oscillator.sample_zones.is_empty())
                                 && sample_oscillator
                                     .is_none_or(|sample_index| sample_index == index)
                             {
@@ -245,7 +245,9 @@ fn show_voice(ui: &mut Ui, patch: &mut Patch) -> Option<String> {
                         ui.add(egui::Slider::new(&mut oscillator.pulse_width, 0.01..=0.99));
                     }
                 });
-                if sample_oscillator.is_none_or(|sample_index| sample_index == index) {
+                if oscillator.sample_zones.is_empty()
+                    && sample_oscillator.is_none_or(|sample_index| sample_index == index)
+                {
                     let button = if oscillator.sample.is_some() {
                         "Replace sample WAV"
                     } else {
@@ -262,24 +264,8 @@ fn show_voice(ui: &mut Ui, patch: &mut Patch) -> Option<String> {
                         });
                     }
                 }
-                if oscillator.waveform == Waveform::Sample
-                    && let Some(sample) = &mut oscillator.sample
-                {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(format!(
-                            "{} · {} frames · {} Hz",
-                            sample.name,
-                            sample.samples.len(),
-                            sample.sample_rate
-                        ));
-                        ui.checkbox(&mut sample.loop_enabled, "Loop");
-                    });
-                    let maximum_root = sample.sample_rate as f32 / 2.0;
-                    ui.add(
-                        DragValue::new(&mut sample.root_frequency_hz)
-                            .range(0.01..=maximum_root)
-                            .prefix("Root Hz "),
-                    );
+                if oscillator.waveform == Waveform::Sample {
+                    message = show_sample_mapping(ui, oscillator, index);
                 }
             });
     }
@@ -327,6 +313,293 @@ fn import_sample(
     oscillator.sample = Some(sample);
     oscillator.waveform = Waveform::Sample;
     Ok(format!("Loaded WAV '{name}' into oscillator {}", index + 1))
+}
+
+fn show_sample_mapping(
+    ui: &mut Ui,
+    oscillator: &mut Oscillator,
+    oscillator_index: usize,
+) -> Option<String> {
+    let mut message = None;
+    if oscillator.sample_zones.is_empty() {
+        if let Some(sample) = &mut oscillator.sample {
+            show_sample_controls(ui, sample);
+        }
+        if ui.button("Add key zone").clicked() && add_sample_zone(oscillator) {
+            message = Some("Split the full keyboard into two identical sample zones".to_owned());
+        }
+        return message;
+    }
+
+    oscillator
+        .sample_zones
+        .sort_unstable_by_key(|zone| (zone.low_key, zone.high_key));
+    ui.label(
+        egui::RichText::new("Inclusive MIDI key ranges · selected at note-on · gaps are silent")
+            .small()
+            .color(theme::MUTED),
+    );
+    let zone_count = oscillator.sample_zones.len();
+    let mut remove_zone = None;
+    for zone_index in 0..zone_count {
+        let title = {
+            let zone = &oscillator.sample_zones[zone_index];
+            format!(
+                "Zone {} · {} · keys {}–{}",
+                zone_index + 1,
+                zone.sample.name,
+                zone.low_key,
+                zone.high_key
+            )
+        };
+        let minimum_low = zone_index
+            .checked_sub(1)
+            .map_or(0, |previous| oscillator.sample_zones[previous].high_key + 1);
+        let maximum_high = oscillator
+            .sample_zones
+            .get(zone_index + 1)
+            .map_or(127, |next| next.low_key - 1);
+        egui::CollapsingHeader::new(title)
+            .default_open(true)
+            .show(ui, |ui| {
+                let zone = &mut oscillator.sample_zones[zone_index];
+                ui.horizontal_wrapped(|ui| {
+                    ui.add(
+                        DragValue::new(&mut zone.low_key)
+                            .range(minimum_low..=zone.high_key)
+                            .prefix("Low key "),
+                    );
+                    ui.add(
+                        DragValue::new(&mut zone.high_key)
+                            .range(zone.low_key..=maximum_high)
+                            .prefix("High key "),
+                    );
+                });
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Load / replace zone WAV").clicked()
+                        && let Some(path) = rfd::FileDialog::new()
+                            .add_filter("WAV audio", &["wav"])
+                            .pick_file()
+                    {
+                        message = Some(
+                            match import_zone_sample(zone, oscillator_index, zone_index, &path) {
+                                Ok(message) => message,
+                                Err(error) => error.to_string(),
+                            },
+                        );
+                    }
+                    if zone_count > 1 && ui.button("Remove zone").clicked() {
+                        remove_zone = Some(zone_index);
+                    }
+                });
+                show_sample_controls(ui, &mut zone.sample);
+            });
+    }
+    if let Some(index) = remove_zone {
+        oscillator.sample_zones.remove(index);
+        message = Some(format!("Removed sample zone {}", index + 1));
+    }
+    if zone_count < 128
+        && ui.button("Add key zone (duplicate & split)").clicked()
+        && add_sample_zone(oscillator)
+    {
+        message = Some("Duplicated and split a sample zone".to_owned());
+    }
+    message
+}
+
+fn add_sample_zone(oscillator: &mut Oscillator) -> bool {
+    if oscillator.sample_zones.is_empty() {
+        let Some(sample) = oscillator.sample.take() else {
+            return false;
+        };
+        oscillator.sample_zones = vec![
+            SampleZone::new(0, 59, sample.clone()),
+            SampleZone::new(60, 127, sample),
+        ];
+        return true;
+    }
+
+    let zone_width = |zone: &SampleZone| u16::from(zone.high_key - zone.low_key) + 1;
+    let mut widest = 0;
+    for index in 1..oscillator.sample_zones.len() {
+        if zone_width(&oscillator.sample_zones[index])
+            > zone_width(&oscillator.sample_zones[widest])
+        {
+            widest = index;
+        }
+    }
+    if zone_width(&oscillator.sample_zones[widest]) == 1 {
+        return false;
+    }
+    let zone = &oscillator.sample_zones[widest];
+    let high_key = zone.high_key;
+    let midpoint = zone.low_key + (zone.high_key - zone.low_key) / 2;
+    let sample = zone.sample.clone();
+    oscillator.sample_zones[widest].high_key = midpoint;
+    oscillator
+        .sample_zones
+        .insert(widest + 1, SampleZone::new(midpoint + 1, high_key, sample));
+    true
+}
+
+fn import_zone_sample(
+    zone: &mut SampleZone,
+    oscillator_index: usize,
+    zone_index: usize,
+    path: &Path,
+) -> Result<String, evil_synth::Error> {
+    let sample = SampleOscillator::read_wav(path)?;
+    let name = sample.name.clone();
+    zone.sample = sample;
+    Ok(format!(
+        "Loaded WAV '{name}' into oscillator {} zone {}",
+        oscillator_index + 1,
+        zone_index + 1
+    ))
+}
+
+fn show_sample_controls(ui: &mut Ui, sample: &mut SampleOscillator) {
+    ui.horizontal_wrapped(|ui| {
+        ui.label(format!(
+            "{} · {} frames · {} Hz",
+            sample.name,
+            sample.samples.len(),
+            sample.sample_rate
+        ));
+        ui.checkbox(&mut sample.loop_enabled, "Loop");
+    });
+    sample_waveform(ui, sample);
+
+    let frame_count = sample.samples.len();
+    let mut start = sample.loop_start_frame;
+    let mut end = sample.loop_end_frame.unwrap_or(frame_count);
+    let start_changed = ui
+        .add(
+            DragValue::new(&mut start)
+                .range(0..=frame_count - 1)
+                .prefix("Loop start frame "),
+        )
+        .changed();
+    let end_changed = ui
+        .add(
+            DragValue::new(&mut end)
+                .range(1..=frame_count)
+                .prefix("Loop end frame (exclusive) "),
+        )
+        .changed();
+    if start_changed {
+        end = end.max(start + 1).min(frame_count);
+    }
+    if end_changed {
+        start = start.min(end - 1);
+    }
+    if start_changed || end_changed {
+        sample.loop_start_frame = start;
+        sample.loop_end_frame = Some(end);
+    }
+    ui.horizontal_wrapped(|ui| {
+        if ui.button("Full-source loop").clicked() {
+            sample.loop_start_frame = 0;
+            sample.loop_end_frame = None;
+        }
+        ui.label(
+            egui::RichText::new("One-shots ignore loop points and play the full source")
+                .small()
+                .color(theme::MUTED),
+        );
+    });
+    let maximum_root = sample.sample_rate as f32 / 2.0;
+    ui.add(
+        DragValue::new(&mut sample.root_frequency_hz)
+            .range(0.01..=maximum_root)
+            .prefix("Root Hz "),
+    );
+}
+
+fn sample_waveform(ui: &mut Ui, sample: &SampleOscillator) {
+    let (response, painter) =
+        ui.allocate_painter(egui::vec2(ui.available_width(), 88.0), egui::Sense::hover());
+    painter.rect_filled(response.rect, 3.0, theme::BACKGROUND);
+    let plot = response.rect.shrink(8.0);
+    let frame_count = sample.samples.len();
+    if frame_count == 0 || plot.width() <= 0.0 {
+        return;
+    }
+    let frame_x = |frame: usize| plot.left() + frame as f32 / frame_count as f32 * plot.width();
+    let loop_range = sample.loop_range();
+    if sample.loop_enabled && loop_range.start < loop_range.end && loop_range.end <= frame_count {
+        painter.rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(frame_x(loop_range.start), plot.top()),
+                egui::pos2(frame_x(loop_range.end), plot.bottom()),
+            ),
+            0.0,
+            theme::PURPLE.gamma_multiply(0.12),
+        );
+    }
+    painter.line_segment(
+        [
+            egui::pos2(plot.left(), plot.center().y),
+            egui::pos2(plot.right(), plot.center().y),
+        ],
+        egui::Stroke::new(1.0, theme::BORDER.gamma_multiply(0.5)),
+    );
+    let bars = plot.width().min(180.0) as usize;
+    for bar in 0..bars {
+        let start = bar * frame_count / bars;
+        let end = ((bar + 1) * frame_count / bars)
+            .max(start + 1)
+            .min(frame_count);
+        let peak = sample.samples[start..end]
+            .iter()
+            .fold(0.0_f32, |peak, value| peak.max(value.abs()))
+            .min(1.0);
+        let x = plot.left() + bar as f32 / bars as f32 * plot.width();
+        let height = (peak * plot.height() * 0.45).max(0.5);
+        painter.line_segment(
+            [
+                egui::pos2(x, plot.center().y - height),
+                egui::pos2(x, plot.center().y + height),
+            ],
+            egui::Stroke::new(1.0, theme::IVORY.gamma_multiply(0.75)),
+        );
+    }
+    for (frame, label, color, alignment) in [
+        (loop_range.start, "S", theme::GREEN, egui::Align2::LEFT_TOP),
+        (loop_range.end, "E", theme::RED, egui::Align2::RIGHT_TOP),
+    ] {
+        if frame > frame_count {
+            continue;
+        }
+        let color = if sample.loop_enabled {
+            color
+        } else {
+            theme::MUTED
+        };
+        let x = frame_x(frame);
+        painter.line_segment(
+            [egui::pos2(x, plot.top()), egui::pos2(x, plot.bottom())],
+            egui::Stroke::new(1.5, color),
+        );
+        painter.text(
+            egui::pos2(x, plot.top() + 2.0),
+            alignment,
+            label,
+            egui::FontId::monospace(11.0),
+            color,
+        );
+    }
+    response.on_hover_text(format!(
+        "Embedded waveform · loop {}..{} frames (end exclusive){}",
+        loop_range.start,
+        loop_range.end,
+        if sample.loop_enabled {
+            ""
+        } else {
+            " · disabled; one-shot uses the full source"
+        }
+    ));
 }
 
 fn show_shape(ui: &mut Ui, patch: &mut Patch) {
@@ -625,10 +898,66 @@ mod tests {
         let sample = oscillator.sample.unwrap();
         assert_eq!(sample.name, "oscillator");
         assert_eq!(sample.samples, vec![0.125]);
+        assert_eq!(sample.loop_range(), 0..1);
 
         let mut unchanged = Oscillator::default();
         assert!(import_sample(&mut unchanged, 0, &directory.path().join("missing.wav")).is_err());
         assert_eq!(unchanged, Oscillator::default());
+    }
+
+    #[test]
+    fn sample_zone_editing_splits_safely_and_replaces_only_the_selected_zone() {
+        let directory = tempfile::tempdir().unwrap();
+        let first_path = directory.path().join("first.wav");
+        evil_synth::RenderedSound {
+            samples: vec![0.125, -0.125],
+            sample_rate: 8_000,
+        }
+        .write_wav(&first_path)
+        .unwrap();
+        let second_path = directory.path().join("second.wav");
+        evil_synth::RenderedSound {
+            samples: vec![0.5],
+            sample_rate: 48_000,
+        }
+        .write_wav(&second_path)
+        .unwrap();
+
+        let mut oscillator = Oscillator::default();
+        import_sample(&mut oscillator, 0, &first_path).unwrap();
+        let original = oscillator.sample.clone().unwrap();
+        assert!(add_sample_zone(&mut oscillator));
+        assert!(oscillator.sample.is_none());
+        assert_eq!(oscillator.sample_zones.len(), 2);
+        assert_eq!(oscillator.sample_zones[0].low_key, 0);
+        assert_eq!(oscillator.sample_zones[0].high_key, 59);
+        assert_eq!(oscillator.sample_zones[1].low_key, 60);
+        assert_eq!(oscillator.sample_zones[1].high_key, 127);
+        for key in 0..=127 {
+            assert_eq!(oscillator.sample_for_key(key), Some(&original));
+        }
+
+        oscillator.sample_zones.remove(0);
+        assert!(oscillator.sample_for_key(59).is_none());
+        let message =
+            import_zone_sample(&mut oscillator.sample_zones[0], 0, 0, &second_path).unwrap();
+        assert!(message.contains("oscillator 1 zone 1"));
+        assert_eq!(oscillator.sample_zones[0].low_key, 60);
+        assert_eq!(oscillator.sample_zones[0].high_key, 127);
+        assert_eq!(oscillator.sample_zones[0].sample.name, "second");
+        assert_eq!(oscillator.sample_for_key(60).unwrap().samples, vec![0.5]);
+
+        let unchanged = oscillator.clone();
+        assert!(
+            import_zone_sample(
+                &mut oscillator.sample_zones[0],
+                0,
+                0,
+                &directory.path().join("missing.wav")
+            )
+            .is_err()
+        );
+        assert_eq!(oscillator, unchanged);
     }
 
     #[test]

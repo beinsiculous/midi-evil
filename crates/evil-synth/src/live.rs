@@ -178,6 +178,7 @@ impl LiveSynth {
                     voice.glide_from_semitones = glide_from_semitones;
                     voice.held = true;
                     voice.patch = patch;
+                    voice.state.select_note(&voice.patch, pitch);
                     voice.gate = None;
                     return Ok(());
                 }
@@ -188,7 +189,7 @@ impl LiveSynth {
             pitch,
             glide_from_semitones,
             held: true,
-            state: VoiceState::new(&patch),
+            state: VoiceState::new(&patch, pitch),
             modulation: ModulationState::new(&patch),
             patch,
             frame: 0,
@@ -502,7 +503,7 @@ mod tests {
     }
 
     #[test]
-    fn sample_oscillator_loop_modes_match_offline_at_multiple_pitches() {
+    fn custom_sample_loop_points_match_offline_at_multiple_pitches() {
         for loop_enabled in [false, true] {
             for pitch in [48, 60, 72] {
                 let patch = Patch {
@@ -516,6 +517,8 @@ mod tests {
                                 .collect(),
                             sample_rate: 8_000,
                             loop_enabled,
+                            loop_start_frame: 5,
+                            loop_end_frame: Some(7),
                             ..crate::SampleOscillator::default()
                         }),
                         ..crate::Oscillator::default()
@@ -530,6 +533,69 @@ mod tests {
                 };
                 assert_offline_matches_live(patch, &[test_note(pitch, 0.0, 0.01)]);
             }
+        }
+    }
+
+    #[test]
+    fn sample_key_zones_match_offline_for_fixed_and_tracked_pitch() {
+        for loop_enabled in [false, true] {
+            for pitch_tracking in [false, true] {
+                for pitch in [48, 59, 60, 72] {
+                    let patch = zoned_sample_test_patch(loop_enabled, pitch_tracking);
+                    assert_offline_matches_live(patch, &[test_note(pitch, 0.0, 0.01)]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn legato_sample_zones_reselect_only_at_note_on() {
+        let notes = [
+            test_note(48, 0.0, 0.01),
+            test_note(72, 0.01, 0.01),
+            test_note(59, 0.02, 0.01),
+        ];
+        for pitch_tracking in [false, true] {
+            let patch = Patch {
+                voice_mode: VoiceMode::Legato,
+                ..zoned_sample_test_patch(true, pitch_tracking)
+            };
+            assert_offline_matches_live(patch, &notes);
+        }
+    }
+
+    #[test]
+    fn live_pitch_modulation_does_not_change_the_selected_sample_zone() {
+        let zoned = Patch {
+            pitch_bend_range_semitones: 24.0,
+            lfo: Some(crate::Lfo {
+                rate_hz: 31.0,
+                depth_cents: -2_400.0,
+                waveform: crate::LfoWaveform::SawDown,
+                ..crate::Lfo::default()
+            }),
+            ..zoned_sample_test_patch(true, true)
+        };
+        let high = zoned.oscillators[0].sample_for_key(72).unwrap().clone();
+        let single = Patch {
+            oscillators: vec![crate::Oscillator {
+                sample: Some(high),
+                sample_zones: Vec::new(),
+                ..zoned.oscillators[0].clone()
+            }],
+            ..zoned.clone()
+        };
+        let mut zoned_live = LiveSynth::new(zoned).unwrap();
+        let mut single_live = LiveSynth::new(single).unwrap();
+        for synth in [&mut zoned_live, &mut single_live] {
+            let mut controls = LiveControls::for_patch(&synth.patch);
+            controls.bend = -1.0;
+            controls.bend_range_semitones = 24.0;
+            synth.set_controls(controls).unwrap();
+            synth.note_on(72, 100).unwrap();
+        }
+        for _ in 0..160 {
+            assert_eq!(zoned_live.next_frame(), single_live.next_frame());
         }
     }
 
@@ -594,6 +660,47 @@ mod tests {
             assert_eq!(synth.voices[0].frame, expected_frame);
             synth.note_on(72, 100).unwrap();
             assert_eq!(synth.voices[0].frame, expected_frame);
+        }
+    }
+
+    fn zoned_sample_test_patch(loop_enabled: bool, pitch_tracking: bool) -> Patch {
+        let low = crate::SampleOscillator {
+            name: "low".to_owned(),
+            samples: (0..32).map(|index| index as f32 / 64.0 - 0.25).collect(),
+            sample_rate: 8_000,
+            root_frequency_hz: 220.0,
+            loop_enabled,
+            loop_start_frame: 3,
+            loop_end_frame: Some(13),
+        };
+        let high = crate::SampleOscillator {
+            name: "high".to_owned(),
+            samples: (0..32).map(|index| 0.5 - index as f32 / 64.0).collect(),
+            sample_rate: 8_000,
+            root_frequency_hz: 440.0,
+            loop_enabled,
+            loop_start_frame: 5,
+            loop_end_frame: Some(17),
+        };
+        Patch {
+            sample_rate: 8_000,
+            duration_seconds: 0.01,
+            pitch_tracking,
+            oscillators: vec![crate::Oscillator {
+                waveform: Waveform::Sample,
+                sample_zones: vec![
+                    crate::SampleZone::new(60, 127, high),
+                    crate::SampleZone::new(0, 59, low),
+                ],
+                ..crate::Oscillator::default()
+            }],
+            envelope: crate::Envelope {
+                attack_seconds: 0.0,
+                decay_seconds: 0.0,
+                sustain_level: 1.0,
+                release_seconds: 0.002,
+            },
+            ..Patch::default()
         }
     }
 

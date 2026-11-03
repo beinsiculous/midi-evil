@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AuxEnvelope, Delay, Envelope, Error, Filter, Lfo, LfoDestination, ModalPartial, Oscillator,
-    OscillatorMode, OscillatorSync, Unison, VoiceMode,
+    OscillatorMode, OscillatorSync, Unison, VoiceMode, sample::validate_sample_zones,
 };
 
 const MAX_DURATION_SECONDS: f32 = 60.0;
@@ -233,12 +233,21 @@ impl Patch {
                     ));
                 }
             }
-            if oscillator.waveform == crate::Waveform::Sample && oscillator.sample.is_none() {
+            if oscillator.waveform == crate::Waveform::Sample
+                && oscillator.sample.is_none()
+                && oscillator.sample_zones.is_empty()
+            {
                 return Err(invalid("a sample oscillator needs embedded WAV audio"));
+            }
+            if oscillator.sample.is_some() && !oscillator.sample_zones.is_empty() {
+                return Err(invalid(
+                    "use either a legacy sample or explicit sample_zones, not both",
+                ));
             }
             if let Some(sample) = &oscillator.sample {
                 sample.validate()?;
             }
+            validate_sample_zones(&oscillator.sample_zones)?;
         }
 
         if self.modal_partials.len() > 16 {
@@ -407,6 +416,8 @@ mod tests {
             sample_rate: 48_000,
             root_frequency_hz: 220.0,
             loop_enabled: true,
+            loop_start_frame: 1,
+            loop_end_frame: Some(3),
         });
         let json = patch.to_json_pretty().unwrap();
         let decoded = Patch::from_json(&json).unwrap();
@@ -421,6 +432,130 @@ mod tests {
         assert_eq!(patch.filter_envelope, None);
         assert_eq!(patch.aux_envelope, None);
         assert_eq!(patch.oscillators[0].sample, None);
+    }
+
+    #[test]
+    fn legacy_sample_json_defaults_to_the_full_source_loop() {
+        let patch = Patch::from_json(
+            r#"{
+                "oscillators": [{
+                    "waveform": "sample",
+                    "sample": {
+                        "samples": [0.0, 0.5, -0.5, 0.0],
+                        "sample_rate": 8000,
+                        "root_frequency_hz": 220.0,
+                        "loop_enabled": true
+                    }
+                }]
+            }"#,
+        )
+        .unwrap();
+        let sample = patch.oscillators[0].sample.as_ref().unwrap();
+        assert_eq!(sample.loop_start_frame, 0);
+        assert_eq!(sample.loop_end_frame, None);
+        assert_eq!(sample.loop_range(), 0..4);
+    }
+
+    #[test]
+    fn multi_sample_zone_json_round_trips_and_legacy_json_stays_unchanged() {
+        let low = crate::SampleOscillator {
+            name: "Low".to_owned(),
+            loop_enabled: true,
+            loop_start_frame: 1,
+            loop_end_frame: Some(3),
+            ..crate::SampleOscillator::new(vec![0.0, 0.25, -0.25, 0.0], 8_000)
+        };
+        let high = crate::SampleOscillator {
+            name: "High".to_owned(),
+            root_frequency_hz: 220.0,
+            ..crate::SampleOscillator::new(vec![0.5, -0.5], 8_000)
+        };
+        let patch = Patch {
+            oscillators: vec![Oscillator {
+                waveform: Waveform::Sample,
+                sample_zones: vec![
+                    crate::SampleZone::new(60, 127, high),
+                    crate::SampleZone::new(0, 59, low),
+                ],
+                ..Oscillator::default()
+            }],
+            ..Patch::default()
+        };
+        let json = patch.to_json_pretty().unwrap();
+        assert_eq!(Patch::from_json(&json).unwrap(), patch);
+
+        let legacy = Patch::from_json(
+            r#"{
+                "oscillators": [{
+                    "waveform": "sample",
+                    "sample": {
+                        "samples": [0.0, 0.5, -0.5],
+                        "sample_rate": 8000,
+                        "root_frequency_hz": 220.0
+                    }
+                }]
+            }"#,
+        )
+        .unwrap();
+        assert!(legacy.oscillators[0].sample_zones.is_empty());
+        assert!(!legacy.to_json_pretty().unwrap().contains("sample_zones"));
+        for key in [0, 60, 127] {
+            assert_eq!(
+                legacy.oscillators[0].sample_for_key(key),
+                legacy.oscillators[0].sample.as_ref()
+            );
+        }
+    }
+
+    #[test]
+    fn sample_zone_validation_rejects_invalid_ranges_overlap_and_ambiguous_sources() {
+        let sample = || crate::SampleOscillator::new(vec![0.0, 0.5, -0.5], 8_000);
+        let valid = Patch {
+            oscillators: vec![Oscillator {
+                waveform: Waveform::Sample,
+                sample_zones: vec![
+                    crate::SampleZone::new(61, 127, sample()),
+                    crate::SampleZone::new(0, 60, sample()),
+                ],
+                ..Oscillator::default()
+            }],
+            ..Patch::default()
+        };
+        assert!(valid.validate().is_ok());
+
+        let mut invalid = Vec::new();
+        for zone in [
+            crate::SampleZone::new(61, 60, sample()),
+            crate::SampleZone::new(0, 128, sample()),
+        ] {
+            let mut patch = valid.clone();
+            patch.oscillators[0].sample_zones = vec![zone];
+            invalid.push(patch);
+        }
+        for zones in [
+            vec![
+                crate::SampleZone::new(60, 127, sample()),
+                crate::SampleZone::new(0, 60, sample()),
+            ],
+            vec![
+                crate::SampleZone::new(0, 127, sample()),
+                crate::SampleZone::new(60, 60, sample()),
+            ],
+        ] {
+            let mut patch = valid.clone();
+            patch.oscillators[0].sample_zones = zones;
+            invalid.push(patch);
+        }
+        let mut ambiguous = valid.clone();
+        ambiguous.oscillators[0].sample = Some(sample());
+        invalid.push(ambiguous);
+        let mut empty = valid;
+        empty.oscillators[0].sample_zones[0].sample.samples.clear();
+        invalid.push(empty);
+
+        for patch in invalid {
+            assert!(patch.validate().is_err());
+        }
     }
 
     #[test]
@@ -496,6 +631,24 @@ mod tests {
             crate::SampleOscillator::new(vec![0.0; 240_001], 8_000),
             crate::SampleOscillator {
                 root_frequency_hz: 0.0,
+                ..valid.clone()
+            },
+            crate::SampleOscillator {
+                loop_start_frame: 1,
+                loop_end_frame: Some(1),
+                ..valid.clone()
+            },
+            crate::SampleOscillator {
+                loop_start_frame: 2,
+                loop_end_frame: Some(1),
+                ..valid.clone()
+            },
+            crate::SampleOscillator {
+                loop_end_frame: Some(4),
+                ..valid.clone()
+            },
+            crate::SampleOscillator {
+                loop_start_frame: 3,
                 ..valid.clone()
             },
         ];

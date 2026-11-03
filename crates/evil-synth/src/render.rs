@@ -377,7 +377,7 @@ impl SingleVoice {
             pitch: note.pitch,
             note_start_seconds: note.start_seconds,
             glide_from_semitones,
-            state: VoiceState::new(&patch),
+            state: VoiceState::new(&patch, note.pitch),
             modulation: ModulationState::new(&patch),
             patch,
             frame: 0,
@@ -468,6 +468,7 @@ fn render_single_voice(
                                 current.pitch = note.pitch;
                                 current.glide_from_semitones = glide_from_semitones;
                                 current.patch = next_patch;
+                                current.state.select_note(&current.patch, note.pitch);
                                 current.gate = None;
                             } else {
                                 voice =
@@ -778,7 +779,7 @@ fn render_voice_into(
     samples: &mut [f32],
     automation: VoiceAutomation<'_>,
 ) {
-    let mut voice = VoiceState::new(patch);
+    let mut voice = VoiceState::new(patch, automation.note_pitch);
     let mut modulation_state = ModulationState::new(patch);
     for frame in 0..voice_frame_count(patch) {
         let time = frame as f32 / patch.sample_rate as f32;
@@ -917,6 +918,67 @@ mod tests {
     }
 
     #[test]
+    fn sample_loop_point_defaults_and_disabled_loops_preserve_existing_audio() {
+        for loop_enabled in [false, true] {
+            let base = sample_test_patch(loop_enabled);
+            let explicit_full_source = Patch {
+                oscillators: vec![Oscillator {
+                    sample: Some(SampleOscillator {
+                        loop_end_frame: Some(32),
+                        ..base.oscillators[0].sample.clone().unwrap()
+                    }),
+                    ..base.oscillators[0].clone()
+                }],
+                ..base.clone()
+            };
+            assert_eq!(
+                render(&base).unwrap().samples,
+                render(&explicit_full_source).unwrap().samples
+            );
+        }
+
+        let one_shot = sample_test_patch(false);
+        let retained_points = Patch {
+            oscillators: vec![Oscillator {
+                sample: Some(SampleOscillator {
+                    loop_start_frame: 5,
+                    loop_end_frame: Some(7),
+                    ..one_shot.oscillators[0].sample.clone().unwrap()
+                }),
+                ..one_shot.oscillators[0].clone()
+            }],
+            ..one_shot.clone()
+        };
+        assert_eq!(
+            render(&one_shot).unwrap().samples,
+            render(&retained_points).unwrap().samples
+        );
+    }
+
+    #[test]
+    fn custom_sample_loops_retain_the_intro_and_wrap_at_the_exclusive_end() {
+        let base = sample_test_patch(true);
+        let custom = Patch {
+            oscillators: vec![Oscillator {
+                sample: Some(SampleOscillator {
+                    loop_start_frame: 5,
+                    loop_end_frame: Some(7),
+                    ..base.oscillators[0].sample.clone().unwrap()
+                }),
+                ..base.oscillators[0].clone()
+            }],
+            ..base
+        };
+        let samples = render(&custom).unwrap().samples;
+        let source = &custom.oscillators[0].sample.as_ref().unwrap().samples;
+        let gain = custom.gain;
+        let expected = [0, 1, 2, 3, 4, 5, 6, 5, 6, 5, 6, 5];
+        for (index, source_index) in expected.into_iter().enumerate() {
+            assert_eq!(samples[index], (source[source_index] * gain).tanh());
+        }
+    }
+
+    #[test]
     fn sample_oscillator_uses_the_shared_pitch_tracking_switch() {
         let tracked = sample_test_patch(true);
         let low = render_notes(&tracked, &[note(48)]).unwrap().samples;
@@ -930,6 +992,152 @@ mod tests {
         assert_eq!(
             render_notes(&fixed, &[note(48)]).unwrap().samples,
             render_notes(&fixed, &[note(72)]).unwrap().samples
+        );
+    }
+
+    #[test]
+    fn one_explicit_full_keyboard_zone_matches_legacy_sample_audio() {
+        for loop_enabled in [false, true] {
+            for pitch_tracking in [false, true] {
+                let legacy = Patch {
+                    pitch_tracking,
+                    ..sample_test_patch(loop_enabled)
+                };
+                let source = legacy.oscillators[0].sample.clone().unwrap();
+                let zoned = Patch {
+                    oscillators: vec![Oscillator {
+                        sample: None,
+                        sample_zones: vec![crate::SampleZone::new(0, 127, source)],
+                        ..legacy.oscillators[0].clone()
+                    }],
+                    ..legacy.clone()
+                };
+                assert_eq!(
+                    render(&legacy).unwrap().samples,
+                    render(&zoned).unwrap().samples
+                );
+                for pitch in [0, 48, 59, 60, 72] {
+                    assert_eq!(
+                        render_notes_dry(&legacy, &[note(pitch)]).unwrap().samples,
+                        render_notes_dry(&zoned, &[note(pitch)]).unwrap().samples,
+                        "zone-equivalence mismatch at pitch {pitch}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sample_zone_boundaries_select_the_expected_source_and_leave_gaps_silent() {
+        let base = Patch {
+            pitch_tracking: false,
+            ..sample_test_patch(false)
+        };
+        let low = SampleOscillator {
+            name: "looped low".to_owned(),
+            loop_enabled: true,
+            loop_start_frame: 2,
+            loop_end_frame: Some(8),
+            ..base.oscillators[0].sample.clone().unwrap()
+        };
+        let high = SampleOscillator {
+            name: "one-shot high".to_owned(),
+            samples: (0..32).map(|index| 0.75 - index as f32 / 64.0).collect(),
+            ..base.oscillators[0].sample.clone().unwrap()
+        };
+        let zoned = Patch {
+            oscillators: vec![Oscillator {
+                sample: None,
+                sample_zones: vec![
+                    crate::SampleZone::new(61, 127, high.clone()),
+                    crate::SampleZone::new(0, 59, low.clone()),
+                ],
+                ..base.oscillators[0].clone()
+            }],
+            ..base.clone()
+        };
+        for (pitch, source) in [(0, &low), (59, &low), (61, &high), (127, &high)] {
+            let single = Patch {
+                oscillators: vec![Oscillator {
+                    sample: Some(source.clone()),
+                    sample_zones: Vec::new(),
+                    ..base.oscillators[0].clone()
+                }],
+                ..base.clone()
+            };
+            assert_eq!(
+                render_notes_dry(&zoned, &[note(pitch)]).unwrap().samples,
+                render_notes_dry(&single, &[note(pitch)]).unwrap().samples,
+                "wrong source at pitch {pitch}"
+            );
+        }
+        assert!(
+            render_notes_dry(&zoned, &[note(60)])
+                .unwrap()
+                .samples
+                .iter()
+                .all(|sample| *sample == 0.0)
+        );
+    }
+
+    #[test]
+    fn pitch_modulation_does_not_change_a_voices_sample_zone() {
+        let base = sample_test_patch(true);
+        let low = SampleOscillator {
+            name: "low".to_owned(),
+            samples: vec![-0.75; 32],
+            ..base.oscillators[0].sample.clone().unwrap()
+        };
+        let high = SampleOscillator {
+            name: "high".to_owned(),
+            samples: vec![0.5; 32],
+            loop_start_frame: 3,
+            loop_end_frame: Some(11),
+            ..base.oscillators[0].sample.clone().unwrap()
+        };
+        let zoned = Patch {
+            pitch_bend_range_semitones: 24.0,
+            lfo: Some(Lfo {
+                rate_hz: 97.0,
+                depth_cents: -2_400.0,
+                waveform: LfoWaveform::SawDown,
+                ..Lfo::default()
+            }),
+            oscillators: vec![Oscillator {
+                sample: None,
+                sample_zones: vec![
+                    crate::SampleZone::new(0, 59, low),
+                    crate::SampleZone::new(60, 127, high.clone()),
+                ],
+                ..base.oscillators[0].clone()
+            }],
+            ..base
+        };
+        let single = Patch {
+            oscillators: vec![Oscillator {
+                sample: Some(high),
+                sample_zones: Vec::new(),
+                ..zoned.oscillators[0].clone()
+            }],
+            ..zoned.clone()
+        };
+        let bends = [
+            SynthPitchBend {
+                time_seconds: 0.0,
+                value: 0,
+            },
+            SynthPitchBend {
+                time_seconds: 0.05,
+                value: -8192,
+            },
+        ];
+        assert_eq!(
+            render_notes_dry_with_pitch_bend(&zoned, &[note(72)], &bends)
+                .unwrap()
+                .samples,
+            render_notes_dry_with_pitch_bend(&single, &[note(72)], &bends)
+                .unwrap()
+                .samples
         );
     }
 
