@@ -549,6 +549,60 @@ mod tests {
     }
 
     #[test]
+    fn keyboard_sliced_samples_match_offline_at_multiple_pitches() {
+        for loop_enabled in [false, true] {
+            for pitch_tracking in [false, true] {
+                let source = crate::SampleOscillator {
+                    samples: (0..35)
+                        .map(|index| (index % 11) as f32 / 10.0 - 0.5)
+                        .collect(),
+                    sample_rate: 8_000,
+                    root_frequency_hz: 220.0,
+                    loop_enabled,
+                    ..crate::SampleOscillator::default()
+                };
+                let mut zones = source.keyboard_slices(48, 52, 3).unwrap();
+                let middle = &mut zones[1].sample;
+                middle.loop_start_frame += 2;
+                middle.loop_end_frame = Some(middle.playback_range().end - 1);
+                let patch = Patch {
+                    sample_rate: 8_000,
+                    duration_seconds: 0.02,
+                    pitch_tracking,
+                    oscillators: vec![crate::Oscillator {
+                        waveform: Waveform::Sample,
+                        sample_zones: zones,
+                        ..crate::Oscillator::default()
+                    }],
+                    envelope: crate::Envelope {
+                        attack_seconds: 0.0,
+                        decay_seconds: 0.0,
+                        sustain_level: 1.0,
+                        release_seconds: 0.002,
+                    },
+                    ..Patch::default()
+                };
+                for pitch in [47, 48, 49, 50, 51, 52, 53] {
+                    assert_offline_matches_live(patch.clone(), &[test_note(pitch, 0.0, 0.02)]);
+                }
+
+                let legato = Patch {
+                    voice_mode: VoiceMode::Legato,
+                    ..patch
+                };
+                assert_offline_matches_live(
+                    legato,
+                    &[
+                        test_note(48, 0.0, 0.01),
+                        test_note(52, 0.01, 0.01),
+                        test_note(50, 0.02, 0.01),
+                    ],
+                );
+            }
+        }
+    }
+
+    #[test]
     fn legato_sample_zones_reselect_only_at_note_on() {
         let notes = [
             test_note(48, 0.0, 0.01),
@@ -669,6 +723,8 @@ mod tests {
             samples: (0..32).map(|index| index as f32 / 64.0 - 0.25).collect(),
             sample_rate: 8_000,
             root_frequency_hz: 220.0,
+            playback_start_frame: 0,
+            playback_end_frame: None,
             loop_enabled,
             loop_start_frame: 3,
             loop_end_frame: Some(13),
@@ -678,6 +734,8 @@ mod tests {
             samples: (0..32).map(|index| 0.5 - index as f32 / 64.0).collect(),
             sample_rate: 8_000,
             root_frequency_hz: 440.0,
+            playback_start_frame: 0,
+            playback_end_frame: None,
             loop_enabled,
             loop_start_frame: 5,
             loop_end_frame: Some(17),

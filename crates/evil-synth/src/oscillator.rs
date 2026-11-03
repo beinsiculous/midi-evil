@@ -67,15 +67,15 @@ pub(crate) struct OscillatorState {
 }
 
 impl OscillatorState {
-    pub(crate) fn reset_phase(&mut self) {
+    pub(crate) fn reset_phase(&mut self, oscillator: &Oscillator) {
         self.phase = 0.0;
-        self.sample_position = 0.0;
+        self.sample_position = oscillator.sample_start_position(self.sample_zone);
     }
 
     pub(crate) fn select_sample_zone(&mut self, oscillator: &Oscillator, note_pitch: u8) {
         let selected = oscillator.sample_zone_index(note_pitch);
         if self.sample_zone != selected {
-            self.sample_position = 0.0;
+            self.sample_position = oscillator.sample_start_position(selected);
         }
         self.sample_zone = selected;
     }
@@ -83,10 +83,11 @@ impl OscillatorState {
 
 impl Oscillator {
     pub(crate) fn state(&self, seed: u32, note_pitch: u8) -> OscillatorState {
+        let sample_zone = self.sample_zone_index(note_pitch);
         OscillatorState {
             phase: 0.0,
-            sample_position: 0.0,
-            sample_zone: self.sample_zone_index(note_pitch),
+            sample_position: self.sample_start_position(sample_zone),
+            sample_zone,
             noise: XorShift32::new(seed),
         }
     }
@@ -104,6 +105,20 @@ impl Oscillator {
 
     fn sample_zone_index(&self, key: u8) -> Option<usize> {
         self.sample_zones.iter().position(|zone| zone.contains(key))
+    }
+
+    fn sample_for_zone(&self, zone: Option<usize>) -> Option<&SampleOscillator> {
+        if self.sample_zones.is_empty() {
+            self.sample.as_ref()
+        } else {
+            zone.and_then(|index| self.sample_zones.get(index))
+                .map(|zone| &zone.sample)
+        }
+    }
+
+    fn sample_start_position(&self, zone: Option<usize>) -> f64 {
+        self.sample_for_zone(zone)
+            .map_or(0.0, |sample| sample.playback_range().start as f64)
     }
 
     pub(crate) fn frequency(&self, sweep_progress: f32, pitch_multiplier: f32) -> f32 {
@@ -155,15 +170,7 @@ impl Oscillator {
         pulse_width_offset: f32,
     ) -> f32 {
         if self.waveform == Waveform::Sample {
-            let source = if self.sample_zones.is_empty() {
-                self.sample.as_ref()
-            } else {
-                state
-                    .sample_zone
-                    .and_then(|index| self.sample_zones.get(index))
-                    .map(|zone| &zone.sample)
-            };
-            let Some(source) = source else {
+            let Some(source) = self.sample_for_zone(state.sample_zone) else {
                 return 0.0;
             };
             let playback_rate = self.frequency(sweep_progress, pitch_multiplier)

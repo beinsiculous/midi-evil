@@ -415,6 +415,8 @@ mod tests {
             samples: vec![0.0, 0.5, -0.5, 0.0],
             sample_rate: 48_000,
             root_frequency_hz: 220.0,
+            playback_start_frame: 0,
+            playback_end_frame: None,
             loop_enabled: true,
             loop_start_frame: 1,
             loop_end_frame: Some(3),
@@ -453,6 +455,7 @@ mod tests {
         let sample = patch.oscillators[0].sample.as_ref().unwrap();
         assert_eq!(sample.loop_start_frame, 0);
         assert_eq!(sample.loop_end_frame, None);
+        assert_eq!(sample.playback_range(), 0..4);
         assert_eq!(sample.loop_range(), 0..4);
     }
 
@@ -468,6 +471,9 @@ mod tests {
         let high = crate::SampleOscillator {
             name: "High".to_owned(),
             root_frequency_hz: 220.0,
+            playback_start_frame: 1,
+            playback_end_frame: Some(2),
+            loop_start_frame: 1,
             ..crate::SampleOscillator::new(vec![0.5, -0.5], 8_000)
         };
         let patch = Patch {
@@ -498,7 +504,10 @@ mod tests {
         )
         .unwrap();
         assert!(legacy.oscillators[0].sample_zones.is_empty());
-        assert!(!legacy.to_json_pretty().unwrap().contains("sample_zones"));
+        let legacy_json = legacy.to_json_pretty().unwrap();
+        assert!(!legacy_json.contains("sample_zones"));
+        assert!(!legacy_json.contains("playback_start_frame"));
+        assert!(!legacy_json.contains("playback_end_frame"));
         for key in [0, 60, 127] {
             assert_eq!(
                 legacy.oscillators[0].sample_for_key(key),
@@ -645,6 +654,23 @@ mod tests {
             },
             crate::SampleOscillator {
                 loop_end_frame: Some(4),
+                ..valid.clone()
+            },
+            crate::SampleOscillator {
+                playback_start_frame: 1,
+                playback_end_frame: Some(1),
+                loop_start_frame: 1,
+                ..valid.clone()
+            },
+            crate::SampleOscillator {
+                playback_end_frame: Some(4),
+                ..valid.clone()
+            },
+            crate::SampleOscillator {
+                playback_start_frame: 1,
+                playback_end_frame: Some(3),
+                loop_start_frame: 0,
+                loop_end_frame: Some(3),
                 ..valid.clone()
             },
             crate::SampleOscillator {

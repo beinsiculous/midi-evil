@@ -1007,7 +1007,7 @@ mod tests {
                 let zoned = Patch {
                     oscillators: vec![Oscillator {
                         sample: None,
-                        sample_zones: vec![crate::SampleZone::new(0, 127, source)],
+                        sample_zones: source.keyboard_slices(0, 127, 1).unwrap(),
                         ..legacy.oscillators[0].clone()
                     }],
                     ..legacy.clone()
@@ -1078,6 +1078,53 @@ mod tests {
                 .iter()
                 .all(|sample| *sample == 0.0)
         );
+    }
+
+    #[test]
+    fn keyboard_slices_select_the_exact_source_range_at_key_boundaries() {
+        let base = Patch {
+            pitch_tracking: false,
+            ..sample_test_patch(false)
+        };
+        let source = base.oscillators[0].sample.clone().unwrap();
+        let zones = source.keyboard_slices(60, 62, 2).unwrap();
+        let zoned = Patch {
+            oscillators: vec![Oscillator {
+                sample: None,
+                sample_zones: zones.clone(),
+                ..base.oscillators[0].clone()
+            }],
+            ..base.clone()
+        };
+        for (pitch, zone) in [(60, &zones[0]), (61, &zones[0]), (62, &zones[1])] {
+            let single = Patch {
+                oscillators: vec![Oscillator {
+                    sample: Some(zone.sample.clone()),
+                    sample_zones: Vec::new(),
+                    ..base.oscillators[0].clone()
+                }],
+                ..base.clone()
+            };
+            let expected = render_notes_dry(&single, &[note(pitch)]).unwrap().samples;
+            assert_eq!(
+                expected,
+                render_notes_dry(&single, &[note(pitch)]).unwrap().samples
+            );
+            assert_eq!(
+                render_notes_dry(&zoned, &[note(pitch)]).unwrap().samples,
+                expected,
+                "wrong slice at pitch {pitch}"
+            );
+        }
+        for pitch in [59, 63] {
+            assert!(
+                render_notes_dry(&zoned, &[note(pitch)])
+                    .unwrap()
+                    .samples
+                    .iter()
+                    .all(|sample| *sample == 0.0)
+            );
+        }
     }
 
     #[test]

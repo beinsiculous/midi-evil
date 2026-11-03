@@ -188,7 +188,7 @@ impl VoiceState {
                             slave_pitch,
                             modulation.pulse_width,
                         );
-                        state.reset_phase();
+                        state.reset_phase(oscillator);
                     }
                 }
             }
