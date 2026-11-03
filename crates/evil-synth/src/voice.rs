@@ -82,18 +82,18 @@ impl VoiceState {
         let sample_rate = patch.sample_rate;
         let sweep_progress = (time / patch.duration_seconds).min(1.0);
         let amp_envelope = patch.envelope.amplitude(time, gate_seconds);
-        let (aux_amplitude, aux_pitch_cents, aux_filter_cutoff_octaves) = patch
-            .aux_envelope
-            .as_ref()
-            .map(|aux| {
-                let level = aux.envelope.amplitude(time, gate_seconds);
-                (
-                    aux.amplitude_depth * level,
-                    aux.pitch_depth_cents * level,
-                    aux.filter_cutoff_depth_octaves * level,
-                )
-            })
-            .unwrap_or_default();
+        let (aux_amplitude, aux_pitch_cents, aux_filter_cutoff_octaves) =
+            [patch.aux_envelope.as_ref(), patch.aux_envelope_2.as_ref()]
+                .into_iter()
+                .flatten()
+                .fold((0.0, 0.0, 0.0), |(amplitude, pitch, cutoff), aux| {
+                    let level = aux.envelope.amplitude(time, gate_seconds);
+                    (
+                        amplitude + aux.amplitude_depth * level,
+                        pitch + aux.pitch_depth_cents * level,
+                        cutoff + aux.filter_cutoff_depth_octaves * level,
+                    )
+                });
         let modulation = controls.modulation;
         let bend_semitones = controls.bend_semitones;
         let glide_semitones = if patch.glide_seconds > 0.0 && time < patch.glide_seconds {

@@ -43,6 +43,9 @@ pub struct Patch {
     pub filter_envelope: Option<Envelope>,
     /// Optional auxiliary ADSR and its amplitude/pitch/filter matrix depths.
     pub aux_envelope: Option<AuxEnvelope>,
+    /// Second independently optional auxiliary ADSR with the same signed routes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aux_envelope_2: Option<AuxEnvelope>,
     /// Primary LFO, retained for compatibility with the original patch format.
     pub lfo: Option<Lfo>,
     pub modulation: Vec<Lfo>,
@@ -75,6 +78,7 @@ impl Default for Patch {
             filter: None,
             filter_envelope: None,
             aux_envelope: None,
+            aux_envelope_2: None,
             lfo: None,
             modulation: Vec::new(),
             delay: None,
@@ -275,7 +279,10 @@ impl Patch {
                 ));
             }
         }
-        if let Some(aux) = &self.aux_envelope {
+        for aux in [self.aux_envelope.as_ref(), self.aux_envelope_2.as_ref()]
+            .into_iter()
+            .flatten()
+        {
             validate_envelope(&aux.envelope)?;
             if self.duration_seconds + aux.envelope.release_seconds > MAX_DURATION_SECONDS {
                 return Err(invalid(
@@ -396,6 +403,17 @@ mod tests {
                 pitch_depth_cents: 700.0,
                 filter_cutoff_depth_octaves: -3.0,
             }),
+            aux_envelope_2: Some(AuxEnvelope {
+                envelope: Envelope {
+                    attack_seconds: 0.04,
+                    decay_seconds: 0.02,
+                    sustain_level: 0.7,
+                    release_seconds: 0.01,
+                },
+                amplitude_depth: 0.25,
+                pitch_depth_cents: -450.0,
+                filter_cutoff_depth_octaves: 2.0,
+            }),
             delay: Some(Delay::default()),
             lfo: Some(Lfo {
                 rate_hz: 6.0,
@@ -433,7 +451,35 @@ mod tests {
         assert_eq!(patch.oscillators.len(), 1);
         assert_eq!(patch.filter_envelope, None);
         assert_eq!(patch.aux_envelope, None);
+        assert_eq!(patch.aux_envelope_2, None);
+        assert!(!patch.to_json_pretty().unwrap().contains("aux_envelope_2"));
         assert_eq!(patch.oscillators[0].sample, None);
+    }
+
+    #[test]
+    fn legacy_auxiliary_json_keeps_its_slot_and_omits_the_disabled_second() {
+        let patch = Patch::from_json(
+            r#"{
+                "aux_envelope": {
+                    "envelope": {
+                        "attack_seconds": 0.01,
+                        "decay_seconds": 0.02,
+                        "sustain_level": 0.5,
+                        "release_seconds": 0.03
+                    },
+                    "amplitude_depth": -0.4,
+                    "pitch_depth_cents": 300.0,
+                    "filter_cutoff_depth_octaves": 2.0
+                }
+            }"#,
+        )
+        .unwrap();
+        assert!(patch.aux_envelope.is_some());
+        assert_eq!(patch.aux_envelope_2, None);
+        let json = patch.to_json_pretty().unwrap();
+        assert!(json.contains("\"aux_envelope\""));
+        assert!(!json.contains("aux_envelope_2"));
+        assert_eq!(Patch::from_json(&json).unwrap(), patch);
     }
 
     #[test]
@@ -694,11 +740,17 @@ mod tests {
     }
 
     #[test]
-    fn validation_bounds_auxiliary_envelope_and_signed_matrix_depths() {
+    fn validation_bounds_both_auxiliary_envelopes_and_signed_matrix_depths() {
         let valid = AuxEnvelope {
             amplitude_depth: -1.0,
             pitch_depth_cents: 2_400.0,
             filter_cutoff_depth_octaves: -12.0,
+            ..AuxEnvelope::default()
+        };
+        let second_valid = AuxEnvelope {
+            amplitude_depth: 0.5,
+            pitch_depth_cents: -600.0,
+            filter_cutoff_depth_octaves: 4.0,
             ..AuxEnvelope::default()
         };
         let invalid = [
@@ -733,15 +785,24 @@ mod tests {
                 ..valid.clone()
             },
         ];
-        for aux_envelope in invalid {
-            let patch = Patch {
-                aux_envelope: Some(aux_envelope),
-                ..Patch::default()
-            };
-            assert!(patch.validate().is_err());
+        for invalid_aux in invalid {
+            for second in [false, true] {
+                let mut patch = Patch {
+                    aux_envelope: Some(valid.clone()),
+                    aux_envelope_2: Some(second_valid.clone()),
+                    ..Patch::default()
+                };
+                if second {
+                    patch.aux_envelope_2 = Some(invalid_aux.clone());
+                } else {
+                    patch.aux_envelope = Some(invalid_aux.clone());
+                }
+                assert!(patch.validate().is_err());
+            }
         }
         let patch = Patch {
             aux_envelope: Some(valid),
+            aux_envelope_2: Some(second_valid),
             ..Patch::default()
         };
         assert!(patch.validate().is_ok());

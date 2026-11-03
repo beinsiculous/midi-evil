@@ -1480,7 +1480,7 @@ mod tests {
     }
 
     #[test]
-    fn disabled_auxiliary_envelope_preserves_legacy_modulated_audio() {
+    fn disabled_auxiliary_envelopes_preserve_legacy_modulated_audio() {
         let base = auxiliary_test_patch();
         let baseline = render(&base).unwrap().samples;
         assert_eq!(baseline, render(&base).unwrap().samples);
@@ -1495,46 +1495,206 @@ mod tests {
                 },
                 ..AuxEnvelope::default()
             }),
+            aux_envelope_2: Some(AuxEnvelope {
+                envelope: Envelope {
+                    attack_seconds: 0.01,
+                    decay_seconds: 0.05,
+                    sustain_level: 0.8,
+                    release_seconds: 0.02,
+                },
+                ..AuxEnvelope::default()
+            }),
             ..base
         };
         assert_eq!(baseline, render(&zero_depth).unwrap().samples);
+
+        let first_only = Patch {
+            aux_envelope: Some(AuxEnvelope {
+                amplitude_depth: -0.3,
+                pitch_depth_cents: 250.0,
+                filter_cutoff_depth_octaves: 1.5,
+                ..AuxEnvelope::default()
+            }),
+            ..auxiliary_test_patch()
+        };
+        let legacy = render(&first_only).unwrap().samples;
+        let second_zero = Patch {
+            aux_envelope_2: Some(AuxEnvelope::default()),
+            ..first_only
+        };
+        assert_eq!(legacy, render(&second_zero).unwrap().samples);
     }
 
     #[test]
-    fn auxiliary_matrix_adds_signed_routes_alongside_existing_modulation() {
+    fn both_auxiliary_matrix_slots_add_signed_routes_alongside_existing_modulation() {
         let base = auxiliary_test_patch();
         let baseline = render(&base).unwrap().samples;
-        for (route, label, depths) in [
-            (0, "amplitude", [-0.6, 0.6]),
-            (1, "pitch", [-600.0, 600.0]),
-            (2, "filter cutoff", [-3.0, 3.0]),
-        ] {
-            let mut routed = Vec::new();
-            for depth in depths {
-                let mut patch = base.clone();
-                let mut aux = AuxEnvelope {
-                    envelope: Envelope {
-                        attack_seconds: 0.02,
-                        decay_seconds: 0.04,
-                        sustain_level: 0.25,
-                        release_seconds: 0.03,
-                    },
-                    ..AuxEnvelope::default()
-                };
-                match route {
-                    0 => aux.amplitude_depth = depth,
-                    1 => aux.pitch_depth_cents = depth,
-                    2 => aux.filter_cutoff_depth_octaves = depth,
-                    _ => unreachable!(),
+        for second in [false, true] {
+            for (route, label, depths) in [
+                (0, "amplitude", [-0.6, 0.6]),
+                (1, "pitch", [-600.0, 600.0]),
+                (2, "filter cutoff", [-3.0, 3.0]),
+            ] {
+                let mut routed = Vec::new();
+                for depth in depths {
+                    let mut patch = base.clone();
+                    let mut aux = AuxEnvelope {
+                        envelope: Envelope {
+                            attack_seconds: 0.02,
+                            decay_seconds: 0.04,
+                            sustain_level: 0.25,
+                            release_seconds: 0.03,
+                        },
+                        ..AuxEnvelope::default()
+                    };
+                    match route {
+                        0 => aux.amplitude_depth = depth,
+                        1 => aux.pitch_depth_cents = depth,
+                        2 => aux.filter_cutoff_depth_octaves = depth,
+                        _ => unreachable!(),
+                    }
+                    if second {
+                        patch.aux_envelope_2 = Some(aux);
+                    } else {
+                        patch.aux_envelope = Some(aux);
+                    }
+                    let samples = render(&patch).unwrap().samples;
+                    assert!(samples.iter().all(|sample| sample.is_finite()));
+                    assert_ne!(
+                        samples,
+                        baseline,
+                        "slot {} {label} depth {depth} was not audible",
+                        usize::from(second) + 1
+                    );
+                    routed.push(samples);
                 }
-                patch.aux_envelope = Some(aux);
-                let samples = render(&patch).unwrap().samples;
-                assert!(samples.iter().all(|sample| sample.is_finite()));
-                assert_ne!(samples, baseline, "{label} depth {depth} was not audible");
-                routed.push(samples);
+                assert_ne!(
+                    routed[0],
+                    routed[1],
+                    "slot {} {label} depth sign had no effect",
+                    usize::from(second) + 1
+                );
             }
-            assert_ne!(routed[0], routed[1], "{label} depth sign had no effect");
         }
+    }
+
+    #[test]
+    fn two_auxiliary_envelopes_sum_all_routes_deterministically() {
+        let shared = AuxEnvelope {
+            envelope: Envelope {
+                attack_seconds: 0.01,
+                decay_seconds: 0.02,
+                sustain_level: 0.5,
+                release_seconds: 0.03,
+            },
+            amplitude_depth: 0.2,
+            pitch_depth_cents: 180.0,
+            filter_cutoff_depth_octaves: 1.25,
+        };
+        let combined = Patch {
+            aux_envelope: Some(shared.clone()),
+            aux_envelope_2: Some(shared.clone()),
+            ..auxiliary_test_patch()
+        };
+        let merged_depths = Patch {
+            aux_envelope: Some(AuxEnvelope {
+                amplitude_depth: shared.amplitude_depth * 2.0,
+                pitch_depth_cents: shared.pitch_depth_cents * 2.0,
+                filter_cutoff_depth_octaves: shared.filter_cutoff_depth_octaves * 2.0,
+                ..shared
+            }),
+            ..auxiliary_test_patch()
+        };
+        let samples = render(&combined).unwrap().samples;
+        assert_eq!(samples, render(&combined).unwrap().samples);
+        assert_eq!(samples, render(&merged_depths).unwrap().samples);
+    }
+
+    #[test]
+    fn opposing_auxiliary_routes_cancel_with_performance_modulation() {
+        let envelope = Envelope {
+            attack_seconds: 0.015,
+            decay_seconds: 0.025,
+            sustain_level: 0.6,
+            release_seconds: 0.03,
+        };
+        let routed = Patch {
+            glide_seconds: 0.04,
+            aux_envelope: Some(AuxEnvelope {
+                envelope: envelope.clone(),
+                amplitude_depth: 0.35,
+                pitch_depth_cents: 420.0,
+                filter_cutoff_depth_octaves: 2.5,
+            }),
+            aux_envelope_2: Some(AuxEnvelope {
+                envelope,
+                amplitude_depth: -0.35,
+                pitch_depth_cents: -420.0,
+                filter_cutoff_depth_octaves: -2.5,
+            }),
+            ..auxiliary_test_patch()
+        };
+        let plain = Patch {
+            aux_envelope: None,
+            aux_envelope_2: None,
+            ..routed.clone()
+        };
+        let notes = [
+            SynthNote {
+                start_seconds: 0.0,
+                duration_seconds: 0.12,
+                pitch: 60,
+                velocity: 100,
+            },
+            SynthNote {
+                start_seconds: 0.06,
+                duration_seconds: 0.12,
+                pitch: 67,
+                velocity: 110,
+            },
+        ];
+        let bends = [
+            SynthPitchBend {
+                time_seconds: 0.0,
+                value: 3_000,
+            },
+            SynthPitchBend {
+                time_seconds: 0.09,
+                value: -4_096,
+            },
+        ];
+        let pressure = [SynthAftertouch {
+            time_seconds: 0.03,
+            note: None,
+            value: 90,
+        }];
+        let expression = [
+            SynthController {
+                time_seconds: 0.0,
+                controller: 11,
+                value: 127,
+            },
+            SynthController {
+                time_seconds: 0.1,
+                controller: 11,
+                value: 70,
+            },
+        ];
+        let expected =
+            render_notes_dry_with_full_automation(&plain, &notes, &bends, &pressure, &expression)
+                .unwrap()
+                .samples;
+        let actual =
+            render_notes_dry_with_full_automation(&routed, &notes, &bends, &pressure, &expression)
+                .unwrap()
+                .samples;
+        assert_eq!(actual, expected);
+        assert_eq!(
+            actual,
+            render_notes_dry_with_full_automation(&routed, &notes, &bends, &pressure, &expression,)
+                .unwrap()
+                .samples
+        );
     }
 
     #[test]

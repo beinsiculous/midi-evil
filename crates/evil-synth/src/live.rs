@@ -429,75 +429,78 @@ mod tests {
     }
 
     #[test]
-    fn auxiliary_matrix_routes_match_offline_at_multiple_pitches() {
-        for route in 0..3 {
-            for sign in [-1.0, 1.0] {
-                for pitch in [48, 60, 72] {
-                    let mut aux = crate::AuxEnvelope {
-                        envelope: crate::Envelope {
-                            attack_seconds: 0.015,
-                            decay_seconds: 0.035,
-                            sustain_level: 0.3,
-                            release_seconds: 0.03,
-                        },
-                        ..crate::AuxEnvelope::default()
-                    };
-                    match route {
-                        0 => aux.amplitude_depth = sign * 0.6,
-                        1 => aux.pitch_depth_cents = sign * 600.0,
-                        2 => aux.filter_cutoff_depth_octaves = sign * 3.0,
-                        _ => unreachable!(),
+    fn both_auxiliary_matrix_slots_match_offline_at_multiple_pitches() {
+        for second in [false, true] {
+            for route in 0..3 {
+                for sign in [-1.0, 1.0] {
+                    for pitch in [48, 60, 72] {
+                        let mut aux = crate::AuxEnvelope {
+                            envelope: crate::Envelope {
+                                attack_seconds: 0.015,
+                                decay_seconds: 0.035,
+                                sustain_level: 0.3,
+                                release_seconds: 0.03,
+                            },
+                            ..crate::AuxEnvelope::default()
+                        };
+                        match route {
+                            0 => aux.amplitude_depth = sign * 0.6,
+                            1 => aux.pitch_depth_cents = sign * 600.0,
+                            2 => aux.filter_cutoff_depth_octaves = sign * 3.0,
+                            _ => unreachable!(),
+                        }
+                        let mut patch = auxiliary_test_patch();
+                        if second {
+                            patch.aux_envelope_2 = Some(aux);
+                        } else {
+                            patch.aux_envelope = Some(aux);
+                        }
+                        assert_offline_matches_live(patch, &[test_note(pitch, 0.0, 0.12)]);
                     }
-                    let patch = Patch {
-                        duration_seconds: 0.12,
-                        envelope: crate::Envelope {
-                            attack_seconds: 0.0,
-                            decay_seconds: 0.0,
-                            sustain_level: 0.9,
-                            release_seconds: 0.03,
-                        },
-                        filter: Some(Filter {
-                            cutoff_hz: 600.0,
-                            envelope_amount: 1.5,
-                            resonance: 0.25,
-                            stages: 2,
-                            key_tracking: true,
-                            ..Filter::default()
-                        }),
-                        filter_envelope: Some(crate::Envelope {
-                            attack_seconds: 0.01,
-                            decay_seconds: 0.03,
-                            sustain_level: 0.4,
-                            release_seconds: 0.03,
-                        }),
-                        aux_envelope: Some(aux),
-                        lfo: Some(crate::Lfo {
-                            rate_hz: 7.0,
-                            destination: crate::LfoDestination::Pitch,
-                            waveform: crate::LfoWaveform::SawDown,
-                            depth_cents: 20.0,
-                            ..crate::Lfo::default()
-                        }),
-                        modulation: vec![
-                            crate::Lfo {
-                                rate_hz: 5.0,
-                                destination: crate::LfoDestination::FilterCutoff,
-                                waveform: crate::LfoWaveform::Triangle,
-                                filter_cutoff_depth: 0.7,
-                                ..crate::Lfo::default()
-                            },
-                            crate::Lfo {
-                                rate_hz: 3.0,
-                                destination: crate::LfoDestination::Amplitude,
-                                waveform: crate::LfoWaveform::SawUp,
-                                amplitude_depth: 0.15,
-                                ..crate::Lfo::default()
-                            },
-                        ],
-                        ..Patch::default()
-                    };
-                    assert_offline_matches_live(patch, &[test_note(pitch, 0.0, 0.12)]);
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn combined_auxiliary_envelopes_match_offline_for_voice_modes_and_pitches() {
+        let first = crate::AuxEnvelope {
+            envelope: crate::Envelope {
+                attack_seconds: 0.01,
+                decay_seconds: 0.04,
+                sustain_level: 0.2,
+                release_seconds: 0.03,
+            },
+            amplitude_depth: -0.25,
+            pitch_depth_cents: -350.0,
+            filter_cutoff_depth_octaves: -1.5,
+        };
+        let second = crate::AuxEnvelope {
+            envelope: crate::Envelope {
+                attack_seconds: 0.03,
+                decay_seconds: 0.02,
+                sustain_level: 0.7,
+                release_seconds: 0.02,
+            },
+            amplitude_depth: 0.2,
+            pitch_depth_cents: 500.0,
+            filter_cutoff_depth_octaves: 2.0,
+        };
+        for mode in [VoiceMode::Poly, VoiceMode::Mono, VoiceMode::Legato] {
+            for pitch in [48, 60, 72] {
+                let patch = Patch {
+                    voice_mode: mode,
+                    glide_seconds: 0.025,
+                    aux_envelope: Some(first.clone()),
+                    aux_envelope_2: Some(second.clone()),
+                    ..auxiliary_test_patch()
+                };
+                let notes = [
+                    test_note(pitch, 0.0, 0.1),
+                    test_note(pitch + 4, 0.05, 0.1),
+                    test_note(pitch + 12, 0.1, 0.08),
+                ];
+                assert_offline_matches_live(patch, &notes);
             }
         }
     }
@@ -714,6 +717,56 @@ mod tests {
             assert_eq!(synth.voices[0].frame, expected_frame);
             synth.note_on(72, 100).unwrap();
             assert_eq!(synth.voices[0].frame, expected_frame);
+        }
+    }
+
+    fn auxiliary_test_patch() -> Patch {
+        Patch {
+            duration_seconds: 0.12,
+            envelope: crate::Envelope {
+                attack_seconds: 0.0,
+                decay_seconds: 0.0,
+                sustain_level: 0.9,
+                release_seconds: 0.03,
+            },
+            filter: Some(Filter {
+                cutoff_hz: 600.0,
+                envelope_amount: 1.5,
+                resonance: 0.25,
+                stages: 2,
+                key_tracking: true,
+                ..Filter::default()
+            }),
+            filter_envelope: Some(crate::Envelope {
+                attack_seconds: 0.01,
+                decay_seconds: 0.03,
+                sustain_level: 0.4,
+                release_seconds: 0.03,
+            }),
+            lfo: Some(crate::Lfo {
+                rate_hz: 7.0,
+                destination: crate::LfoDestination::Pitch,
+                waveform: crate::LfoWaveform::SawDown,
+                depth_cents: 20.0,
+                ..crate::Lfo::default()
+            }),
+            modulation: vec![
+                crate::Lfo {
+                    rate_hz: 5.0,
+                    destination: crate::LfoDestination::FilterCutoff,
+                    waveform: crate::LfoWaveform::Triangle,
+                    filter_cutoff_depth: 0.7,
+                    ..crate::Lfo::default()
+                },
+                crate::Lfo {
+                    rate_hz: 3.0,
+                    destination: crate::LfoDestination::Amplitude,
+                    waveform: crate::LfoWaveform::SawUp,
+                    amplitude_depth: 0.15,
+                    ..crate::Lfo::default()
+                },
+            ],
+            ..Patch::default()
         }
     }
 

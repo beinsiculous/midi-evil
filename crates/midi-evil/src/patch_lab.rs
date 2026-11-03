@@ -846,28 +846,10 @@ fn show_envelope_controls(ui: &mut Ui, envelope: &mut Envelope) {
 }
 
 fn show_motion(ui: &mut Ui, patch: &mut Patch) {
-    ui.heading("Auxiliary envelope / matrix");
-    let mut aux_enabled = patch.aux_envelope.is_some();
-    if ui
-        .checkbox(&mut aux_enabled, "Enable auxiliary ADSR")
-        .changed()
-    {
-        patch.aux_envelope = aux_enabled.then_some(AuxEnvelope::default());
-    }
-    if let Some(aux) = &mut patch.aux_envelope {
-        envelope_plot(ui, &aux.envelope, "Auxiliary envelope");
-        show_envelope_controls(ui, &mut aux.envelope);
-        ui.label("Signed depths add to existing LFO and filter-envelope modulation");
-        ui.add(egui::Slider::new(&mut aux.amplitude_depth, -1.0..=1.0).text("Amplitude depth"));
-        ui.add(
-            egui::Slider::new(&mut aux.pitch_depth_cents, -2_400.0..=2_400.0)
-                .text("Pitch depth (cents)"),
-        );
-        ui.add(
-            egui::Slider::new(&mut aux.filter_cutoff_depth_octaves, -12.0..=12.0)
-                .text("Cutoff depth (octaves)"),
-        );
-    }
+    ui.heading("Auxiliary envelopes / matrix");
+    show_auxiliary_envelope(ui, 1, &mut patch.aux_envelope);
+    ui.add_space(6.0);
+    show_auxiliary_envelope(ui, 2, &mut patch.aux_envelope_2);
 
     ui.heading("LFO modulation");
     let mut remove_lfo = None;
@@ -886,6 +868,31 @@ fn show_motion(ui: &mut Ui, patch: &mut Patch) {
     }
     if let Some(index) = remove_lfo {
         patch.remove_lfo(index);
+    }
+}
+
+fn show_auxiliary_envelope(ui: &mut Ui, index: usize, slot: &mut Option<AuxEnvelope>) {
+    ui.heading(format!("Auxiliary envelope {index}"));
+    let mut enabled = slot.is_some();
+    if ui
+        .checkbox(&mut enabled, format!("Enable auxiliary ADSR {index}"))
+        .changed()
+    {
+        *slot = enabled.then_some(AuxEnvelope::default());
+    }
+    if let Some(aux) = slot {
+        envelope_plot(ui, &aux.envelope, &format!("Auxiliary envelope {index}"));
+        show_envelope_controls(ui, &mut aux.envelope);
+        ui.label("Signed depths add to existing envelopes and LFO modulation");
+        ui.add(egui::Slider::new(&mut aux.amplitude_depth, -1.0..=1.0).text("Amplitude depth"));
+        ui.add(
+            egui::Slider::new(&mut aux.pitch_depth_cents, -2_400.0..=2_400.0)
+                .text("Pitch depth (cents)"),
+        );
+        ui.add(
+            egui::Slider::new(&mut aux.filter_cutoff_depth_octaves, -12.0..=12.0)
+                .text("Cutoff depth (octaves)"),
+        );
     }
 }
 
