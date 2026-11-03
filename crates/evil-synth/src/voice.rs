@@ -82,22 +82,28 @@ impl VoiceState {
         let sample_rate = patch.sample_rate;
         let sweep_progress = (time / patch.duration_seconds).min(1.0);
         let amp_envelope = patch.envelope.amplitude(time, gate_seconds);
-        let (aux_amplitude, aux_pitch_cents, aux_pulse_width, aux_filter_cutoff_octaves) =
-            [patch.aux_envelope.as_ref(), patch.aux_envelope_2.as_ref()]
-                .into_iter()
-                .flatten()
-                .fold(
-                    (0.0, 0.0, 0.0, 0.0),
-                    |(amplitude, pitch, pulse_width, cutoff), aux| {
-                        let level = aux.envelope.amplitude(time, gate_seconds);
-                        (
-                            amplitude + aux.amplitude_depth * level,
-                            pitch + aux.pitch_depth_cents * level,
-                            pulse_width + aux.pulse_width_depth * level,
-                            cutoff + aux.filter_cutoff_depth_octaves * level,
-                        )
-                    },
-                );
+        let (
+            aux_amplitude,
+            aux_pitch_cents,
+            aux_pulse_width,
+            aux_sync_ratio,
+            aux_filter_cutoff_octaves,
+        ) = [patch.aux_envelope.as_ref(), patch.aux_envelope_2.as_ref()]
+            .into_iter()
+            .flatten()
+            .fold(
+                (0.0, 0.0, 0.0, 0.0, 0.0),
+                |(amplitude, pitch, pulse_width, sync_ratio, cutoff), aux| {
+                    let level = aux.envelope.amplitude(time, gate_seconds);
+                    (
+                        amplitude + aux.amplitude_depth * level,
+                        pitch + aux.pitch_depth_cents * level,
+                        pulse_width + aux.pulse_width_depth * level,
+                        sync_ratio + aux.sync_ratio_depth * level,
+                        cutoff + aux.filter_cutoff_depth_octaves * level,
+                    )
+                },
+            );
         let modulation = controls.modulation;
         let bend_semitones = controls.bend_semitones;
         let glide_semitones = if patch.glide_seconds > 0.0 && time < patch.glide_seconds {
@@ -111,9 +117,9 @@ impl VoiceState {
         );
         let oscillator_mode = patch.effective_oscillator_mode();
         let pulse_width = modulation.pulse_width + aux_pulse_width;
-        let sync_ratio = patch
-            .uses_sync()
-            .then(|| (patch.sync_ratio() + modulation.sync_ratio).clamp(0.01, 16.0));
+        let sync_ratio = patch.uses_sync().then(|| {
+            (patch.sync_ratio() + modulation.sync_ratio + aux_sync_ratio).clamp(0.01, 16.0)
+        });
         let count = self.oscillators.len();
         let mut sample = 0.0;
         for (voice_index, states) in self.oscillators.iter_mut().enumerate() {

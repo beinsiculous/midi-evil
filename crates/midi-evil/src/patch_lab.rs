@@ -892,6 +892,7 @@ fn show_auxiliary_envelope(ui: &mut Ui, index: usize, slot: &mut Option<AuxEnvel
         ui.add(
             egui::Slider::new(&mut aux.pulse_width_depth, -0.99..=0.99).text("Pulse width depth"),
         );
+        ui.add(egui::Slider::new(&mut aux.sync_ratio_depth, -16.0..=16.0).text("Sync ratio depth"));
         ui.add(
             egui::Slider::new(&mut aux.filter_cutoff_depth_octaves, -12.0..=12.0)
                 .text("Cutoff depth (octaves)"),

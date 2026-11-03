@@ -431,7 +431,7 @@ mod tests {
     #[test]
     fn both_auxiliary_matrix_slots_match_offline_at_multiple_pitches() {
         for second in [false, true] {
-            for route in 0..4 {
+            for route in 0..5 {
                 for sign in [-1.0, 1.0] {
                     for pitch in [48, 60, 72] {
                         let mut aux = crate::AuxEnvelope {
@@ -448,11 +448,15 @@ mod tests {
                             1 => aux.pitch_depth_cents = sign * 600.0,
                             2 => aux.filter_cutoff_depth_octaves = sign * 3.0,
                             3 => aux.pulse_width_depth = sign * 0.4,
+                            4 => aux.sync_ratio_depth = sign * 0.8,
                             _ => unreachable!(),
                         }
                         let mut patch = auxiliary_test_patch();
-                        if route == 3 {
+                        if matches!(route, 3 | 4) {
                             patch.oscillators[0].waveform = Waveform::Square;
+                        }
+                        if route == 4 {
+                            patch.sync = Some(crate::OscillatorSync { ratio: 2.0 });
                         }
                         if second {
                             patch.aux_envelope_2 = Some(aux);
@@ -478,6 +482,7 @@ mod tests {
             amplitude_depth: -0.25,
             pitch_depth_cents: -350.0,
             pulse_width_depth: -0.2,
+            sync_ratio_depth: -0.5,
             filter_cutoff_depth_octaves: -1.5,
         };
         let second = crate::AuxEnvelope {
@@ -490,6 +495,7 @@ mod tests {
             amplitude_depth: 0.2,
             pitch_depth_cents: 500.0,
             pulse_width_depth: 0.35,
+            sync_ratio_depth: 0.8,
             filter_cutoff_depth_octaves: 2.0,
         };
         for mode in [VoiceMode::Poly, VoiceMode::Mono, VoiceMode::Legato] {
@@ -497,6 +503,7 @@ mod tests {
                 let mut patch = Patch {
                     voice_mode: mode,
                     glide_seconds: 0.025,
+                    sync: Some(crate::OscillatorSync { ratio: 2.0 }),
                     aux_envelope: Some(first.clone()),
                     aux_envelope_2: Some(second.clone()),
                     ..auxiliary_test_patch()
