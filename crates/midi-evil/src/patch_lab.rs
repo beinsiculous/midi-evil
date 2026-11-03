@@ -4,8 +4,8 @@ use crate::theme;
 use eframe::egui::{self, ComboBox, DragValue, Ui};
 
 use evil_synth::{
-    Delay, DelayMode, Envelope, FilterMode, Lfo, LfoDestination, LfoWaveform, OscillatorMode,
-    Patch, VoiceMode, Waveform,
+    AuxEnvelope, Delay, DelayMode, Envelope, FilterMode, Lfo, LfoDestination, LfoWaveform,
+    Oscillator, OscillatorMode, Patch, SampleOscillator, VoiceMode, Waveform,
 };
 
 pub struct PatchLab {
@@ -58,7 +58,8 @@ fn duplicate_file_name(file_name: &str) -> String {
         .into_owned()
 }
 
-pub fn show(ui: &mut Ui, lab: &mut PatchLab) {
+pub fn show(ui: &mut Ui, lab: &mut PatchLab) -> Option<String> {
+    let mut message = None;
     ui.horizontal_wrapped(|ui| {
         ui.selectable_value(&mut lab.modulation_page, false, "VOICE & FILTER");
         ui.selectable_value(&mut lab.modulation_page, true, "MODULATION & FX");
@@ -85,7 +86,7 @@ pub fn show(ui: &mut Ui, lab: &mut PatchLab) {
                 });
             } else {
                 theme::section(&mut columns[0], "01 / OSCILLATOR BANK", theme::RED, |ui| {
-                    show_voice(ui, patch)
+                    message = show_voice(ui, patch);
                 });
                 theme::section(
                     &mut columns[1],
@@ -105,13 +106,14 @@ pub fn show(ui: &mut Ui, lab: &mut PatchLab) {
         });
     } else {
         theme::section(ui, "01 / OSCILLATOR BANK", theme::RED, |ui| {
-            show_voice(ui, patch)
+            message = show_voice(ui, patch);
         });
         ui.add_space(10.0);
         theme::section(ui, "02 / ENVELOPE & FILTER", theme::IVORY, |ui| {
             show_shape(ui, patch)
         });
     }
+    message
 }
 
 fn show_output(ui: &mut Ui, patch: &mut Patch) {
@@ -143,7 +145,8 @@ fn show_output(ui: &mut Ui, patch: &mut Patch) {
     });
 }
 
-fn show_voice(ui: &mut Ui, patch: &mut Patch) {
+fn show_voice(ui: &mut Ui, patch: &mut Patch) -> Option<String> {
+    let mut message = None;
     ui.horizontal_wrapped(|ui| {
         ui.label("Voice mode");
         ComboBox::from_id_salt("voice_mode")
@@ -181,6 +184,10 @@ fn show_voice(ui: &mut Ui, patch: &mut Patch) {
         }
     });
     ui.heading("Oscillators");
+    let sample_oscillator = patch
+        .oscillators
+        .iter()
+        .position(|oscillator| oscillator.waveform == Waveform::Sample);
     for (index, oscillator) in patch.oscillators.iter_mut().enumerate() {
         let label = match index {
             0 => "Osc A".to_owned(),
@@ -205,6 +212,16 @@ fn show_voice(ui: &mut Ui, patch: &mut Patch) {
                             ] {
                                 ui.selectable_value(&mut oscillator.waveform, waveform, label);
                             }
+                            if oscillator.sample.is_some()
+                                && sample_oscillator
+                                    .is_none_or(|sample_index| sample_index == index)
+                            {
+                                ui.selectable_value(
+                                    &mut oscillator.waveform,
+                                    Waveform::Sample,
+                                    "Sample",
+                                );
+                            }
                         });
                     ui.label("Amplitude");
                     ui.add(egui::Slider::new(&mut oscillator.amplitude, 0.0..=1.0));
@@ -228,6 +245,42 @@ fn show_voice(ui: &mut Ui, patch: &mut Patch) {
                         ui.add(egui::Slider::new(&mut oscillator.pulse_width, 0.01..=0.99));
                     }
                 });
+                if sample_oscillator.is_none_or(|sample_index| sample_index == index) {
+                    let button = if oscillator.sample.is_some() {
+                        "Replace sample WAV"
+                    } else {
+                        "Load sample WAV"
+                    };
+                    if ui.button(button).clicked()
+                        && let Some(path) = rfd::FileDialog::new()
+                            .add_filter("WAV audio", &["wav"])
+                            .pick_file()
+                    {
+                        message = Some(match import_sample(oscillator, index, &path) {
+                            Ok(message) => message,
+                            Err(error) => error.to_string(),
+                        });
+                    }
+                }
+                if oscillator.waveform == Waveform::Sample
+                    && let Some(sample) = &mut oscillator.sample
+                {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(format!(
+                            "{} · {} frames · {} Hz",
+                            sample.name,
+                            sample.samples.len(),
+                            sample.sample_rate
+                        ));
+                        ui.checkbox(&mut sample.loop_enabled, "Loop");
+                    });
+                    let maximum_root = sample.sample_rate as f32 / 2.0;
+                    ui.add(
+                        DragValue::new(&mut sample.root_frequency_hz)
+                            .range(0.01..=maximum_root)
+                            .prefix("Root Hz "),
+                    );
+                }
             });
     }
     ui.horizontal_wrapped(|ui| {
@@ -261,6 +314,19 @@ fn show_voice(ui: &mut Ui, patch: &mut Patch) {
             ui.add(egui::Slider::new(&mut unison.detune_cents, 0.0..=100.0).text("Detune cents"));
         });
     }
+    message
+}
+
+fn import_sample(
+    oscillator: &mut Oscillator,
+    index: usize,
+    path: &Path,
+) -> Result<String, evil_synth::Error> {
+    let sample = SampleOscillator::read_wav(path)?;
+    let name = sample.name.clone();
+    oscillator.sample = Some(sample);
+    oscillator.waveform = Waveform::Sample;
+    Ok(format!("Loaded WAV '{name}' into oscillator {}", index + 1))
 }
 
 fn show_shape(ui: &mut Ui, patch: &mut Patch) {
@@ -328,6 +394,29 @@ fn show_envelope_controls(ui: &mut Ui, envelope: &mut Envelope) {
 }
 
 fn show_motion(ui: &mut Ui, patch: &mut Patch) {
+    ui.heading("Auxiliary envelope / matrix");
+    let mut aux_enabled = patch.aux_envelope.is_some();
+    if ui
+        .checkbox(&mut aux_enabled, "Enable auxiliary ADSR")
+        .changed()
+    {
+        patch.aux_envelope = aux_enabled.then_some(AuxEnvelope::default());
+    }
+    if let Some(aux) = &mut patch.aux_envelope {
+        envelope_plot(ui, &aux.envelope, "Auxiliary envelope");
+        show_envelope_controls(ui, &mut aux.envelope);
+        ui.label("Signed depths add to existing LFO and filter-envelope modulation");
+        ui.add(egui::Slider::new(&mut aux.amplitude_depth, -1.0..=1.0).text("Amplitude depth"));
+        ui.add(
+            egui::Slider::new(&mut aux.pitch_depth_cents, -2_400.0..=2_400.0)
+                .text("Pitch depth (cents)"),
+        );
+        ui.add(
+            egui::Slider::new(&mut aux.filter_cutoff_depth_octaves, -12.0..=12.0)
+                .text("Cutoff depth (octaves)"),
+        );
+    }
+
     ui.heading("LFO modulation");
     let mut remove_lfo = None;
     for index in 0..patch.lfo_count() {
@@ -516,6 +605,30 @@ mod tests {
         assert_eq!(lab.file_name, "patches/lead-copy.json");
         assert_eq!(lab.track_index, 2);
         assert_ne!(lab.patch, patch);
+    }
+
+    #[test]
+    fn sample_import_selects_the_waveform_and_embeds_wav_audio() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("oscillator.wav");
+        evil_synth::RenderedSound {
+            samples: vec![0.125],
+            sample_rate: 48_000,
+        }
+        .write_wav(&path)
+        .unwrap();
+
+        let mut oscillator = Oscillator::default();
+        let message = import_sample(&mut oscillator, 0, &path).unwrap();
+        assert!(message.contains("Loaded WAV 'oscillator'"));
+        assert_eq!(oscillator.waveform, Waveform::Sample);
+        let sample = oscillator.sample.unwrap();
+        assert_eq!(sample.name, "oscillator");
+        assert_eq!(sample.samples, vec![0.125]);
+
+        let mut unchanged = Oscillator::default();
+        assert!(import_sample(&mut unchanged, 0, &directory.path().join("missing.wav")).is_err());
+        assert_eq!(unchanged, Oscillator::default());
     }
 
     #[test]

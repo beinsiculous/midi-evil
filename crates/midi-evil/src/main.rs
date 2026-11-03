@@ -38,7 +38,9 @@ fn main() -> ExitCode {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let options = LaunchOptions::parse()?;
     if options.help {
-        println!("midi-evil [--project <dir>] [--track <name>] <file.mid>");
+        println!(
+            "midi-evil [--project <dir>] [--track <name>] [--track-index <n>] <file.mid|project.evil>"
+        );
         return Ok(());
     }
     let instance = match SingleInstance::start(&options)? {

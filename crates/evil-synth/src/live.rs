@@ -428,6 +428,112 @@ mod tests {
     }
 
     #[test]
+    fn auxiliary_matrix_routes_match_offline_at_multiple_pitches() {
+        for route in 0..3 {
+            for sign in [-1.0, 1.0] {
+                for pitch in [48, 60, 72] {
+                    let mut aux = crate::AuxEnvelope {
+                        envelope: crate::Envelope {
+                            attack_seconds: 0.015,
+                            decay_seconds: 0.035,
+                            sustain_level: 0.3,
+                            release_seconds: 0.03,
+                        },
+                        ..crate::AuxEnvelope::default()
+                    };
+                    match route {
+                        0 => aux.amplitude_depth = sign * 0.6,
+                        1 => aux.pitch_depth_cents = sign * 600.0,
+                        2 => aux.filter_cutoff_depth_octaves = sign * 3.0,
+                        _ => unreachable!(),
+                    }
+                    let patch = Patch {
+                        duration_seconds: 0.12,
+                        envelope: crate::Envelope {
+                            attack_seconds: 0.0,
+                            decay_seconds: 0.0,
+                            sustain_level: 0.9,
+                            release_seconds: 0.03,
+                        },
+                        filter: Some(Filter {
+                            cutoff_hz: 600.0,
+                            envelope_amount: 1.5,
+                            resonance: 0.25,
+                            stages: 2,
+                            key_tracking: true,
+                            ..Filter::default()
+                        }),
+                        filter_envelope: Some(crate::Envelope {
+                            attack_seconds: 0.01,
+                            decay_seconds: 0.03,
+                            sustain_level: 0.4,
+                            release_seconds: 0.03,
+                        }),
+                        aux_envelope: Some(aux),
+                        lfo: Some(crate::Lfo {
+                            rate_hz: 7.0,
+                            destination: crate::LfoDestination::Pitch,
+                            waveform: crate::LfoWaveform::SawDown,
+                            depth_cents: 20.0,
+                            ..crate::Lfo::default()
+                        }),
+                        modulation: vec![
+                            crate::Lfo {
+                                rate_hz: 5.0,
+                                destination: crate::LfoDestination::FilterCutoff,
+                                waveform: crate::LfoWaveform::Triangle,
+                                filter_cutoff_depth: 0.7,
+                                ..crate::Lfo::default()
+                            },
+                            crate::Lfo {
+                                rate_hz: 3.0,
+                                destination: crate::LfoDestination::Amplitude,
+                                waveform: crate::LfoWaveform::SawUp,
+                                amplitude_depth: 0.15,
+                                ..crate::Lfo::default()
+                            },
+                        ],
+                        ..Patch::default()
+                    };
+                    assert_offline_matches_live(patch, &[test_note(pitch, 0.0, 0.12)]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sample_oscillator_loop_modes_match_offline_at_multiple_pitches() {
+        for loop_enabled in [false, true] {
+            for pitch in [48, 60, 72] {
+                let patch = Patch {
+                    sample_rate: 8_000,
+                    duration_seconds: 0.01,
+                    oscillators: vec![crate::Oscillator {
+                        waveform: Waveform::Sample,
+                        sample: Some(crate::SampleOscillator {
+                            samples: (0..32)
+                                .map(|index| (index % 9) as f32 / 8.0 - 0.5)
+                                .collect(),
+                            sample_rate: 8_000,
+                            loop_enabled,
+                            ..crate::SampleOscillator::default()
+                        }),
+                        ..crate::Oscillator::default()
+                    }],
+                    envelope: crate::Envelope {
+                        attack_seconds: 0.0,
+                        decay_seconds: 0.0,
+                        sustain_level: 1.0,
+                        release_seconds: 0.002,
+                    },
+                    ..Patch::default()
+                };
+                assert_offline_matches_live(patch, &[test_note(pitch, 0.0, 0.01)]);
+            }
+        }
+    }
+
+    #[test]
     fn voice_modes_match_offline_across_overlapping_pitches() {
         let notes = [
             test_note(48, 0.0, 0.12),

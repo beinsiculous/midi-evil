@@ -336,6 +336,7 @@ fn oscillator(waveform: Waveform, start: f32, end: f32, amplitude: f32) -> Oscil
         amplitude,
         detune_cents: 0.0,
         pulse_width: 0.5,
+        sample: None,
     }
 }
 

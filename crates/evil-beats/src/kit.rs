@@ -113,33 +113,9 @@ impl DrumPad {
     /// Import PCM/float mono or stereo WAV, downmixing stereo to a mono pad.
     pub fn read_wav(path: impl AsRef<Path>) -> Result<Self, Error> {
         let path = path.as_ref();
-        let mut reader = hound::WavReader::open(path)?;
-        let spec = reader.spec();
-        if !(1..=2).contains(&spec.channels) || !(8_000..=192_000).contains(&spec.sample_rate) {
-            return Err(Error::InvalidPad(
-                "use a mono/stereo WAV at 8–192 kHz".into(),
-            ));
-        }
-        if reader.duration() > spec.sample_rate * 30 {
-            return Err(Error::InvalidPad(
-                "WAV pads can be at most 30 seconds long".into(),
-            ));
-        }
-        let samples: Vec<f32> = match spec.sample_format {
-            hound::SampleFormat::Float => reader.samples::<f32>().collect::<Result<_, _>>()?,
-            hound::SampleFormat::Int => {
-                let scale = 2.0_f32.powi(i32::from(spec.bits_per_sample) - 1);
-                reader
-                    .samples::<i32>()
-                    .map(|s| s.map(|s| s as f32 / scale))
-                    .collect::<Result<_, _>>()?
-            }
-        };
-        let samples = samples
-            .chunks(usize::from(spec.channels))
-            .map(|frame| frame.iter().sum::<f32>() / frame.len() as f32)
-            .collect();
-        let mut pad = Self::new(samples, spec.sample_rate);
+        let sound = evil_synth::read_mono_wav(path)
+            .map_err(|error| Error::InvalidPad(error.to_string()))?;
+        let mut pad = Self::new(sound.samples, sound.sample_rate);
         pad.name = path
             .file_stem()
             .unwrap_or_default()

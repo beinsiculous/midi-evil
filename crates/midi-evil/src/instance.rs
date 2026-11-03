@@ -89,6 +89,7 @@ mod tests {
         let options = LaunchOptions {
             file: Some(PathBuf::from("song.mid")),
             track: Some("Lead & co".to_owned()),
+            track_index: Some(3),
             project: Some(PathBuf::from("/assets/game")),
             help: false,
         };

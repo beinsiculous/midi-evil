@@ -73,6 +73,18 @@ impl VoiceState {
         let sample_rate = patch.sample_rate;
         let sweep_progress = (time / patch.duration_seconds).min(1.0);
         let amp_envelope = patch.envelope.amplitude(time, gate_seconds);
+        let (aux_amplitude, aux_pitch_cents, aux_filter_cutoff_octaves) = patch
+            .aux_envelope
+            .as_ref()
+            .map(|aux| {
+                let level = aux.envelope.amplitude(time, gate_seconds);
+                (
+                    aux.amplitude_depth * level,
+                    aux.pitch_depth_cents * level,
+                    aux.filter_cutoff_depth_octaves * level,
+                )
+            })
+            .unwrap_or_default();
         let modulation = controls.modulation;
         let bend_semitones = controls.bend_semitones;
         let glide_semitones = if patch.glide_seconds > 0.0 && time < patch.glide_seconds {
@@ -80,8 +92,10 @@ impl VoiceState {
         } else {
             0.0
         };
-        let pitch_multiplier = 2.0_f32
-            .powf((modulation.pitch_cents + (bend_semitones + glide_semitones) * 100.0) / 1200.0);
+        let pitch_multiplier = 2.0_f32.powf(
+            (modulation.pitch_cents + aux_pitch_cents + (bend_semitones + glide_semitones) * 100.0)
+                / 1200.0,
+        );
         let oscillator_mode = patch.effective_oscillator_mode();
         let sync_ratio = patch
             .uses_sync()
@@ -192,6 +206,7 @@ impl VoiceState {
                 sample_rate,
                 filter_envelope,
                 modulation.filter_cutoff_octaves
+                    + aux_filter_cutoff_octaves
                     + if filter.key_tracking {
                         bend_semitones / 12.0
                     } else {
@@ -199,7 +214,7 @@ impl VoiceState {
                     },
             );
         }
-        let amplitude = (1.0 + modulation.amplitude).clamp(0.0, 1.0);
+        let amplitude = (1.0 + modulation.amplitude + aux_amplitude).clamp(0.0, 1.0);
         sample * (amp_envelope * patch.gain * amplitude * controls.pressure * controls.expression)
     }
 }

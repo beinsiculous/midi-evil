@@ -114,5 +114,62 @@ key ranges). A round trip that keeps those green is the acceptance.
   working set's `.claude/skills/adversarial-review/` carries the tooling; it works from any repo
   that copies the skill and `scripts/request-review.sh`.
 
+## 2026-11-03 — the engine's settings panel landed; what MIDI Evil must change
+
+Added 2026-11-03 after reading the engine's batch 6 (`insiculous_2d` 50962e2, the External Tools
+settings panel, review rounds 32 to 38). The contract above is unchanged. What changed is that the
+engine now ships a **MIDI Evil preset** and a **Test button** that spawn this repo's binary with the
+full flag set, so the gaps below are hit by a click, not by a hand-typed command.
+
+### What the engine does now
+
+- Edit → External Tools… holds a Music category whose Tool cycle offers "MIDI Evil". Its command
+  template is fixed in the engine's `crates/editor/src/external_tools/presets.rs`:
+  `midi-evil [--project {project}] [--track {track}] [--track-index {track_index}] {file}`. Each
+  bracketed group is dropped when its placeholder is empty.
+- The preset's **Program field** replaces the bare `midi-evil` with a path the user types, for
+  example `/opt/midi-evil/target/release/midi-evil`. Left blank, the engine looks for `midi-evil`
+  on `PATH` only: the preset has **no fallback locations and no Flatpak id**, so a build that is not
+  on `PATH` or named in that field is "not found", and the error sends the user back to the panel.
+- **Every song launch names a track.** Opening a `.mid` that has a sidecar with parts resolves the
+  first part's track and passes `--track <name> --track-index <n>`; a nameless track gets
+  `--track-index <n>` alone. Only a song with no sidecar, or a sidecar with no parts, launches with
+  the file alone. The Music **Test** button opens the project's first song the same way and prints
+  the exact argv it ran, for example
+  `Test Music: midi-evil --project /game/assets --track drums --track-index 2 /game/assets/music/theme.mid`,
+  then the launch's own line. The engine never waits and never reads stdout.
+
+### Required of MIDI Evil, in order
+
+1. **Accept `--track-index <n>` (and `--track-index=<n>`). Done 2026-11-03.** Before this the
+   launcher rejected it as an unknown option and exited non-zero, so the preset failed on every
+   song that has a part, which is all six shipped songs. The index is 0-based in the file's track
+   order and **wins when both flags are given**; `--track` alone keeps its behaviour. The import
+   drops file tracks holding no events (a tempo-only track 0, a muted track exported empty), so the
+   app maps the file index through the import's record of where each project track came from; a
+   project opened from `.evil` uses its own order. An index with no track warns on stderr, opens
+   anyway and exits 0. The field has a serde default so single-instance forwarding keeps accepting
+   an older primary's JSON.
+2. **Say where the binary is.** The README's install step should produce a `midi-evil` on `PATH`
+   (`cargo install --path crates/midi-evil` or a symlink to `target/release/midi-evil`), or tell the
+   user to paste the release path into the preset's Program field. Nothing else finds it.
+3. **Keep the exit contract strict.** Exit 0 once the window is up or the request was forwarded, and
+   one stderr line otherwise. An unknown future flag should still be a one-line refusal, never a
+   panic, since the engine logs only the first line.
+
+### Status of the original issue list, from this side
+
+| issue | state |
+|---|---|
+| 1. `.evil` → `.mid` export with the rules above | done (`evil-exports`; see `ARCHIVE.md`) |
+| 2. open a positional `.mid` and export back to it on save | done |
+| 3. `--track <name>` / `--track-index <n>` | done; the index wins when both are given |
+| 4. single instance | done, Unix socket forwarding |
+| 5. `--project <dir>` | done |
+| 6. fixture pair under a LICENSE line | done, the Bach original/renamed pair |
+
+The engine's batch 7 (retiring its own note editing) waits on issues 1 and 2, which are done here.
+What remains for the preset is item 2 above: a `midi-evil` the engine can find.
+
 Questions go to Jesse; the engine's planner reads `coordination/external-tools/plan.md` and will
 keep its § "MIDI Evil's half" in step with what lands here.

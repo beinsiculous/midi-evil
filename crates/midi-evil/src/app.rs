@@ -27,6 +27,12 @@ pub struct StudioApp {
     project: Project,
     project_path: Option<PathBuf>,
     source_midi: Option<PathBuf>,
+    /// The file track index each project track came from, for a project imported from a
+    /// Standard MIDI File: the import drops tracks holding no events (a tempo-only track
+    /// 0, a muted track exported empty), so the engine's `--track-index` is a file index,
+    /// not a project one. `None` for a project opened from `.evil` or started new, where
+    /// the project order is the only order there is.
+    imported_track_indices: Option<Vec<usize>>,
     project_base: Option<PathBuf>,
     roll: RollState,
     automation: AutomationState,
@@ -102,6 +108,7 @@ impl StudioApp {
             project: Project::new("Untitled"),
             project_path: None,
             source_midi: None,
+            imported_track_indices: None,
             project_base: options.project.clone(),
             roll: RollState::default(),
             automation: AutomationState::default(),
@@ -160,8 +167,28 @@ impl StudioApp {
                 self.open_project_path(&path);
             }
         }
-        if let Some(track) = options.track {
-            self.select_track_by_name(&track);
+        match (options.track_index, options.track) {
+            (Some(index), _) => self.select_track_by_file_index(index),
+            (None, Some(track)) => self.select_track_by_name(&track),
+            (None, None) => {}
+        }
+    }
+
+    /// The engine's `--track-index`: the track's 0-based position in the file's own track
+    /// order, which wins over `--track` when both are given.
+    fn select_track_by_file_index(&mut self, file_index: usize) {
+        let position = track_position(
+            file_index,
+            self.imported_track_indices.as_deref(),
+            self.project.tracks.len(),
+        );
+        if let Some(position) = position {
+            let name = self.project.tracks[position].name.clone();
+            self.roll.select_track(position);
+            self.status = format!("Selected track {file_index} '{name}'");
+        } else {
+            eprintln!("warning: track index {file_index} was not found");
+            self.status = format!("Track index {file_index} was not found");
         }
     }
 
@@ -396,6 +423,7 @@ impl StudioApp {
         self.stop_preview();
         self.patch_lab = None;
         self.project = Project::new("Untitled");
+        self.imported_track_indices = None;
         self.show_about = false;
         self.project_path = None;
         self.source_midi = None;
@@ -548,9 +576,12 @@ impl StudioApp {
                 }
             });
             ui.separator();
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                patch_lab::show(ui, &mut lab);
-            });
+            let message = egui::ScrollArea::vertical()
+                .show(ui, |ui| patch_lab::show(ui, &mut lab))
+                .inner;
+            if let Some(message) = message {
+                self.status = message;
+            }
         });
         match action {
             Some(PatchLabAction::New) => {
@@ -593,6 +624,7 @@ impl StudioApp {
             Ok(project) => {
                 self.patch_lab = None;
                 self.project = project;
+                self.imported_track_indices = None;
                 self.show_about = false;
                 self.source_midi = self.project.source_midi.as_ref().map(PathBuf::from);
                 self.roll = RollState::default();
@@ -737,15 +769,21 @@ impl StudioApp {
                 let bends = performance.pitch_bend_count();
                 let pressure = performance.aftertouch_count();
                 let controllers = performance.controller_count();
+                let file_indices: Vec<usize> = performance
+                    .tracks
+                    .iter()
+                    .map(|track| track.track_index)
+                    .collect();
                 Project::from_performance(name, &performance)
-                    .map(|project| (project, skipped, bends, pressure, controllers))
+                    .map(|project| (project, file_indices, skipped, bends, pressure, controllers))
                     .map_err(|error| error.to_string())
             });
         match result {
-            Ok((project, skipped, bends, pressure, controllers)) => {
+            Ok((project, file_indices, skipped, bends, pressure, controllers)) => {
                 self.stop_preview();
                 self.patch_lab = None;
                 self.project = project;
+                self.imported_track_indices = Some(file_indices);
                 self.show_about = false;
                 self.source_midi = Some(path.to_path_buf());
                 self.project.source_midi = Some(path.to_string_lossy().into_owned());
@@ -1225,9 +1263,48 @@ impl eframe::App for StudioApp {
     }
 }
 
+/// The project track at a file's track index: through the import's record of where each
+/// project track came from when there is one, else the index itself while it is in range.
+fn track_position(
+    file_index: usize,
+    imported_track_indices: Option<&[usize]>,
+    track_count: usize,
+) -> Option<usize> {
+    match imported_track_indices {
+        Some(indices) => indices.iter().position(|&index| index == file_index),
+        None => (file_index < track_count).then_some(file_index),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_track_index_finds_the_project_track_past_the_tracks_the_import_dropped() {
+        // A format-1 file whose track 0 held only the tempo and whose track 2 was a muted
+        // track exported empty: the import kept file tracks 1, 3 and 4.
+        let imported = [1, 3, 4];
+        assert_eq!(track_position(3, Some(&imported), 3), Some(1));
+        assert_eq!(track_position(4, Some(&imported), 3), Some(2));
+        assert_eq!(
+            track_position(0, Some(&imported), 3),
+            None,
+            "the tempo track was dropped"
+        );
+        assert_eq!(
+            track_position(2, Some(&imported), 3),
+            None,
+            "the empty track was dropped"
+        );
+    }
+
+    #[test]
+    fn without_an_import_the_project_order_is_the_file_order() {
+        assert_eq!(track_position(0, None, 2), Some(0));
+        assert_eq!(track_position(1, None, 2), Some(1));
+        assert_eq!(track_position(2, None, 2), None);
+    }
 
     #[test]
     fn portable_references_work_with_relative_project_paths() {

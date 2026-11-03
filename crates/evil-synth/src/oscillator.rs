@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::SampleOscillator;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OscillatorMode {
@@ -23,6 +25,7 @@ pub enum Waveform {
     Saw,
     Triangle,
     Noise,
+    Sample,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -34,6 +37,8 @@ pub struct Oscillator {
     pub amplitude: f32,
     pub detune_cents: f32,
     pub pulse_width: f32,
+    /// Embedded source used only by the sample waveform.
+    pub sample: Option<SampleOscillator>,
 }
 
 impl Default for Oscillator {
@@ -45,18 +50,21 @@ impl Default for Oscillator {
             amplitude: 1.0,
             detune_cents: 0.0,
             pulse_width: 0.5,
+            sample: None,
         }
     }
 }
 
 pub(crate) struct OscillatorState {
     phase: f32,
+    sample_position: f64,
     noise: XorShift32,
 }
 
 impl OscillatorState {
     pub(crate) fn reset_phase(&mut self) {
         self.phase = 0.0;
+        self.sample_position = 0.0;
     }
 }
 
@@ -64,6 +72,7 @@ impl Oscillator {
     pub(crate) fn state(&self, seed: u32) -> OscillatorState {
         OscillatorState {
             phase: 0.0,
+            sample_position: 0.0,
             noise: XorShift32::new(seed),
         }
     }
@@ -97,7 +106,11 @@ impl Oscillator {
                 1.0 - previous
             }
             Waveform::Saw => -2.0 * previous_phase,
-            Waveform::Sine | Waveform::SquareNaive | Waveform::Triangle | Waveform::Noise => {
+            Waveform::Sine
+            | Waveform::SquareNaive
+            | Waveform::Triangle
+            | Waveform::Noise
+            | Waveform::Sample => {
                 return 0.0;
             }
         };
@@ -112,6 +125,25 @@ impl Oscillator {
         pitch_multiplier: f32,
         pulse_width_offset: f32,
     ) -> f32 {
+        if self.waveform == Waveform::Sample {
+            let Some(source) = &self.sample else {
+                return 0.0;
+            };
+            let playback_rate = self.frequency(sweep_progress, pitch_multiplier)
+                / source.root_frequency_hz
+                * source.sample_rate as f32
+                / sample_rate as f32;
+            let sample = source.at(state.sample_position) * self.amplitude;
+            state.sample_position += f64::from(playback_rate);
+            state.sample_position = if source.loop_enabled {
+                state
+                    .sample_position
+                    .rem_euclid(source.samples.len() as f64)
+            } else {
+                state.sample_position.min(source.samples.len() as f64)
+            };
+            return sample;
+        }
         if matches!(self.waveform, Waveform::Noise) {
             return state.noise.next_sample() * self.amplitude;
         }
@@ -136,7 +168,7 @@ impl Oscillator {
             }
             Waveform::Saw => 2.0 * phase - 1.0 - poly_blep(phase, phase_step),
             Waveform::Triangle => 1.0 - 4.0 * (phase - 0.5).abs(),
-            Waveform::Noise => unreachable!("noise returned above"),
+            Waveform::Noise | Waveform::Sample => unreachable!("special sources returned above"),
         };
         state.phase = (phase + phase_step).fract();
         sample * self.amplitude

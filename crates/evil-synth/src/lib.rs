@@ -1,3 +1,4 @@
+mod aux_envelope;
 mod delay;
 mod envelope;
 mod filter;
@@ -9,6 +10,7 @@ mod oscillator;
 mod patch;
 mod presets;
 mod render;
+mod sample;
 mod sync;
 mod unison;
 mod voice;
@@ -16,6 +18,7 @@ mod wav;
 
 pub use live::{LiveControls, LiveSynth};
 
+pub use aux_envelope::AuxEnvelope;
 pub use delay::{Delay, DelayMode};
 pub use envelope::Envelope;
 pub use filter::{Filter, FilterMode};
@@ -32,10 +35,12 @@ pub use render::{
     render_notes_dry_with_tempo_and_full_automation, render_notes_with_automation,
     render_notes_with_full_automation, render_notes_with_pitch_bend, render_notes_with_tempo,
 };
+pub use sample::SampleOscillator;
 pub use sync::OscillatorSync;
 use thiserror::Error;
 pub use unison::Unison;
 pub use voice::VoiceMode;
+pub use wav::read_mono_wav;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -53,6 +58,8 @@ pub enum Error {
     UnknownPreset(String),
     #[error("could not read synth patch JSON: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("could not write WAV audio: {0}")]
+    #[error("invalid WAV audio: {0}")]
+    InvalidWav(String),
+    #[error("WAV I/O error: {0}")]
     Wav(#[from] hound::Error),
 }

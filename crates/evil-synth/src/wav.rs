@@ -2,7 +2,47 @@ use std::path::Path;
 
 use hound::{SampleFormat, WavSpec, WavWriter};
 
-use crate::{Error, RenderedSound, StereoSound};
+use crate::{Error, RenderedSound, StereoSound, sample::MAX_SAMPLE_SECONDS};
+
+/// Read finite mono/stereo PCM or float WAV audio and downmix it to mono.
+/// Instrument sources share the 8–192 kHz and 30-second bounds.
+pub fn read_mono_wav(path: impl AsRef<Path>) -> Result<RenderedSound, Error> {
+    let mut reader = hound::WavReader::open(path)?;
+    let spec = reader.spec();
+    if !(1..=2).contains(&spec.channels) || !(8_000..=192_000).contains(&spec.sample_rate) {
+        return Err(Error::InvalidWav(
+            "use a mono/stereo WAV at 8–192 kHz".to_owned(),
+        ));
+    }
+    if reader.duration() > spec.sample_rate * MAX_SAMPLE_SECONDS {
+        return Err(Error::InvalidWav(
+            "WAV instrument sources can be at most 30 seconds long".to_owned(),
+        ));
+    }
+    let samples: Vec<f32> = match spec.sample_format {
+        SampleFormat::Float => reader.samples::<f32>().collect::<Result<_, _>>()?,
+        SampleFormat::Int => {
+            let scale = 2.0_f32.powi(i32::from(spec.bits_per_sample) - 1);
+            reader
+                .samples::<i32>()
+                .map(|sample| sample.map(|sample| sample as f32 / scale))
+                .collect::<Result<_, _>>()?
+        }
+    };
+    let samples: Vec<f32> = samples
+        .chunks(usize::from(spec.channels))
+        .map(|frame| frame.iter().sum::<f32>() / frame.len() as f32)
+        .collect();
+    if samples.is_empty() || samples.iter().any(|sample| !sample.is_finite()) {
+        return Err(Error::InvalidWav(
+            "WAV samples must be nonempty and finite".to_owned(),
+        ));
+    }
+    Ok(RenderedSound {
+        samples,
+        sample_rate: spec.sample_rate,
+    })
+}
 
 impl RenderedSound {
     pub fn write_wav(&self, path: impl AsRef<Path>) -> Result<(), Error> {

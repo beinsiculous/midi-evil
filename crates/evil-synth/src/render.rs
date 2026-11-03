@@ -814,8 +814,8 @@ fn soft_limit(samples: &mut [f32]) {
 mod tests {
     use super::*;
     use crate::{
-        Envelope, Filter, Lfo, LfoDestination, LfoWaveform, ModalPartial, Oscillator,
-        OscillatorSync, PRESET_NAMES, Unison, Waveform, preset,
+        AuxEnvelope, Envelope, Filter, Lfo, LfoDestination, LfoWaveform, ModalPartial, Oscillator,
+        OscillatorSync, PRESET_NAMES, SampleOscillator, Unison, Waveform, preset,
     };
 
     #[test]
@@ -876,6 +876,61 @@ mod tests {
         let low = render_notes(&patch, &[note(40)]).unwrap();
         let high = render_notes(&patch, &[note(100)]).unwrap();
         assert_eq!(low.samples, high.samples);
+    }
+
+    #[test]
+    fn sample_oscillator_loops_or_ends_at_the_source_boundary() {
+        let base = Patch {
+            sample_rate: 8_000,
+            duration_seconds: 0.001,
+            gain: 1.0,
+            oscillators: vec![Oscillator {
+                waveform: Waveform::Sample,
+                sample: Some(SampleOscillator::new(vec![0.25, -0.5, 0.75, -0.25], 8_000)),
+                ..Oscillator::default()
+            }],
+            envelope: Envelope {
+                attack_seconds: 0.0,
+                decay_seconds: 0.0,
+                sustain_level: 1.0,
+                release_seconds: 0.0,
+            },
+            ..Patch::default()
+        };
+        let one_shot = render(&base).unwrap().samples;
+        assert_eq!(&one_shot[4..], &[0.0; 4]);
+
+        let looped = render(&Patch {
+            oscillators: vec![Oscillator {
+                sample: Some(SampleOscillator {
+                    loop_enabled: true,
+                    ..base.oscillators[0].sample.clone().unwrap()
+                }),
+                ..base.oscillators[0].clone()
+            }],
+            ..base
+        })
+        .unwrap()
+        .samples;
+        assert_eq!(&looped[..4], &looped[4..]);
+        assert_ne!(one_shot, looped);
+    }
+
+    #[test]
+    fn sample_oscillator_uses_the_shared_pitch_tracking_switch() {
+        let tracked = sample_test_patch(true);
+        let low = render_notes(&tracked, &[note(48)]).unwrap().samples;
+        let high = render_notes(&tracked, &[note(72)]).unwrap().samples;
+        assert_ne!(low, high);
+
+        let fixed = Patch {
+            pitch_tracking: false,
+            ..tracked
+        };
+        assert_eq!(
+            render_notes(&fixed, &[note(48)]).unwrap().samples,
+            render_notes(&fixed, &[note(72)]).unwrap().samples
+        );
     }
 
     #[test]
@@ -1167,6 +1222,64 @@ mod tests {
             render(&unmodulated_base).unwrap().samples,
             render(&unmodulated_independent).unwrap().samples
         );
+    }
+
+    #[test]
+    fn disabled_auxiliary_envelope_preserves_legacy_modulated_audio() {
+        let base = auxiliary_test_patch();
+        let baseline = render(&base).unwrap().samples;
+        assert_eq!(baseline, render(&base).unwrap().samples);
+
+        let zero_depth = Patch {
+            aux_envelope: Some(AuxEnvelope {
+                envelope: Envelope {
+                    attack_seconds: 0.04,
+                    decay_seconds: 0.02,
+                    sustain_level: 0.1,
+                    release_seconds: 0.03,
+                },
+                ..AuxEnvelope::default()
+            }),
+            ..base
+        };
+        assert_eq!(baseline, render(&zero_depth).unwrap().samples);
+    }
+
+    #[test]
+    fn auxiliary_matrix_adds_signed_routes_alongside_existing_modulation() {
+        let base = auxiliary_test_patch();
+        let baseline = render(&base).unwrap().samples;
+        for (route, label, depths) in [
+            (0, "amplitude", [-0.6, 0.6]),
+            (1, "pitch", [-600.0, 600.0]),
+            (2, "filter cutoff", [-3.0, 3.0]),
+        ] {
+            let mut routed = Vec::new();
+            for depth in depths {
+                let mut patch = base.clone();
+                let mut aux = AuxEnvelope {
+                    envelope: Envelope {
+                        attack_seconds: 0.02,
+                        decay_seconds: 0.04,
+                        sustain_level: 0.25,
+                        release_seconds: 0.03,
+                    },
+                    ..AuxEnvelope::default()
+                };
+                match route {
+                    0 => aux.amplitude_depth = depth,
+                    1 => aux.pitch_depth_cents = depth,
+                    2 => aux.filter_cutoff_depth_octaves = depth,
+                    _ => unreachable!(),
+                }
+                patch.aux_envelope = Some(aux);
+                let samples = render(&patch).unwrap().samples;
+                assert!(samples.iter().all(|sample| sample.is_finite()));
+                assert_ne!(samples, baseline, "{label} depth {depth} was not audible");
+                routed.push(samples);
+            }
+            assert_ne!(routed[0], routed[1], "{label} depth sign had no effect");
+        }
     }
 
     #[test]
@@ -1583,6 +1696,82 @@ mod tests {
         let mut invalid = note(69);
         invalid.velocity = 0;
         assert!(render_notes(&Patch::default(), &[invalid]).is_err());
+    }
+
+    fn sample_test_patch(loop_enabled: bool) -> Patch {
+        Patch {
+            sample_rate: 8_000,
+            duration_seconds: 0.01,
+            oscillators: vec![Oscillator {
+                waveform: Waveform::Sample,
+                sample: Some(SampleOscillator {
+                    samples: (0..32)
+                        .map(|index| (index % 9) as f32 / 8.0 - 0.5)
+                        .collect(),
+                    sample_rate: 8_000,
+                    loop_enabled,
+                    ..SampleOscillator::default()
+                }),
+                ..Oscillator::default()
+            }],
+            envelope: Envelope {
+                attack_seconds: 0.0,
+                decay_seconds: 0.0,
+                sustain_level: 1.0,
+                release_seconds: 0.002,
+            },
+            ..Patch::default()
+        }
+    }
+
+    fn auxiliary_test_patch() -> Patch {
+        Patch {
+            duration_seconds: 0.12,
+            envelope: Envelope {
+                attack_seconds: 0.0,
+                decay_seconds: 0.0,
+                sustain_level: 0.9,
+                release_seconds: 0.03,
+            },
+            filter: Some(Filter {
+                cutoff_hz: 600.0,
+                envelope_amount: 1.5,
+                resonance: 0.25,
+                stages: 2,
+                key_tracking: true,
+                ..Filter::default()
+            }),
+            filter_envelope: Some(Envelope {
+                attack_seconds: 0.01,
+                decay_seconds: 0.03,
+                sustain_level: 0.4,
+                release_seconds: 0.03,
+            }),
+            lfo: Some(Lfo {
+                rate_hz: 7.0,
+                destination: LfoDestination::Pitch,
+                waveform: LfoWaveform::SawDown,
+                depth_cents: 20.0,
+                ..Lfo::default()
+            }),
+            modulation: vec![
+                Lfo {
+                    rate_hz: 5.0,
+                    destination: LfoDestination::FilterCutoff,
+                    waveform: LfoWaveform::Triangle,
+                    filter_cutoff_depth: 0.7,
+                    ..Lfo::default()
+                },
+                Lfo {
+                    rate_hz: 3.0,
+                    destination: LfoDestination::Amplitude,
+                    waveform: LfoWaveform::SawUp,
+                    amplitude_depth: 0.15,
+                    ..Lfo::default()
+                },
+            ],
+            ..Patch::default()
+        }
     }
 
     fn note(pitch: u8) -> SynthNote {

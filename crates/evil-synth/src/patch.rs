@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Delay, Envelope, Error, Filter, Lfo, LfoDestination, ModalPartial, Oscillator, OscillatorMode,
-    OscillatorSync, Unison, VoiceMode,
+    AuxEnvelope, Delay, Envelope, Error, Filter, Lfo, LfoDestination, ModalPartial, Oscillator,
+    OscillatorMode, OscillatorSync, Unison, VoiceMode,
 };
 
 const MAX_DURATION_SECONDS: f32 = 60.0;
@@ -41,6 +41,8 @@ pub struct Patch {
     pub filter: Option<Filter>,
     /// Independent filter ADSR; `None` routes the amplitude envelope to the filter.
     pub filter_envelope: Option<Envelope>,
+    /// Optional auxiliary ADSR and its amplitude/pitch/filter matrix depths.
+    pub aux_envelope: Option<AuxEnvelope>,
     /// Primary LFO, retained for compatibility with the original patch format.
     pub lfo: Option<Lfo>,
     pub modulation: Vec<Lfo>,
@@ -72,6 +74,7 @@ impl Default for Patch {
             envelope: Envelope::default(),
             filter: None,
             filter_envelope: None,
+            aux_envelope: None,
             lfo: None,
             modulation: Vec::new(),
             delay: None,
@@ -198,6 +201,15 @@ impl Patch {
         if self.oscillator_mode == OscillatorMode::Ring && self.oscillators.len() < 2 {
             return Err(invalid("ring mode needs Osc A and Osc B"));
         }
+        if self
+            .oscillators
+            .iter()
+            .filter(|oscillator| oscillator.waveform == crate::Waveform::Sample)
+            .count()
+            > 1
+        {
+            return Err(invalid("a patch supports one sample oscillator"));
+        }
 
         let nyquist = self.sample_rate as f32 / 2.0;
         for oscillator in &self.oscillators {
@@ -220,6 +232,12 @@ impl Patch {
                         "oscillator frequencies must be positive and no higher than Nyquist",
                     ));
                 }
+            }
+            if oscillator.waveform == crate::Waveform::Sample && oscillator.sample.is_none() {
+                return Err(invalid("a sample oscillator needs embedded WAV audio"));
+            }
+            if let Some(sample) = &oscillator.sample {
+                sample.validate()?;
             }
         }
 
@@ -245,6 +263,25 @@ impl Patch {
             if self.duration_seconds + envelope.release_seconds > MAX_DURATION_SECONDS {
                 return Err(invalid(
                     "duration plus filter-envelope release cannot exceed 60 seconds",
+                ));
+            }
+        }
+        if let Some(aux) = &self.aux_envelope {
+            validate_envelope(&aux.envelope)?;
+            if self.duration_seconds + aux.envelope.release_seconds > MAX_DURATION_SECONDS {
+                return Err(invalid(
+                    "duration plus auxiliary-envelope release cannot exceed 60 seconds",
+                ));
+            }
+            if !aux.amplitude_depth.is_finite()
+                || !(-1.0..=1.0).contains(&aux.amplitude_depth)
+                || !aux.pitch_depth_cents.is_finite()
+                || !(-2_400.0..=2_400.0).contains(&aux.pitch_depth_cents)
+                || !aux.filter_cutoff_depth_octaves.is_finite()
+                || !(-12.0..=12.0).contains(&aux.filter_cutoff_depth_octaves)
+            {
+                return Err(invalid(
+                    "auxiliary-envelope amplitude, pitch, and cutoff depths must be valid",
                 ));
             }
         }
@@ -339,6 +376,17 @@ mod tests {
                 sustain_level: 0.3,
                 release_seconds: 0.08,
             }),
+            aux_envelope: Some(AuxEnvelope {
+                envelope: Envelope {
+                    attack_seconds: 0.01,
+                    decay_seconds: 0.03,
+                    sustain_level: 0.4,
+                    release_seconds: 0.06,
+                },
+                amplitude_depth: -0.5,
+                pitch_depth_cents: 700.0,
+                filter_cutoff_depth_octaves: -3.0,
+            }),
             delay: Some(Delay::default()),
             lfo: Some(Lfo {
                 rate_hz: 6.0,
@@ -352,7 +400,14 @@ mod tests {
             }],
             ..Patch::default()
         };
-        patch.oscillators[0].waveform = Waveform::Triangle;
+        patch.oscillators[0].waveform = Waveform::Sample;
+        patch.oscillators[0].sample = Some(crate::SampleOscillator {
+            name: "Embedded source".to_owned(),
+            samples: vec![0.0, 0.5, -0.5, 0.0],
+            sample_rate: 48_000,
+            root_frequency_hz: 220.0,
+            loop_enabled: true,
+        });
         let json = patch.to_json_pretty().unwrap();
         let decoded = Patch::from_json(&json).unwrap();
         assert_eq!(decoded, patch);
@@ -364,6 +419,8 @@ mod tests {
         assert_eq!(patch.sample_rate, 48_000);
         assert_eq!(patch.oscillators.len(), 1);
         assert_eq!(patch.filter_envelope, None);
+        assert_eq!(patch.aux_envelope, None);
+        assert_eq!(patch.oscillators[0].sample, None);
     }
 
     #[test]
@@ -423,5 +480,91 @@ mod tests {
             ..Envelope::default()
         });
         assert!(patch.validate().is_err());
+    }
+
+    #[test]
+    fn validation_requires_one_valid_embedded_sample_oscillator() {
+        let mut missing = Patch::default();
+        missing.oscillators[0].waveform = Waveform::Sample;
+        assert!(missing.validate().is_err());
+
+        let valid = crate::SampleOscillator::new(vec![0.0, 0.5, -0.5], 8_000);
+        let invalid = [
+            crate::SampleOscillator::new(Vec::new(), 8_000),
+            crate::SampleOscillator::new(vec![f32::NAN], 8_000),
+            crate::SampleOscillator::new(vec![0.0], 4_000),
+            crate::SampleOscillator::new(vec![0.0; 240_001], 8_000),
+            crate::SampleOscillator {
+                root_frequency_hz: 0.0,
+                ..valid.clone()
+            },
+        ];
+        for sample in invalid {
+            let mut patch = Patch::default();
+            patch.oscillators[0].waveform = Waveform::Sample;
+            patch.oscillators[0].sample = Some(sample);
+            assert!(patch.validate().is_err());
+        }
+
+        let mut patch = Patch::default();
+        patch.oscillators[0].waveform = Waveform::Sample;
+        patch.oscillators[0].sample = Some(valid.clone());
+        assert!(patch.validate().is_ok());
+        patch.oscillators.push(patch.oscillators[0].clone());
+        assert!(patch.validate().is_err());
+    }
+
+    #[test]
+    fn validation_bounds_auxiliary_envelope_and_signed_matrix_depths() {
+        let valid = AuxEnvelope {
+            amplitude_depth: -1.0,
+            pitch_depth_cents: 2_400.0,
+            filter_cutoff_depth_octaves: -12.0,
+            ..AuxEnvelope::default()
+        };
+        let invalid = [
+            AuxEnvelope {
+                envelope: Envelope {
+                    attack_seconds: f32::NAN,
+                    ..Envelope::default()
+                },
+                ..valid.clone()
+            },
+            AuxEnvelope {
+                envelope: Envelope {
+                    release_seconds: 60.0,
+                    ..Envelope::default()
+                },
+                ..valid.clone()
+            },
+            AuxEnvelope {
+                amplitude_depth: -1.01,
+                ..valid.clone()
+            },
+            AuxEnvelope {
+                amplitude_depth: f32::NAN,
+                ..valid.clone()
+            },
+            AuxEnvelope {
+                pitch_depth_cents: 2_400.01,
+                ..valid.clone()
+            },
+            AuxEnvelope {
+                filter_cutoff_depth_octaves: -12.01,
+                ..valid.clone()
+            },
+        ];
+        for aux_envelope in invalid {
+            let patch = Patch {
+                aux_envelope: Some(aux_envelope),
+                ..Patch::default()
+            };
+            assert!(patch.validate().is_err());
+        }
+        let patch = Patch {
+            aux_envelope: Some(valid),
+            ..Patch::default()
+        };
+        assert!(patch.validate().is_ok());
     }
 }
