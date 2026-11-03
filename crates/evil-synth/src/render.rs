@@ -486,6 +486,8 @@ fn render_single_voice(
             let modulation = current.modulation.next(
                 &current.patch,
                 sample_rate,
+                time,
+                current.gate.unwrap_or(f32::INFINITY),
                 modulation_depth(controllers, absolute_time),
                 tempo_bpm_at(tempo_changes, absolute_time) / 60.0,
             );
@@ -688,6 +690,8 @@ impl ModulationState {
         &mut self,
         patch: &Patch,
         sample_rate: u32,
+        time: f32,
+        gate_seconds: f32,
         depth: f32,
         quarter_hz: f32,
     ) -> Modulation {
@@ -699,6 +703,15 @@ impl ModulationState {
             {
                 let value = lfo_value(lfo, self.lfo_phases[index]);
                 rate_multipliers[target] += depth * lfo.lfo_rate_depth * value;
+            }
+        }
+        for aux in [patch.aux_envelope.as_ref(), patch.aux_envelope_2.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            if let Some(target) = aux.target_lfo {
+                let level = aux.envelope.amplitude(time, gate_seconds);
+                rate_multipliers[target] += aux.lfo_rate_depth * level;
             }
         }
         for (index, lfo) in patch.lfos().enumerate() {
@@ -787,6 +800,8 @@ fn render_voice_into(
         let modulation = modulation_state.next(
             patch,
             patch.sample_rate,
+            time,
+            patch.duration_seconds,
             modulation_depth(automation.controllers, absolute_time),
             tempo_bpm_at(automation.tempo_changes, absolute_time) / 60.0,
         );
@@ -1493,6 +1508,7 @@ mod tests {
                     sustain_level: 0.1,
                     release_seconds: 0.03,
                 },
+                target_lfo: Some(0),
                 ..AuxEnvelope::default()
             }),
             aux_envelope_2: Some(AuxEnvelope {
@@ -1502,6 +1518,7 @@ mod tests {
                     sustain_level: 0.8,
                     release_seconds: 0.02,
                 },
+                target_lfo: Some(0),
                 ..AuxEnvelope::default()
             }),
             ..base
@@ -1535,6 +1552,7 @@ mod tests {
                 (2, "filter cutoff", [-3.0, 3.0]),
                 (3, "pulse width", [-0.4, 0.4]),
                 (4, "sync ratio", [-0.8, 0.8]),
+                (5, "LFO rate", [-1.0, 1.0]),
             ] {
                 let mut route_base = base.clone();
                 if matches!(route, 3 | 4) {
@@ -1562,6 +1580,10 @@ mod tests {
                         2 => aux.filter_cutoff_depth_octaves = depth,
                         3 => aux.pulse_width_depth = depth,
                         4 => aux.sync_ratio_depth = depth,
+                        5 => {
+                            aux.target_lfo = Some(0);
+                            aux.lfo_rate_depth = depth;
+                        }
                         _ => unreachable!(),
                     }
                     if second {
@@ -1603,6 +1625,8 @@ mod tests {
             pulse_width_depth: 0.2,
             sync_ratio_depth: 0.4,
             filter_cutoff_depth_octaves: 1.25,
+            target_lfo: Some(0),
+            lfo_rate_depth: 0.5,
         };
         let mut base = auxiliary_test_patch();
         base.oscillators[0].waveform = Waveform::Square;
@@ -1619,6 +1643,7 @@ mod tests {
                 pulse_width_depth: shared.pulse_width_depth * 2.0,
                 sync_ratio_depth: shared.sync_ratio_depth * 2.0,
                 filter_cutoff_depth_octaves: shared.filter_cutoff_depth_octaves * 2.0,
+                lfo_rate_depth: shared.lfo_rate_depth * 2.0,
                 ..shared
             }),
             ..base
@@ -1645,6 +1670,8 @@ mod tests {
                 pulse_width_depth: 0.35,
                 sync_ratio_depth: 0.75,
                 filter_cutoff_depth_octaves: 2.5,
+                target_lfo: Some(0),
+                lfo_rate_depth: 0.75,
             }),
             aux_envelope_2: Some(AuxEnvelope {
                 envelope,
@@ -1653,6 +1680,8 @@ mod tests {
                 pulse_width_depth: -0.35,
                 sync_ratio_depth: -0.75,
                 filter_cutoff_depth_octaves: -2.5,
+                target_lfo: Some(0),
+                lfo_rate_depth: -0.75,
             }),
             ..auxiliary_test_patch()
         };
@@ -1832,6 +1861,59 @@ mod tests {
         };
         let unmodulated = Patch {
             lfo: None,
+            ..plain.clone()
+        };
+        let expected = render(&unmodulated).unwrap().samples;
+        assert_ne!(render(&plain).unwrap().samples, expected);
+        assert_eq!(render(&cancelled).unwrap().samples, expected);
+        assert_eq!(render(&cancelled).unwrap().samples, expected);
+    }
+
+    #[test]
+    fn auxiliary_lfo_rates_sum_with_and_cancel_lfo_modulation() {
+        let envelope = Envelope {
+            attack_seconds: 0.0,
+            decay_seconds: 0.0,
+            sustain_level: 1.0,
+            release_seconds: 0.0,
+        };
+        let plain = Patch {
+            duration_seconds: 0.12,
+            envelope: envelope.clone(),
+            lfo: Some(Lfo {
+                rate_hz: 7.0,
+                destination: LfoDestination::Pitch,
+                waveform: LfoWaveform::SawDown,
+                depth_cents: 40.0,
+                ..Lfo::default()
+            }),
+            modulation: vec![Lfo {
+                rate_hz: 0.0,
+                destination: LfoDestination::LfoRate,
+                waveform: LfoWaveform::Square,
+                target_lfo: Some(0),
+                lfo_rate_depth: -1.5,
+                ..Lfo::default()
+            }],
+            ..Patch::default()
+        };
+        let cancelled = Patch {
+            aux_envelope: Some(AuxEnvelope {
+                envelope: envelope.clone(),
+                target_lfo: Some(0),
+                lfo_rate_depth: 0.75,
+                ..AuxEnvelope::default()
+            }),
+            aux_envelope_2: Some(AuxEnvelope {
+                envelope,
+                target_lfo: Some(0),
+                lfo_rate_depth: 0.75,
+                ..AuxEnvelope::default()
+            }),
+            ..plain.clone()
+        };
+        let unmodulated = Patch {
+            modulation: Vec::new(),
             ..plain.clone()
         };
         let expected = render(&unmodulated).unwrap().samples;
@@ -2064,14 +2146,37 @@ mod tests {
                 lfo_rate_depth: 1.0,
                 ..Lfo::default()
             }],
+            aux_envelope: Some(AuxEnvelope {
+                envelope: Envelope {
+                    attack_seconds: 0.005,
+                    decay_seconds: 0.01,
+                    sustain_level: 0.5,
+                    release_seconds: 0.0,
+                },
+                target_lfo: Some(0),
+                lfo_rate_depth: 0.75,
+                ..AuxEnvelope::default()
+            }),
+            aux_envelope_2: Some(AuxEnvelope {
+                target_lfo: Some(0),
+                lfo_rate_depth: -0.25,
+                ..AuxEnvelope::default()
+            }),
             ..Patch::default()
         };
         let mut state = ModulationState::new(&patch);
         let mut previous_phase = 0.0;
         for frame in 0..=1_200 {
-            state.next(&patch, 48_000, 1.0, 2.0);
+            state.next(
+                &patch,
+                48_000,
+                frame as f32 / 48_000.0,
+                f32::INFINITY,
+                1.0,
+                2.0,
+            );
             let phase = state.lfo_phases[0];
-            let maximum_step = 8.0 / 48_000.0 + f32::EPSILON;
+            let maximum_step = 12.0 / 48_000.0 + f32::EPSILON;
             assert!(
                 (phase - previous_phase).abs() <= maximum_step,
                 "target phase jumped at frame {frame}: {previous_phase} -> {phase}"

@@ -41,7 +41,7 @@ pub struct Patch {
     pub filter: Option<Filter>,
     /// Independent filter ADSR; `None` routes the amplitude envelope to the filter.
     pub filter_envelope: Option<Envelope>,
-    /// Optional auxiliary ADSR and its amplitude/pitch/pulse-width/sync-ratio/filter depths.
+    /// Optional auxiliary ADSR and its oscillator/filter/LFO-rate matrix depths.
     pub aux_envelope: Option<AuxEnvelope>,
     /// Second independently optional auxiliary ADSR with the same signed routes.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -299,9 +299,15 @@ impl Patch {
                 || !(-16.0..=16.0).contains(&aux.sync_ratio_depth)
                 || !aux.filter_cutoff_depth_octaves.is_finite()
                 || !(-12.0..=12.0).contains(&aux.filter_cutoff_depth_octaves)
+                || !aux.lfo_rate_depth.is_finite()
+                || !(-4.0..=4.0).contains(&aux.lfo_rate_depth)
+                || (aux.lfo_rate_depth != 0.0 && aux.target_lfo.is_none())
+                || aux
+                    .target_lfo
+                    .is_some_and(|target| target >= self.lfo_count())
             {
                 return Err(invalid(
-                    "auxiliary-envelope amplitude, pitch, pulse-width, sync-ratio, and cutoff depths must be valid",
+                    "auxiliary-envelope oscillator, filter, and LFO-rate routes must be valid",
                 ));
             }
         }
@@ -408,6 +414,8 @@ mod tests {
                 pulse_width_depth: -0.35,
                 sync_ratio_depth: 1.25,
                 filter_cutoff_depth_octaves: -3.0,
+                target_lfo: Some(0),
+                lfo_rate_depth: 1.5,
             }),
             aux_envelope_2: Some(AuxEnvelope {
                 envelope: Envelope {
@@ -421,6 +429,8 @@ mod tests {
                 pulse_width_depth: 0.2,
                 sync_ratio_depth: -0.75,
                 filter_cutoff_depth_octaves: 2.0,
+                target_lfo: Some(1),
+                lfo_rate_depth: -2.0,
             }),
             delay: Some(Delay::default()),
             lfo: Some(Lfo {
@@ -485,6 +495,8 @@ mod tests {
         assert!(patch.aux_envelope.is_some());
         assert_eq!(patch.aux_envelope.as_ref().unwrap().pulse_width_depth, 0.0);
         assert_eq!(patch.aux_envelope.as_ref().unwrap().sync_ratio_depth, 0.0);
+        assert_eq!(patch.aux_envelope.as_ref().unwrap().target_lfo, None);
+        assert_eq!(patch.aux_envelope.as_ref().unwrap().lfo_rate_depth, 0.0);
         assert_eq!(patch.aux_envelope_2, None);
         let json = patch.to_json_pretty().unwrap();
         assert!(json.contains("\"aux_envelope\""));
@@ -757,6 +769,8 @@ mod tests {
             pulse_width_depth: 0.99,
             sync_ratio_depth: 16.0,
             filter_cutoff_depth_octaves: -12.0,
+            target_lfo: Some(0),
+            lfo_rate_depth: 4.0,
             ..AuxEnvelope::default()
         };
         let second_valid = AuxEnvelope {
@@ -765,6 +779,8 @@ mod tests {
             pulse_width_depth: -0.5,
             sync_ratio_depth: -16.0,
             filter_cutoff_depth_octaves: 4.0,
+            target_lfo: Some(0),
+            lfo_rate_depth: -4.0,
             ..AuxEnvelope::default()
         };
         let invalid = [
@@ -818,12 +834,34 @@ mod tests {
                 filter_cutoff_depth_octaves: -12.01,
                 ..valid.clone()
             },
+            AuxEnvelope {
+                lfo_rate_depth: 4.01,
+                ..valid.clone()
+            },
+            AuxEnvelope {
+                lfo_rate_depth: -4.01,
+                ..valid.clone()
+            },
+            AuxEnvelope {
+                lfo_rate_depth: f32::NAN,
+                ..valid.clone()
+            },
+            AuxEnvelope {
+                target_lfo: None,
+                lfo_rate_depth: 1.0,
+                ..valid.clone()
+            },
+            AuxEnvelope {
+                target_lfo: Some(1),
+                ..valid.clone()
+            },
         ];
         for invalid_aux in invalid {
             for second in [false, true] {
                 let mut patch = Patch {
                     aux_envelope: Some(valid.clone()),
                     aux_envelope_2: Some(second_valid.clone()),
+                    lfo: Some(Lfo::default()),
                     ..Patch::default()
                 };
                 if second {
@@ -837,6 +875,7 @@ mod tests {
         let patch = Patch {
             aux_envelope: Some(valid),
             aux_envelope_2: Some(second_valid),
+            lfo: Some(Lfo::default()),
             ..Patch::default()
         };
         assert!(patch.validate().is_ok());

@@ -847,9 +847,10 @@ fn show_envelope_controls(ui: &mut Ui, envelope: &mut Envelope) {
 
 fn show_motion(ui: &mut Ui, patch: &mut Patch) {
     ui.heading("Auxiliary envelopes / matrix");
-    show_auxiliary_envelope(ui, 1, &mut patch.aux_envelope);
+    let lfo_count = patch.lfo_count();
+    show_auxiliary_envelope(ui, 1, lfo_count, &mut patch.aux_envelope);
     ui.add_space(6.0);
-    show_auxiliary_envelope(ui, 2, &mut patch.aux_envelope_2);
+    show_auxiliary_envelope(ui, 2, lfo_count, &mut patch.aux_envelope_2);
 
     ui.heading("LFO modulation");
     let mut remove_lfo = None;
@@ -871,7 +872,12 @@ fn show_motion(ui: &mut Ui, patch: &mut Patch) {
     }
 }
 
-fn show_auxiliary_envelope(ui: &mut Ui, index: usize, slot: &mut Option<AuxEnvelope>) {
+fn show_auxiliary_envelope(
+    ui: &mut Ui,
+    index: usize,
+    lfo_count: usize,
+    slot: &mut Option<AuxEnvelope>,
+) {
     ui.heading(format!("Auxiliary envelope {index}"));
     let mut enabled = slot.is_some();
     if ui
@@ -897,6 +903,28 @@ fn show_auxiliary_envelope(ui: &mut Ui, index: usize, slot: &mut Option<AuxEnvel
             egui::Slider::new(&mut aux.filter_cutoff_depth_octaves, -12.0..=12.0)
                 .text("Cutoff depth (octaves)"),
         );
+        ui.add(
+            egui::Slider::new(&mut aux.lfo_rate_depth, -4.0..=4.0)
+                .text("LFO rate depth (relative)"),
+        );
+        if lfo_count == 0 {
+            ui.label("Add an LFO lane to use envelope rate routing");
+        } else {
+            let target = aux.target_lfo.unwrap_or(0).min(lfo_count - 1);
+            let mut displayed_target = target + 1;
+            if ui
+                .add(
+                    DragValue::new(&mut displayed_target)
+                        .range(1..=lfo_count)
+                        .prefix("Target LFO "),
+                )
+                .changed()
+            {
+                aux.target_lfo = Some(displayed_target - 1);
+            } else if aux.target_lfo != Some(target) {
+                aux.target_lfo = Some(target);
+            }
+        }
     }
 }
 

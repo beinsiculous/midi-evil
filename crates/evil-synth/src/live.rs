@@ -235,6 +235,8 @@ impl LiveSynth {
             let modulation = voice.modulation.next(
                 &voice.patch,
                 self.patch.sample_rate,
+                time,
+                voice.gate.unwrap_or(f32::INFINITY),
                 1.0,
                 self.controls.tempo_bpm / 60.0,
             );
@@ -431,7 +433,7 @@ mod tests {
     #[test]
     fn both_auxiliary_matrix_slots_match_offline_at_multiple_pitches() {
         for second in [false, true] {
-            for route in 0..5 {
+            for route in 0..6 {
                 for sign in [-1.0, 1.0] {
                     for pitch in [48, 60, 72] {
                         let mut aux = crate::AuxEnvelope {
@@ -449,6 +451,10 @@ mod tests {
                             2 => aux.filter_cutoff_depth_octaves = sign * 3.0,
                             3 => aux.pulse_width_depth = sign * 0.4,
                             4 => aux.sync_ratio_depth = sign * 0.8,
+                            5 => {
+                                aux.target_lfo = Some(0);
+                                aux.lfo_rate_depth = sign;
+                            }
                             _ => unreachable!(),
                         }
                         let mut patch = auxiliary_test_patch();
@@ -484,6 +490,8 @@ mod tests {
             pulse_width_depth: -0.2,
             sync_ratio_depth: -0.5,
             filter_cutoff_depth_octaves: -1.5,
+            target_lfo: Some(0),
+            lfo_rate_depth: -0.75,
         };
         let second = crate::AuxEnvelope {
             envelope: crate::Envelope {
@@ -497,6 +505,8 @@ mod tests {
             pulse_width_depth: 0.35,
             sync_ratio_depth: 0.8,
             filter_cutoff_depth_octaves: 2.0,
+            target_lfo: Some(1),
+            lfo_rate_depth: 1.25,
         };
         for mode in [VoiceMode::Poly, VoiceMode::Mono, VoiceMode::Legato] {
             for pitch in [48, 60, 72] {

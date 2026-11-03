@@ -17,6 +17,10 @@ pub struct AuxEnvelope {
     pub sync_ratio_depth: f32,
     /// Filter cutoff modulation in octaves.
     pub filter_cutoff_depth_octaves: f32,
+    /// Zero-based index of the LFO lane whose rate is modulated.
+    pub target_lfo: Option<usize>,
+    /// Fractional rate modulation applied to `target_lfo`.
+    pub lfo_rate_depth: f32,
 }
 
 impl Default for AuxEnvelope {
@@ -28,6 +32,8 @@ impl Default for AuxEnvelope {
             pulse_width_depth: 0.0,
             sync_ratio_depth: 0.0,
             filter_cutoff_depth_octaves: 0.0,
+            target_lfo: None,
+            lfo_rate_depth: 0.0,
         }
     }
 }
