@@ -2,6 +2,18 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum OscillatorMode {
+    /// Add Osc A, Osc B, and any auxiliary oscillators.
+    #[default]
+    Mix,
+    /// Keep Osc A as the master and reset Osc B/slaves at its cycle boundary.
+    Sync,
+    /// Multiply Osc A by Osc B; auxiliary oscillators remain additive.
+    Ring,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Waveform {
     #[default]
     Sine,

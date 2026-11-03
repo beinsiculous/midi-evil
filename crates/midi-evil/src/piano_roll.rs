@@ -9,11 +9,20 @@ const RULER_HEIGHT: f32 = 26.0;
 const MAX_PITCH: u8 = 127;
 const DEFAULT_NOTE_VELOCITY: u8 = 100;
 
+#[derive(Debug, Clone, Copy)]
+pub struct PartDragState {
+    pub track: usize,
+    pub part: usize,
+    pub start_tick: u64,
+    pub press_x: f32,
+}
+
 #[derive(Debug)]
 pub struct RollState {
     pub selected_track: usize,
     pub selected_part: Option<usize>,
     pub selected_note: Option<usize>,
+    pub part_drag: Option<PartDragState>,
     clipboard: Vec<Note>,
     dragging_note: Option<usize>,
     resizing_note: Option<usize>,
@@ -27,6 +36,7 @@ impl Default for RollState {
             selected_track: 0,
             selected_part: None,
             selected_note: None,
+            part_drag: None,
             clipboard: Vec::new(),
             dragging_note: None,
             resizing_note: None,

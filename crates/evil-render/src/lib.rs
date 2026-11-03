@@ -76,7 +76,7 @@ pub fn render_audition(patch: &Patch) -> Result<RenderOutput, Error> {
             gain: 1.0,
             pan: 0.0,
             delay: patch.delay.as_ref(),
-            dc_block: patch.sync.is_some(),
+            dc_block: patch.uses_sync(),
         }],
         1.0,
     )?;
@@ -215,7 +215,7 @@ pub fn render_project(project: &Project, patch_base: &Path) -> Result<RenderOutp
                     settings.gain,
                     settings.pan,
                     patch.delay.clone(),
-                    patch.sync.is_some(),
+                    patch.uses_sync(),
                 ));
             }
             InstrumentSource::DrumKit { kit, base_note } => {

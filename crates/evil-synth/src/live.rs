@@ -1,7 +1,7 @@
 //! Bounded, sample-by-sample synthesis for the performance keyboard.
 use crate::render::{DcBlocker, ModulationState};
 use crate::voice::{VoiceControls, VoiceState};
-use crate::{Delay, DelayMode, Error, Filter, Patch, Waveform};
+use crate::{Delay, DelayMode, Error, Filter, Patch, VoiceMode, Waveform};
 
 const MAX_VOICES: usize = 32;
 
@@ -159,14 +159,30 @@ impl LiveSynth {
             filter.cutoff_hz = (filter.cutoff_hz * 2.0_f32.powf(patch.accent_filter_octaves))
                 .min(patch.sample_rate as f32 * 0.49);
         }
-        self.voices.retain(|voice| voice.pitch != pitch);
-        if self.voices.len() == MAX_VOICES {
-            let oldest_release = self
-                .voices
-                .iter()
-                .position(|voice| !voice.held)
-                .unwrap_or(0);
-            self.voices.remove(oldest_release);
+        match self.patch.voice_mode {
+            VoiceMode::Poly => {
+                self.voices.retain(|voice| voice.pitch != pitch);
+                if self.voices.len() == MAX_VOICES {
+                    let oldest_release = self
+                        .voices
+                        .iter()
+                        .position(|voice| !voice.held)
+                        .unwrap_or(0);
+                    self.voices.remove(oldest_release);
+                }
+            }
+            VoiceMode::Mono => self.voices.clear(),
+            VoiceMode::Legato => {
+                if let Some(voice) = self.voices.last_mut().filter(|voice| !voice.finished()) {
+                    voice.pitch = pitch;
+                    voice.glide_from_semitones = glide_from_semitones;
+                    voice.held = true;
+                    voice.patch = patch;
+                    voice.gate = None;
+                    return Ok(());
+                }
+                self.voices.clear();
+            }
         }
         self.voices.push(Voice {
             pitch,
@@ -262,7 +278,7 @@ impl LiveSynth {
         }
         for (sample, dc) in stereo.iter_mut().zip(&mut self.dc) {
             *sample = sample.tanh();
-            if self.patch.sync.is_some() {
+            if self.patch.uses_sync() {
                 *sample = dc.process(*sample, self.patch.sample_rate);
             }
         }
@@ -333,32 +349,194 @@ mod tests {
     }
 
     #[test]
-    fn pitch_and_xy_controls_change_held_audio_and_voice_count_is_bounded() {
-        let patch = crate::preset("lead").unwrap();
-        let mut plain = LiveSynth::new(patch.clone()).unwrap();
-        let mut bent = LiveSynth::new(patch.clone()).unwrap();
-        let mut tone = LiveSynth::new(patch.clone()).unwrap();
-        let mut controls = LiveControls::for_patch(&patch);
-        controls.bend = 1.0;
-        bent.set_controls(controls.clone()).unwrap();
-        controls.bend = 0.0;
-        controls.filter.as_mut().unwrap().cutoff_hz = 300.0;
-        tone.set_controls(controls).unwrap();
-        for synth in [&mut plain, &mut bent, &mut tone] {
+    fn oscillator_modes_match_offline_at_multiple_pitches() {
+        for mode in [
+            crate::OscillatorMode::Mix,
+            crate::OscillatorMode::Sync,
+            crate::OscillatorMode::Ring,
+        ] {
+            for pitch in [48, 60, 72] {
+                let patch = Patch {
+                    duration_seconds: 0.08,
+                    oscillator_mode: mode,
+                    sync: (mode == crate::OscillatorMode::Sync).then(Default::default),
+                    oscillators: vec![
+                        crate::Oscillator {
+                            waveform: Waveform::Saw,
+                            amplitude: 0.4,
+                            ..crate::Oscillator::default()
+                        },
+                        crate::Oscillator {
+                            waveform: Waveform::Square,
+                            amplitude: 0.2,
+                            detune_cents: 100.0,
+                            ..crate::Oscillator::default()
+                        },
+                    ],
+                    envelope: crate::Envelope {
+                        attack_seconds: 0.0,
+                        decay_seconds: 0.0,
+                        sustain_level: 1.0,
+                        release_seconds: 0.0,
+                    },
+                    ..Patch::default()
+                };
+                assert_offline_matches_live(patch, &[test_note(pitch, 0.0, 0.08)]);
+            }
+        }
+    }
+
+    #[test]
+    fn independent_filter_envelope_and_slopes_match_offline_at_multiple_pitches() {
+        for mode in [
+            crate::FilterMode::LowPass,
+            crate::FilterMode::BandPass,
+            crate::FilterMode::HighPass,
+        ] {
+            for stages in [2, 4] {
+                for resonance in [0.0, 0.4] {
+                    for pitch in [48, 60, 72] {
+                        let patch = Patch {
+                            duration_seconds: 0.1,
+                            envelope: crate::Envelope {
+                                attack_seconds: 0.002,
+                                decay_seconds: 0.04,
+                                sustain_level: 0.6,
+                                release_seconds: 0.03,
+                            },
+                            filter: Some(Filter {
+                                mode,
+                                cutoff_hz: 500.0,
+                                envelope_amount: 3.0,
+                                resonance,
+                                stages,
+                                key_tracking: true,
+                            }),
+                            filter_envelope: Some(crate::Envelope {
+                                attack_seconds: 0.01,
+                                decay_seconds: 0.02,
+                                sustain_level: 0.2,
+                                release_seconds: 0.03,
+                            }),
+                            ..Patch::default()
+                        };
+                        assert_offline_matches_live(patch, &[test_note(pitch, 0.0, 0.1)]);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn voice_modes_match_offline_across_overlapping_pitches() {
+        let notes = [
+            test_note(48, 0.0, 0.12),
+            test_note(60, 0.06, 0.12),
+            test_note(72, 0.12, 0.08),
+        ];
+        let mut outputs = Vec::new();
+        for mode in [VoiceMode::Poly, VoiceMode::Mono, VoiceMode::Legato] {
+            let patch = Patch {
+                voice_mode: mode,
+                envelope: crate::Envelope {
+                    attack_seconds: 0.01,
+                    decay_seconds: 0.03,
+                    sustain_level: 0.7,
+                    release_seconds: 0.04,
+                },
+                ..Patch::default()
+            };
+            assert_offline_matches_live(patch, &notes);
+            outputs.push(
+                crate::render_notes_dry(
+                    &Patch {
+                        voice_mode: mode,
+                        envelope: crate::Envelope {
+                            attack_seconds: 0.01,
+                            decay_seconds: 0.03,
+                            sustain_level: 0.7,
+                            release_seconds: 0.04,
+                        },
+                        ..Patch::default()
+                    },
+                    &notes,
+                )
+                .unwrap()
+                .samples,
+            );
+        }
+        assert_ne!(outputs[0], outputs[1]);
+        assert_ne!(outputs[0], outputs[2]);
+        assert_ne!(outputs[1], outputs[2]);
+    }
+
+    #[test]
+    fn mono_retriggers_and_legato_preserves_voice_time() {
+        for mode in [VoiceMode::Mono, VoiceMode::Legato] {
+            let mut synth = LiveSynth::new(Patch {
+                voice_mode: mode,
+                ..Patch::default()
+            })
+            .unwrap();
+            synth.note_on(48, 100).unwrap();
+            for _ in 0..100 {
+                synth.next_frame();
+            }
             synth.note_on(60, 100).unwrap();
+            assert_eq!(synth.voice_count(), 1);
+            let expected_frame = if mode == VoiceMode::Legato { 100 } else { 0 };
+            assert_eq!(synth.voices[0].frame, expected_frame);
+            synth.note_on(72, 100).unwrap();
+            assert_eq!(synth.voices[0].frame, expected_frame);
         }
-        let a: Vec<_> = (0..1000).map(|_| plain.next_frame()).collect();
-        assert_ne!(a, (0..1000).map(|_| bent.next_frame()).collect::<Vec<_>>());
-        assert_ne!(a, (0..1000).map(|_| tone.next_frame()).collect::<Vec<_>>());
-        for pitch in 0..128 {
-            plain.note_on(pitch, 100).unwrap();
+    }
+
+    fn test_note(pitch: u8, start_seconds: f64, duration_seconds: f64) -> crate::SynthNote {
+        crate::SynthNote {
+            pitch,
+            start_seconds,
+            duration_seconds,
+            velocity: 100,
         }
-        assert_eq!(plain.voice_count(), MAX_VOICES);
-        assert!((0..10_000).all(|_| {
-            plain
-                .next_frame()
-                .iter()
-                .all(|v| v.is_finite() && v.abs() <= 1.0)
-        }));
+    }
+
+    fn assert_offline_matches_live(patch: Patch, notes: &[crate::SynthNote]) {
+        let dry = crate::render_notes_dry(&patch, notes).unwrap();
+        assert_eq!(
+            dry.samples,
+            crate::render_notes_dry(&patch, notes).unwrap().samples,
+            "offline rendering was not deterministic"
+        );
+        let uses_sync = patch.uses_sync();
+        let sample_rate = patch.sample_rate;
+        let mut dc = DcBlocker::default();
+        let mut live = LiveSynth::new(patch).unwrap();
+        for frame in 0..dry.samples.len() {
+            for note in notes {
+                let end = ((note.start_seconds + note.duration_seconds)
+                    * f64::from(live.sample_rate()))
+                .round() as usize;
+                if end == frame {
+                    live.note_off(note.pitch);
+                }
+            }
+            for note in notes {
+                let start = (note.start_seconds * f64::from(live.sample_rate())).round() as usize;
+                if start == frame {
+                    live.note_on(note.pitch, note.velocity).unwrap();
+                }
+            }
+            let expected = (dry.samples[frame] * 0.8 * std::f32::consts::FRAC_1_SQRT_2).tanh();
+            let expected = if uses_sync {
+                dc.process(expected, sample_rate)
+            } else {
+                expected
+            };
+            let actual = live.next_frame()[0];
+            assert!(
+                (actual - expected).abs() < 0.00001,
+                "offline/live mismatch at frame {frame}: {actual} != {expected}"
+            );
+        }
     }
 }

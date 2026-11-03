@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::delay::apply_delay;
 use crate::voice::{VoiceControls, VoiceState};
-use crate::{Error, Lfo, LfoDestination, LfoWaveform, Patch, Waveform};
+use crate::{Error, Lfo, LfoDestination, LfoWaveform, Patch, VoiceMode, Waveform};
 
 const MAX_PERFORMANCE_SECONDS: f64 = 3_600.0;
 
@@ -75,7 +75,7 @@ pub fn render(patch: &Patch) -> Result<RenderedSound, Error> {
     );
     apply_delay(patch, &mut samples);
     soft_limit(&mut samples);
-    if patch.sync.is_some() {
+    if patch.uses_sync() {
         block_dc(&mut samples, patch.sample_rate);
     }
     Ok(RenderedSound {
@@ -207,6 +207,30 @@ fn render_notes_inner(
     validate_aftertouch(aftertouch)?;
     validate_controllers(controllers)?;
     validate_tempo_changes(tempo_changes)?;
+    if patch.voice_mode != VoiceMode::Poly {
+        for (index, note) in notes.iter().enumerate() {
+            validate_note(note, index)?;
+        }
+        let mut samples = render_single_voice(
+            patch,
+            notes,
+            pitch_bends,
+            aftertouch,
+            controllers,
+            tempo_changes,
+        )?;
+        if apply_insert_effects {
+            apply_delay(patch, &mut samples);
+        }
+        soft_limit(&mut samples);
+        if apply_insert_effects && patch.uses_sync() {
+            block_dc(&mut samples, patch.sample_rate);
+        }
+        return Ok(RenderedSound {
+            samples,
+            sample_rate: patch.sample_rate,
+        });
+    }
     let sample_rate = patch.sample_rate;
     let cacheable = patch.glide_seconds == 0.0
         && pitch_bends.is_empty()
@@ -222,40 +246,7 @@ fn render_notes_inner(
     for (index, note) in notes.iter().enumerate() {
         validate_note(note, index)?;
 
-        let mut voice = patch.clone();
-        voice.duration_seconds = note.duration_seconds as f32;
-        voice.gain *= f32::from(note.velocity) / 127.0;
-        let pitch_gain =
-            2.0_f32.powf((60.0 - f32::from(note.pitch)) / 12.0 * patch.pitch_gain_per_octave);
-        voice.gain = (voice.gain * pitch_gain).min(1.0);
-        voice.seed ^= (index as u32).wrapping_mul(0x9e37_79b9);
-        let pitch_ratio = 2.0_f32.powf((f32::from(note.pitch) - 69.0) / 12.0);
-        let filter_pitch_ratio = 2.0_f32.powf((f32::from(note.pitch) - 60.0) / 12.0);
-        if patch.pitch_tracking {
-            for oscillator in &mut voice.oscillators {
-                if !matches!(oscillator.waveform, Waveform::Noise) {
-                    oscillator.start_frequency_hz *= pitch_ratio;
-                    oscillator.end_frequency_hz *= pitch_ratio;
-                }
-            }
-        }
-        if let Some(filter) = &mut voice.filter
-            && filter.key_tracking
-        {
-            filter.cutoff_hz =
-                (filter.cutoff_hz * filter_pitch_ratio).min(sample_rate as f32 * 0.49);
-        }
-        if patch.accent_velocity_threshold > 0 && note.velocity >= patch.accent_velocity_threshold {
-            voice.gain = (voice.gain * (1.0 + patch.accent_gain)).min(1.0);
-            if let Some(filter) = &mut voice.filter {
-                filter.cutoff_hz = (filter.cutoff_hz * 2.0_f32.powf(patch.accent_filter_octaves))
-                    .min(sample_rate as f32 * 0.49);
-            }
-        }
-        voice.validate().map_err(|error| Error::InvalidNote {
-            index,
-            message: error.to_string(),
-        })?;
+        let voice = voice_patch(patch, note, index)?;
         let end_seconds = note.start_seconds + note.duration_seconds;
         let required_frames = ((end_seconds + f64::from(patch.envelope.release_seconds))
             * f64::from(sample_rate))
@@ -316,13 +307,206 @@ fn render_notes_inner(
         apply_delay(patch, &mut samples);
     }
     soft_limit(&mut samples);
-    if patch.sync.is_some() {
+    if apply_insert_effects && patch.uses_sync() {
         block_dc(&mut samples, sample_rate);
     }
     Ok(RenderedSound {
         samples,
         sample_rate,
     })
+}
+
+fn voice_patch(patch: &Patch, note: &SynthNote, index: usize) -> Result<Patch, Error> {
+    let sample_rate = patch.sample_rate;
+    let mut voice = patch.clone();
+    voice.duration_seconds = note.duration_seconds as f32;
+    voice.gain *= f32::from(note.velocity) / 127.0;
+    let pitch_gain =
+        2.0_f32.powf((60.0 - f32::from(note.pitch)) / 12.0 * patch.pitch_gain_per_octave);
+    voice.gain = (voice.gain * pitch_gain).min(1.0);
+    voice.seed ^= (index as u32).wrapping_mul(0x9e37_79b9);
+    let pitch_ratio = 2.0_f32.powf((f32::from(note.pitch) - 69.0) / 12.0);
+    let filter_pitch_ratio = 2.0_f32.powf((f32::from(note.pitch) - 60.0) / 12.0);
+    if patch.pitch_tracking {
+        for oscillator in &mut voice.oscillators {
+            if !matches!(oscillator.waveform, Waveform::Noise) {
+                oscillator.start_frequency_hz *= pitch_ratio;
+                oscillator.end_frequency_hz *= pitch_ratio;
+            }
+        }
+    }
+    if let Some(filter) = &mut voice.filter
+        && filter.key_tracking
+    {
+        filter.cutoff_hz = (filter.cutoff_hz * filter_pitch_ratio).min(sample_rate as f32 * 0.49);
+    }
+    if patch.accent_velocity_threshold > 0 && note.velocity >= patch.accent_velocity_threshold {
+        voice.gain = (voice.gain * (1.0 + patch.accent_gain)).min(1.0);
+        if let Some(filter) = &mut voice.filter {
+            filter.cutoff_hz = (filter.cutoff_hz * 2.0_f32.powf(patch.accent_filter_octaves))
+                .min(sample_rate as f32 * 0.49);
+        }
+    }
+    voice.validate().map_err(|error| Error::InvalidNote {
+        index,
+        message: error.to_string(),
+    })?;
+    Ok(voice)
+}
+
+#[derive(Clone, Copy)]
+enum SingleVoiceEvent {
+    Start(usize),
+    End(usize),
+}
+
+struct SingleVoice {
+    pitch: u8,
+    note_start_seconds: f64,
+    glide_from_semitones: f32,
+    patch: Patch,
+    state: VoiceState,
+    modulation: ModulationState,
+    frame: u64,
+    gate: Option<f32>,
+}
+
+impl SingleVoice {
+    fn new(patch: Patch, note: &SynthNote, glide_from_semitones: f32) -> Self {
+        Self {
+            pitch: note.pitch,
+            note_start_seconds: note.start_seconds,
+            glide_from_semitones,
+            state: VoiceState::new(&patch),
+            modulation: ModulationState::new(&patch),
+            patch,
+            frame: 0,
+            gate: None,
+        }
+    }
+
+    fn time(&self) -> f32 {
+        self.frame as f32 / self.patch.sample_rate as f32
+    }
+
+    fn finished(&self) -> bool {
+        self.gate
+            .is_some_and(|gate| self.time() >= gate + self.patch.envelope.release_seconds)
+    }
+}
+
+fn render_single_voice(
+    patch: &Patch,
+    notes: &[SynthNote],
+    pitch_bends: &[SynthPitchBend],
+    aftertouch: &[SynthAftertouch],
+    controllers: &[SynthController],
+    tempo_changes: &[SynthTempoChange],
+) -> Result<Vec<f32>, Error> {
+    let sample_rate = patch.sample_rate;
+    let mut events = BTreeMap::<usize, Vec<SingleVoiceEvent>>::new();
+    let mut frame_count = 0;
+    for (index, note) in notes.iter().enumerate() {
+        let start = (note.start_seconds * f64::from(sample_rate)).round() as usize;
+        let end = ((note.start_seconds + note.duration_seconds) * f64::from(sample_rate)).round()
+            as usize;
+        events
+            .entry(start)
+            .or_default()
+            .push(SingleVoiceEvent::Start(index));
+        events
+            .entry(end)
+            .or_default()
+            .push(SingleVoiceEvent::End(index));
+        let required_frames = ((note.start_seconds
+            + note.duration_seconds
+            + f64::from(patch.envelope.release_seconds))
+            * f64::from(sample_rate))
+        .round() as usize;
+        let voice_end = start
+            + ((note.duration_seconds + f64::from(patch.envelope.release_seconds))
+                * f64::from(sample_rate))
+            .round() as usize;
+        frame_count = frame_count.max(required_frames).max(voice_end);
+    }
+    let first_frame = events.keys().next().copied().unwrap_or(0);
+    let mut samples = vec![0.0; frame_count];
+    let mut voice = None::<SingleVoice>;
+    for (frame, output) in samples.iter_mut().enumerate().skip(first_frame) {
+        if voice.as_ref().is_some_and(SingleVoice::finished) {
+            voice = None;
+        }
+        if let Some(frame_events) = events.remove(&frame) {
+            for start in [false, true] {
+                for event in &frame_events {
+                    let index = match (start, event) {
+                        (true, SingleVoiceEvent::Start(index))
+                        | (false, SingleVoiceEvent::End(index)) => *index,
+                        _ => continue,
+                    };
+                    let note = &notes[index];
+                    if !start {
+                        if voice
+                            .as_ref()
+                            .is_some_and(|voice| voice.pitch == note.pitch)
+                        {
+                            let time = voice.as_ref().expect("voice checked above").time();
+                            voice.as_mut().expect("voice checked above").gate = Some(time);
+                        }
+                        continue;
+                    }
+                    let glide_from_semitones = voice
+                        .as_ref()
+                        .map_or(0.0, |voice| f32::from(voice.pitch) - f32::from(note.pitch));
+                    let next_patch = voice_patch(patch, note, 0)?;
+                    match patch.voice_mode {
+                        VoiceMode::Mono => {
+                            voice = Some(SingleVoice::new(next_patch, note, glide_from_semitones));
+                        }
+                        VoiceMode::Legato => {
+                            if let Some(current) = &mut voice {
+                                current.pitch = note.pitch;
+                                current.glide_from_semitones = glide_from_semitones;
+                                current.patch = next_patch;
+                                current.gate = None;
+                            } else {
+                                voice =
+                                    Some(SingleVoice::new(next_patch, note, glide_from_semitones));
+                            }
+                        }
+                        VoiceMode::Poly => unreachable!("polyphonic rendering uses note voices"),
+                    }
+                }
+            }
+        }
+        if let Some(current) = &mut voice {
+            let time = current.time();
+            let absolute_time = current.note_start_seconds + f64::from(time);
+            let modulation = current.modulation.next(
+                &current.patch,
+                sample_rate,
+                modulation_depth(controllers, absolute_time),
+                tempo_bpm_at(tempo_changes, absolute_time) / 60.0,
+            );
+            let controls = VoiceControls {
+                modulation,
+                bend_semitones: f32::from(pitch_bend_at(pitch_bends, absolute_time))
+                    * current.patch.pitch_bend_range_semitones
+                    / 8192.0,
+                glide_from_semitones: current.glide_from_semitones,
+                pressure: aftertouch_gain(aftertouch, current.pitch, absolute_time),
+                expression: expression_gain(controllers, absolute_time),
+            };
+            *output = current.state.sample(
+                &current.patch,
+                time,
+                current.gate.unwrap_or(f32::INFINITY),
+                controls,
+            );
+            current.frame += 1;
+        }
+    }
+    Ok(samples)
 }
 
 fn validate_pitch_bends(pitch_bends: &[SynthPitchBend]) -> Result<(), Error> {
@@ -630,8 +814,8 @@ fn soft_limit(samples: &mut [f32]) {
 mod tests {
     use super::*;
     use crate::{
-        Filter, Lfo, LfoDestination, LfoWaveform, ModalPartial, Oscillator, OscillatorSync,
-        PRESET_NAMES, Unison, Waveform, preset,
+        Envelope, Filter, Lfo, LfoDestination, LfoWaveform, ModalPartial, Oscillator,
+        OscillatorSync, PRESET_NAMES, Unison, Waveform, preset,
     };
 
     #[test]
@@ -931,6 +1115,57 @@ mod tests {
         assert_ne!(
             render(&plain).unwrap().samples,
             render(&modulated).unwrap().samples
+        );
+    }
+
+    #[test]
+    fn independent_filter_envelope_preserves_legacy_routing() {
+        let base = Patch {
+            duration_seconds: 0.12,
+            envelope: Envelope {
+                attack_seconds: 0.0,
+                decay_seconds: 0.0,
+                sustain_level: 1.0,
+                release_seconds: 0.02,
+            },
+            filter: Some(Filter {
+                cutoff_hz: 400.0,
+                envelope_amount: 4.0,
+                resonance: 0.3,
+                stages: 2,
+                ..Filter::default()
+            }),
+            ..Patch::default()
+        };
+        let legacy = render(&base).unwrap().samples;
+        let explicit_amp_route = Patch {
+            filter_envelope: Some(base.envelope.clone()),
+            ..base.clone()
+        };
+        assert_eq!(legacy, render(&explicit_amp_route).unwrap().samples);
+
+        let independent = Patch {
+            filter_envelope: Some(Envelope {
+                attack_seconds: 0.04,
+                decay_seconds: 0.04,
+                sustain_level: 0.1,
+                release_seconds: 0.02,
+            }),
+            ..base.clone()
+        };
+        assert_ne!(legacy, render(&independent).unwrap().samples);
+
+        let mut unmodulated_base = base;
+        unmodulated_base.filter.as_mut().unwrap().envelope_amount = 0.0;
+        let mut unmodulated_independent = independent;
+        unmodulated_independent
+            .filter
+            .as_mut()
+            .unwrap()
+            .envelope_amount = 0.0;
+        assert_eq!(
+            render(&unmodulated_base).unwrap().samples,
+            render(&unmodulated_independent).unwrap().samples
         );
     }
 

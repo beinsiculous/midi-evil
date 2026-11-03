@@ -82,6 +82,15 @@ enum PatchLabAction {
     Audition,
 }
 
+fn portable_file_reference(path: &Path, base: &Path) -> String {
+    let absolute_base = std::path::absolute(base).unwrap_or_else(|_| base.to_path_buf());
+    path.strip_prefix(&absolute_base)
+        .or_else(|_| path.strip_prefix(base))
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned()
+}
+
 impl StudioApp {
     pub fn new(
         context: &eframe::CreationContext<'_>,
@@ -474,11 +483,7 @@ impl StudioApp {
             return;
         }
         let patch_base = self.patch_base();
-        let reference = output
-            .strip_prefix(patch_base)
-            .unwrap_or(&output)
-            .to_string_lossy()
-            .into_owned();
+        let reference = portable_file_reference(&output, patch_base);
         let instrument = match self.project.instrument_for_track_mut(lab.track_index) {
             Ok(instrument) => instrument,
             Err(error) => {
@@ -975,11 +980,7 @@ impl StudioApp {
         let Some((track_index, path)) = self.beats.take_saved_bank() else {
             return;
         };
-        let reference = path
-            .strip_prefix(self.patch_base())
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .into_owned();
+        let reference = portable_file_reference(&path, self.patch_base());
         let result = self
             .project
             .instrument_for_track_mut(track_index)
@@ -1221,5 +1222,19 @@ impl eframe::App for StudioApp {
             self.dirty = true;
         }
         self.restoring_history = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn portable_references_work_with_relative_project_paths() {
+        let base = Path::new("target/portable-reference");
+        let path = std::path::absolute(base)
+            .unwrap()
+            .join("maxwell-kit.evilkit");
+        assert_eq!(portable_file_reference(&path, base), "maxwell-kit.evilkit");
     }
 }

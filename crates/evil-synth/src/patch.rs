@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Delay, Envelope, Error, Filter, Lfo, LfoDestination, ModalPartial, Oscillator, OscillatorSync,
-    Unison,
+    Delay, Envelope, Error, Filter, Lfo, LfoDestination, ModalPartial, Oscillator, OscillatorMode,
+    OscillatorSync, Unison, VoiceMode,
 };
 
 const MAX_DURATION_SECONDS: f32 = 60.0;
@@ -30,12 +30,17 @@ pub struct Patch {
     pub accent_gain: f32,
     pub seed: u32,
     pub oscillators: Vec<Oscillator>,
+    pub oscillator_mode: OscillatorMode,
     /// Independently decaying inharmonic partials for modal instruments.
     pub modal_partials: Vec<ModalPartial>,
+    /// Sync ratio and compatibility with patches that enabled sync with this field alone.
     pub sync: Option<OscillatorSync>,
+    pub voice_mode: VoiceMode,
     pub unison: Option<Unison>,
     pub envelope: Envelope,
     pub filter: Option<Filter>,
+    /// Independent filter ADSR; `None` routes the amplitude envelope to the filter.
+    pub filter_envelope: Option<Envelope>,
     /// Primary LFO, retained for compatibility with the original patch format.
     pub lfo: Option<Lfo>,
     pub modulation: Vec<Lfo>,
@@ -59,11 +64,14 @@ impl Default for Patch {
             accent_gain: 0.0,
             seed: 0x5255_5354,
             oscillators: vec![Oscillator::default()],
+            oscillator_mode: OscillatorMode::Mix,
             modal_partials: Vec::new(),
             sync: None,
+            voice_mode: VoiceMode::Poly,
             unison: None,
             envelope: Envelope::default(),
             filter: None,
+            filter_envelope: None,
             lfo: None,
             modulation: Vec::new(),
             delay: None,
@@ -81,6 +89,23 @@ impl Patch {
     pub fn to_json_pretty(&self) -> Result<String, Error> {
         self.validate()?;
         Ok(serde_json::to_string_pretty(self)?)
+    }
+
+    /// Resolve the original `sync: {...}` JSON representation as sync mode.
+    pub fn effective_oscillator_mode(&self) -> OscillatorMode {
+        if self.oscillator_mode == OscillatorMode::Mix && self.sync.is_some() {
+            OscillatorMode::Sync
+        } else {
+            self.oscillator_mode
+        }
+    }
+
+    pub fn uses_sync(&self) -> bool {
+        self.effective_oscillator_mode() == OscillatorMode::Sync
+    }
+
+    pub(crate) fn sync_ratio(&self) -> f32 {
+        self.sync.as_ref().map_or(1.5, |sync| sync.ratio)
     }
 
     pub fn lfos(&self) -> impl Iterator<Item = &Lfo> {
@@ -170,6 +195,9 @@ impl Patch {
         if self.oscillators.is_empty() || self.oscillators.len() > 8 {
             return Err(invalid("a patch needs between 1 and 8 oscillators"));
         }
+        if self.oscillator_mode == OscillatorMode::Ring && self.oscillators.len() < 2 {
+            return Err(invalid("ring mode needs Osc A and Osc B"));
+        }
 
         let nyquist = self.sample_rate as f32 / 2.0;
         for oscillator in &self.oscillators {
@@ -208,22 +236,17 @@ impl Patch {
             unison.validate()?;
         }
 
-        for duration in [
-            self.envelope.attack_seconds,
-            self.envelope.decay_seconds,
-            self.envelope.release_seconds,
-        ] {
-            if !duration.is_finite() || !(0.0..=MAX_DURATION_SECONDS).contains(&duration) {
-                return Err(invalid("envelope durations must be between 0 and 60"));
-            }
-        }
-        if !self.envelope.sustain_level.is_finite()
-            || !(0.0..=1.0).contains(&self.envelope.sustain_level)
-        {
-            return Err(invalid("envelope sustain_level must be between 0 and 1"));
-        }
+        validate_envelope(&self.envelope)?;
         if self.duration_seconds + self.envelope.release_seconds > MAX_DURATION_SECONDS {
             return Err(invalid("duration plus release cannot exceed 60 seconds"));
+        }
+        if let Some(envelope) = &self.filter_envelope {
+            validate_envelope(envelope)?;
+            if self.duration_seconds + envelope.release_seconds > MAX_DURATION_SECONDS {
+                return Err(invalid(
+                    "duration plus filter-envelope release cannot exceed 60 seconds",
+                ));
+            }
         }
         if let Some(filter) = &self.filter
             && (!filter.cutoff_hz.is_finite()
@@ -271,6 +294,22 @@ impl Patch {
     }
 }
 
+fn validate_envelope(envelope: &Envelope) -> Result<(), Error> {
+    for duration in [
+        envelope.attack_seconds,
+        envelope.decay_seconds,
+        envelope.release_seconds,
+    ] {
+        if !duration.is_finite() || !(0.0..=MAX_DURATION_SECONDS).contains(&duration) {
+            return Err(invalid("envelope durations must be between 0 and 60"));
+        }
+    }
+    if !envelope.sustain_level.is_finite() || !(0.0..=1.0).contains(&envelope.sustain_level) {
+        return Err(invalid("envelope sustain_level must be between 0 and 1"));
+    }
+    Ok(())
+}
+
 fn invalid(message: &str) -> Error {
     Error::InvalidPatch(message.to_owned())
 }
@@ -285,9 +324,21 @@ mod tests {
         let mut patch = Patch {
             name: "Test tone".to_owned(),
             midi_program: Some(80),
+            oscillator_mode: OscillatorMode::Sync,
             sync: Some(OscillatorSync::default()),
+            voice_mode: VoiceMode::Mono,
             unison: Some(Unison::default()),
-            filter: Some(Filter::default()),
+            filter: Some(Filter {
+                mode: crate::FilterMode::BandPass,
+                stages: 4,
+                ..Filter::default()
+            }),
+            filter_envelope: Some(Envelope {
+                attack_seconds: 0.02,
+                decay_seconds: 0.04,
+                sustain_level: 0.3,
+                release_seconds: 0.08,
+            }),
             delay: Some(Delay::default()),
             lfo: Some(Lfo {
                 rate_hz: 6.0,
@@ -312,6 +363,25 @@ mod tests {
         let patch = Patch::from_json("{}").unwrap();
         assert_eq!(patch.sample_rate, 48_000);
         assert_eq!(patch.oscillators.len(), 1);
+        assert_eq!(patch.filter_envelope, None);
+    }
+
+    #[test]
+    fn legacy_sync_json_and_explicit_modes_remain_compatible() {
+        let legacy = Patch::from_json(r#"{"sync":{"ratio":2.0}}"#).unwrap();
+        assert_eq!(legacy.effective_oscillator_mode(), OscillatorMode::Sync);
+        assert_eq!(legacy.voice_mode, VoiceMode::Poly);
+        assert_eq!(Patch::from_json("{}").unwrap().voice_mode, VoiceMode::Poly);
+
+        let mut ring = Patch {
+            oscillator_mode: OscillatorMode::Ring,
+            ..Patch::default()
+        };
+        assert!(ring.validate().is_err());
+        ring.oscillators.push(Oscillator::default());
+        ring.voice_mode = VoiceMode::Legato;
+        let decoded = Patch::from_json(&ring.to_json_pretty().unwrap()).unwrap();
+        assert_eq!(decoded, ring);
     }
 
     #[test]
@@ -346,6 +416,12 @@ mod tests {
         assert!(patch.validate().is_err());
         let mut patch = Patch::default();
         patch.oscillators[0].start_frequency_hz = f32::NAN;
+        assert!(patch.validate().is_err());
+        patch.oscillators[0].start_frequency_hz = 440.0;
+        patch.filter_envelope = Some(Envelope {
+            attack_seconds: f32::NAN,
+            ..Envelope::default()
+        });
         assert!(patch.validate().is_err());
     }
 }

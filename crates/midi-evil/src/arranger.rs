@@ -2,7 +2,7 @@ use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Stroke, vec2};
 use evil_project::{Part, Pattern, Project};
 
 use crate::{
-    piano_roll::{self, RollState},
+    piano_roll::{self, PartDragState, RollState},
     theme,
     transport::Transport,
 };
@@ -263,12 +263,37 @@ pub fn show(
                         "{} · {} ticks · drag to move; use the inspector to crop",
                         pattern.name, part.length_ticks
                     ));
-                    if allow_structural_edits && part_response.drag_stopped() {
-                        let delta = part_response.drag_delta().x / pixels_per_tick;
-                        if delta.abs() >= 1.0 {
-                            let start =
-                                (part.start_tick as f32 + delta).max(0.0) as u64 / bar * bar;
-                            if let Err(error) = project.move_part(track_index, part_index, start) {
+                    if allow_structural_edits
+                        && part_response.drag_started()
+                        && let Some(origin) = ui.input(|input| input.pointer.press_origin())
+                    {
+                        roll.part_drag = Some(PartDragState {
+                            track: track_index,
+                            part: part_index,
+                            start_tick: part.start_tick,
+                            press_x: origin.x,
+                        });
+                    }
+                    if part_response.drag_stopped() {
+                        let drag = roll
+                            .part_drag
+                            .take()
+                            .filter(|drag| drag.track == track_index && drag.part == part_index);
+                        if allow_structural_edits
+                            && let Some(drag) = drag
+                            && let Some(position) = ui.input(|input| input.pointer.interact_pos())
+                        {
+                            let start = dragged_part_start(
+                                drag.start_tick,
+                                bar,
+                                pixels_per_tick,
+                                drag.press_x,
+                                position.x,
+                            );
+                            if start != part.start_tick
+                                && let Err(error) =
+                                    project.move_part(track_index, part_index, start)
+                            {
                                 result.status = Some(error.to_string());
                             }
                         }
@@ -426,6 +451,21 @@ fn part_inspector(
         });
 }
 
+fn dragged_part_start(
+    start_tick: u64,
+    bar_ticks: u64,
+    pixels_per_tick: f32,
+    press_x: f32,
+    drop_x: f32,
+) -> u64 {
+    let delta = (drop_x - press_x) / pixels_per_tick;
+    if delta.abs() < 1.0 {
+        start_tick
+    } else {
+        (start_tick as f32 + delta).max(0.0) as u64 / bar_ticks * bar_ticks
+    }
+}
+
 fn draw_playhead(
     painter: &egui::Painter,
     rect: Rect,
@@ -480,5 +520,17 @@ fn draw_pattern_notes(
                 color,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn part_drop_uses_the_full_press_to_release_distance() {
+        assert_eq!(dragged_part_start(1_920, 1_920, 0.1, 600.0, 984.0), 5_760);
+        assert_eq!(dragged_part_start(1_920, 1_920, 0.1, 600.0, 408.0), 0);
+        assert_eq!(dragged_part_start(1_920, 1_920, 0.1, 600.0, 600.05), 1_920);
     }
 }

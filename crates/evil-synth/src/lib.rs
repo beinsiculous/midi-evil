@@ -22,7 +22,7 @@ pub use filter::{Filter, FilterMode};
 pub use lfo::{Lfo, LfoDestination, LfoWaveform};
 pub use mix::{MonoTrack, StereoSound, StereoTrack, mix_stereo, mix_stereo_with_tracks};
 pub use modal::ModalPartial;
-pub use oscillator::{Oscillator, Waveform};
+pub use oscillator::{Oscillator, OscillatorMode, Waveform};
 pub use patch::Patch;
 pub use presets::{PRESET_NAMES, preset};
 pub use render::{
@@ -35,6 +35,7 @@ pub use render::{
 pub use sync::OscillatorSync;
 use thiserror::Error;
 pub use unison::Unison;
+pub use voice::VoiceMode;
 
 #[derive(Debug, Error)]
 pub enum Error {

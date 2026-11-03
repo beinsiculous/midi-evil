@@ -1,6 +1,6 @@
 use crate::{
     Delay, DelayMode, Envelope, Error, Filter, FilterMode, Lfo, LfoDestination, LfoWaveform,
-    ModalPartial, Oscillator, OscillatorSync, Patch, Waveform,
+    ModalPartial, Oscillator, OscillatorMode, OscillatorSync, Patch, Waveform,
 };
 
 pub const PRESET_NAMES: &[&str] = &[
@@ -102,6 +102,7 @@ pub fn preset(name: &str) -> Result<Patch, Error> {
                 detune_cents: 15.5,
                 ..Oscillator::default()
             }],
+            oscillator_mode: OscillatorMode::Sync,
             sync: Some(OscillatorSync { ratio: 1.25 }),
             envelope: Envelope {
                 attack_seconds: 0.0,

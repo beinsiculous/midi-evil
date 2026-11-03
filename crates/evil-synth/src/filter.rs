@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub enum FilterMode {
     #[default]
     LowPass,
+    BandPass,
     HighPass,
 }
 
@@ -38,6 +39,7 @@ impl Default for Filter {
 #[derive(Default)]
 pub(crate) struct FilterState {
     one_pole: [f32; 4],
+    band_pass: [[f32; 2]; 4],
     svf: [[f32; 2]; 4],
 }
 
@@ -67,15 +69,30 @@ impl Filter {
         cutoff: f32,
     ) -> f32 {
         let alpha = 1.0 - (-2.0 * std::f32::consts::PI * cutoff / sample_rate as f32).exp();
-        let mut low_pass = input;
+        if self.mode == FilterMode::BandPass {
+            let mut output = input;
+            for [high, low] in state
+                .band_pass
+                .iter_mut()
+                .take(self.stages.div_ceil(2) as usize)
+            {
+                *high += alpha * (output - *high);
+                let high_pass = output - *high;
+                *low += alpha * (high_pass - *low);
+                output = *low;
+            }
+            return output;
+        }
+        let mut output = input;
         for stage in state.one_pole.iter_mut().take(self.stages as usize) {
-            *stage += alpha * (low_pass - *stage);
-            low_pass = *stage;
+            *stage += alpha * (output - *stage);
+            output = match self.mode {
+                FilterMode::LowPass => *stage,
+                FilterMode::HighPass => output - *stage,
+                FilterMode::BandPass => unreachable!("band-pass uses its two-pole state"),
+            };
         }
-        match self.mode {
-            FilterMode::LowPass => low_pass,
-            FilterMode::HighPass => input - low_pass,
-        }
+        output
     }
 
     fn process_resonant(
@@ -106,6 +123,7 @@ impl Filter {
             stage[1] = 2.0 * v2 - stage[1];
             output = match self.mode {
                 FilterMode::LowPass => v2,
+                FilterMode::BandPass => v1,
                 FilterMode::HighPass => stage_input - k * v1 - v2,
             };
         }
@@ -137,5 +155,77 @@ mod tests {
 
         assert_eq!(output_for(3), output_for(4));
         assert_ne!(output_for(2), output_for(4));
+    }
+
+    #[test]
+    fn all_filter_modes_cover_12_and_24_db_slopes() {
+        for mode in [
+            FilterMode::LowPass,
+            FilterMode::BandPass,
+            FilterMode::HighPass,
+        ] {
+            for resonance in [0.0, 0.2] {
+                for (stages, expected) in [(2, 12.0), (4, 24.0)] {
+                    let (slope, expected_slope) = match mode {
+                        FilterMode::LowPass => (
+                            response_db(mode, resonance, stages, 2_000.0)
+                                - response_db(mode, resonance, stages, 4_000.0),
+                            expected,
+                        ),
+                        FilterMode::HighPass => (
+                            response_db(mode, resonance, stages, 500.0)
+                                - response_db(mode, resonance, stages, 250.0),
+                            expected,
+                        ),
+                        FilterMode::BandPass => {
+                            // A 12/24 dB band-pass has 6/12 dB slopes on each side.
+                            let expected_side = expected / 2.0;
+                            let low = response_db(mode, resonance, stages, 40.0)
+                                - response_db(mode, resonance, stages, 20.0);
+                            let high = response_db(mode, resonance, stages, 2_000.0)
+                                - response_db(mode, resonance, stages, 4_000.0);
+                            assert!(
+                                (low - expected_side).abs() < 1.75,
+                                "{mode:?} {stages}-stage low-side slope was {low:.2} dB/octave at resonance {resonance}"
+                            );
+                            (high, expected_side)
+                        }
+                    };
+                    assert!(
+                        (slope - expected_slope).abs() < 1.75,
+                        "{mode:?} {stages}-stage slope was {slope:.2} dB/octave at resonance {resonance}"
+                    );
+                }
+            }
+        }
+    }
+
+    fn response_db(mode: FilterMode, resonance: f32, stages: u8, frequency: f32) -> f32 {
+        let filter = Filter {
+            mode,
+            cutoff_hz: match mode {
+                FilterMode::LowPass => 500.0,
+                FilterMode::BandPass => 200.0,
+                FilterMode::HighPass => 4_000.0,
+            },
+            resonance,
+            stages,
+            ..Filter::default()
+        };
+        let mut state = FilterState::default();
+        let sample_rate = 48_000;
+        let settled_frame = 24_000;
+        let mut energy = 0.0;
+        for frame in 0..sample_rate * 2 {
+            let phase = 2.0 * std::f64::consts::PI * f64::from(frequency) * frame as f64
+                / f64::from(sample_rate);
+            let output = filter.process(phase.sin() as f32, &mut state, sample_rate, 0.0, 0.0);
+            if frame >= settled_frame {
+                energy += output * output;
+            }
+        }
+        20.0 * (energy / (sample_rate * 2 - settled_frame) as f32)
+            .sqrt()
+            .log10()
     }
 }
