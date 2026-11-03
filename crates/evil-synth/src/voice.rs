@@ -88,12 +88,13 @@ impl VoiceState {
             aux_pulse_width,
             aux_sync_ratio,
             aux_filter_cutoff_octaves,
+            aux_filter_resonance,
         ) = [patch.aux_envelope.as_ref(), patch.aux_envelope_2.as_ref()]
             .into_iter()
             .flatten()
             .fold(
-                (0.0, 0.0, 0.0, 0.0, 0.0),
-                |(amplitude, pitch, pulse_width, sync_ratio, cutoff), aux| {
+                (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                |(amplitude, pitch, pulse_width, sync_ratio, cutoff, resonance), aux| {
                     let level = aux.envelope.amplitude(time, gate_seconds);
                     (
                         amplitude + aux.amplitude_depth * level,
@@ -101,6 +102,7 @@ impl VoiceState {
                         pulse_width + aux.pulse_width_depth * level,
                         sync_ratio + aux.sync_ratio_depth * level,
                         cutoff + aux.filter_cutoff_depth_octaves * level,
+                        resonance + aux.filter_resonance_depth * level,
                     )
                 },
             );
@@ -232,6 +234,7 @@ impl VoiceState {
                     } else {
                         0.0
                     },
+                aux_filter_resonance,
             );
         }
         let amplitude = (1.0 + modulation.amplitude + aux_amplitude).clamp(0.0, 1.0);

@@ -51,11 +51,13 @@ impl Filter {
         sample_rate: u32,
         envelope: f32,
         lfo_octaves: f32,
+        resonance_offset: f32,
     ) -> f32 {
         let cutoff = (self.cutoff_hz * 2.0_f32.powf(self.envelope_amount * envelope + lfo_octaves))
             .clamp(0.001, sample_rate as f32 * 0.49);
-        if self.resonance > 0.0 {
-            self.process_resonant(input, state, sample_rate, cutoff)
+        let resonance = (self.resonance + resonance_offset).clamp(0.0, 1.0);
+        if resonance > 0.0 {
+            self.process_resonant(input, state, sample_rate, cutoff, resonance)
         } else {
             self.process_one_pole(input, state, sample_rate, cutoff)
         }
@@ -101,11 +103,12 @@ impl Filter {
         state: &mut FilterState,
         sample_rate: u32,
         cutoff: f32,
+        resonance: f32,
     ) -> f32 {
         // Topology-preserving-transform state-variable filter. Unlike the
         // Chamberlin form, this remains stable as cutoff and resonance change.
         let g = (std::f32::consts::PI * cutoff / sample_rate as f32).tan();
-        let q = 0.5 + self.resonance * 12.0;
+        let q = 0.5 + resonance * 12.0;
         let k = q.recip();
         let a1 = 1.0 / (1.0 + g * (g + k));
         let a2 = g * a1;
@@ -148,7 +151,7 @@ mod tests {
             (0..128)
                 .map(|frame| {
                     let input = if frame == 0 { 1.0 } else { 0.0 };
-                    filter.process(input, &mut state, 48_000, 1.0, 0.0)
+                    filter.process(input, &mut state, 48_000, 1.0, 0.0, 0.0)
                 })
                 .collect::<Vec<_>>()
         };
@@ -219,7 +222,7 @@ mod tests {
         for frame in 0..sample_rate * 2 {
             let phase = 2.0 * std::f64::consts::PI * f64::from(frequency) * frame as f64
                 / f64::from(sample_rate);
-            let output = filter.process(phase.sin() as f32, &mut state, sample_rate, 0.0, 0.0);
+            let output = filter.process(phase.sin() as f32, &mut state, sample_rate, 0.0, 0.0, 0.0);
             if frame >= settled_frame {
                 energy += output * output;
             }

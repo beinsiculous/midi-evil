@@ -904,6 +904,9 @@ fn show_auxiliary_envelope(
                 .text("Cutoff depth (octaves)"),
         );
         ui.add(
+            egui::Slider::new(&mut aux.filter_resonance_depth, -1.0..=1.0).text("Resonance depth"),
+        );
+        ui.add(
             egui::Slider::new(&mut aux.lfo_rate_depth, -4.0..=4.0)
                 .text("LFO rate depth (relative)"),
         );

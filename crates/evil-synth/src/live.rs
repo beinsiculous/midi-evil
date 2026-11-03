@@ -433,7 +433,7 @@ mod tests {
     #[test]
     fn both_auxiliary_matrix_slots_match_offline_at_multiple_pitches() {
         for second in [false, true] {
-            for route in 0..6 {
+            for route in 0..7 {
                 for sign in [-1.0, 1.0] {
                     for pitch in [48, 60, 72] {
                         let mut aux = crate::AuxEnvelope {
@@ -455,6 +455,7 @@ mod tests {
                                 aux.target_lfo = Some(0);
                                 aux.lfo_rate_depth = sign;
                             }
+                            6 => aux.filter_resonance_depth = sign * 0.6,
                             _ => unreachable!(),
                         }
                         let mut patch = auxiliary_test_patch();
@@ -490,6 +491,7 @@ mod tests {
             pulse_width_depth: -0.2,
             sync_ratio_depth: -0.5,
             filter_cutoff_depth_octaves: -1.5,
+            filter_resonance_depth: -0.4,
             target_lfo: Some(0),
             lfo_rate_depth: -0.75,
         };
@@ -505,6 +507,7 @@ mod tests {
             pulse_width_depth: 0.35,
             sync_ratio_depth: 0.8,
             filter_cutoff_depth_octaves: 2.0,
+            filter_resonance_depth: 0.6,
             target_lfo: Some(1),
             lfo_rate_depth: 1.25,
         };

@@ -1553,6 +1553,7 @@ mod tests {
                 (3, "pulse width", [-0.4, 0.4]),
                 (4, "sync ratio", [-0.8, 0.8]),
                 (5, "LFO rate", [-1.0, 1.0]),
+                (6, "filter resonance", [-0.6, 0.6]),
             ] {
                 let mut route_base = base.clone();
                 if matches!(route, 3 | 4) {
@@ -1584,6 +1585,7 @@ mod tests {
                             aux.target_lfo = Some(0);
                             aux.lfo_rate_depth = depth;
                         }
+                        6 => aux.filter_resonance_depth = depth,
                         _ => unreachable!(),
                     }
                     if second {
@@ -1625,6 +1627,7 @@ mod tests {
             pulse_width_depth: 0.2,
             sync_ratio_depth: 0.4,
             filter_cutoff_depth_octaves: 1.25,
+            filter_resonance_depth: 0.2,
             target_lfo: Some(0),
             lfo_rate_depth: 0.5,
         };
@@ -1643,6 +1646,7 @@ mod tests {
                 pulse_width_depth: shared.pulse_width_depth * 2.0,
                 sync_ratio_depth: shared.sync_ratio_depth * 2.0,
                 filter_cutoff_depth_octaves: shared.filter_cutoff_depth_octaves * 2.0,
+                filter_resonance_depth: shared.filter_resonance_depth * 2.0,
                 lfo_rate_depth: shared.lfo_rate_depth * 2.0,
                 ..shared
             }),
@@ -1651,6 +1655,41 @@ mod tests {
         let samples = render(&combined).unwrap().samples;
         assert_eq!(samples, render(&combined).unwrap().samples);
         assert_eq!(samples, render(&merged_depths).unwrap().samples);
+    }
+
+    #[test]
+    fn auxiliary_filter_resonance_sums_before_the_final_clamp() {
+        let mut base = auxiliary_test_patch();
+        base.envelope.release_seconds = 0.0;
+        let envelope = Envelope {
+            attack_seconds: 0.0,
+            decay_seconds: 0.0,
+            sustain_level: 1.0,
+            release_seconds: 0.0,
+        };
+        for (depth, clamped_resonance) in [(0.75, 1.0), (-0.75, 0.0)] {
+            let aux = AuxEnvelope {
+                envelope: envelope.clone(),
+                filter_resonance_depth: depth,
+                ..AuxEnvelope::default()
+            };
+            let routed = Patch {
+                aux_envelope: Some(aux.clone()),
+                aux_envelope_2: Some(aux),
+                ..base.clone()
+            };
+            let clamped = Patch {
+                filter: Some(Filter {
+                    resonance: clamped_resonance,
+                    ..base.filter.clone().unwrap()
+                }),
+                ..base.clone()
+            };
+            let expected = render(&clamped).unwrap().samples;
+            let actual = render(&routed).unwrap().samples;
+            assert_eq!(actual, expected, "depth {depth} did not clamp exactly");
+            assert_eq!(actual, render(&routed).unwrap().samples);
+        }
     }
 
     #[test]
@@ -1670,6 +1709,7 @@ mod tests {
                 pulse_width_depth: 0.35,
                 sync_ratio_depth: 0.75,
                 filter_cutoff_depth_octaves: 2.5,
+                filter_resonance_depth: 0.5,
                 target_lfo: Some(0),
                 lfo_rate_depth: 0.75,
             }),
@@ -1680,6 +1720,7 @@ mod tests {
                 pulse_width_depth: -0.35,
                 sync_ratio_depth: -0.75,
                 filter_cutoff_depth_octaves: -2.5,
+                filter_resonance_depth: -0.5,
                 target_lfo: Some(0),
                 lfo_rate_depth: -0.75,
             }),

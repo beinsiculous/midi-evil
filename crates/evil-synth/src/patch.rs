@@ -299,6 +299,8 @@ impl Patch {
                 || !(-16.0..=16.0).contains(&aux.sync_ratio_depth)
                 || !aux.filter_cutoff_depth_octaves.is_finite()
                 || !(-12.0..=12.0).contains(&aux.filter_cutoff_depth_octaves)
+                || !aux.filter_resonance_depth.is_finite()
+                || !(-1.0..=1.0).contains(&aux.filter_resonance_depth)
                 || !aux.lfo_rate_depth.is_finite()
                 || !(-4.0..=4.0).contains(&aux.lfo_rate_depth)
                 || (aux.lfo_rate_depth != 0.0 && aux.target_lfo.is_none())
@@ -414,6 +416,7 @@ mod tests {
                 pulse_width_depth: -0.35,
                 sync_ratio_depth: 1.25,
                 filter_cutoff_depth_octaves: -3.0,
+                filter_resonance_depth: -0.6,
                 target_lfo: Some(0),
                 lfo_rate_depth: 1.5,
             }),
@@ -429,6 +432,7 @@ mod tests {
                 pulse_width_depth: 0.2,
                 sync_ratio_depth: -0.75,
                 filter_cutoff_depth_octaves: 2.0,
+                filter_resonance_depth: 0.35,
                 target_lfo: Some(1),
                 lfo_rate_depth: -2.0,
             }),
@@ -495,6 +499,10 @@ mod tests {
         assert!(patch.aux_envelope.is_some());
         assert_eq!(patch.aux_envelope.as_ref().unwrap().pulse_width_depth, 0.0);
         assert_eq!(patch.aux_envelope.as_ref().unwrap().sync_ratio_depth, 0.0);
+        assert_eq!(
+            patch.aux_envelope.as_ref().unwrap().filter_resonance_depth,
+            0.0
+        );
         assert_eq!(patch.aux_envelope.as_ref().unwrap().target_lfo, None);
         assert_eq!(patch.aux_envelope.as_ref().unwrap().lfo_rate_depth, 0.0);
         assert_eq!(patch.aux_envelope_2, None);
@@ -769,6 +777,7 @@ mod tests {
             pulse_width_depth: 0.99,
             sync_ratio_depth: 16.0,
             filter_cutoff_depth_octaves: -12.0,
+            filter_resonance_depth: 1.0,
             target_lfo: Some(0),
             lfo_rate_depth: 4.0,
             ..AuxEnvelope::default()
@@ -779,6 +788,7 @@ mod tests {
             pulse_width_depth: -0.5,
             sync_ratio_depth: -16.0,
             filter_cutoff_depth_octaves: 4.0,
+            filter_resonance_depth: -1.0,
             target_lfo: Some(0),
             lfo_rate_depth: -4.0,
             ..AuxEnvelope::default()
@@ -832,6 +842,18 @@ mod tests {
             },
             AuxEnvelope {
                 filter_cutoff_depth_octaves: -12.01,
+                ..valid.clone()
+            },
+            AuxEnvelope {
+                filter_resonance_depth: 1.01,
+                ..valid.clone()
+            },
+            AuxEnvelope {
+                filter_resonance_depth: -1.01,
+                ..valid.clone()
+            },
+            AuxEnvelope {
+                filter_resonance_depth: f32::NAN,
                 ..valid.clone()
             },
             AuxEnvelope {
