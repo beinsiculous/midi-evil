@@ -15,6 +15,7 @@ mod piano_roll;
 mod preview;
 mod recording;
 mod render_job;
+mod sample_recorder;
 mod theme;
 mod transport;
 mod workspace;

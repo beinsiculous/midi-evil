@@ -19,6 +19,8 @@ pub struct AuxEnvelope {
     pub filter_cutoff_depth_octaves: f32,
     /// Bipolar filter-resonance offset, summed before the final 0..=1 clamp.
     pub filter_resonance_depth: f32,
+    /// Signed A/B balance offset in Mix mode; positive favors Osc B.
+    pub oscillator_mix_depth: f32,
     /// Zero-based index of the LFO lane whose rate is modulated.
     pub target_lfo: Option<usize>,
     /// Fractional rate modulation applied to `target_lfo`.
@@ -35,6 +37,7 @@ impl Default for AuxEnvelope {
             sync_ratio_depth: 0.0,
             filter_cutoff_depth_octaves: 0.0,
             filter_resonance_depth: 0.0,
+            oscillator_mix_depth: 0.0,
             target_lfo: None,
             lfo_rate_depth: 0.0,
         }

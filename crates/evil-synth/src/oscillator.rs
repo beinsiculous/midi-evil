@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{SampleOscillator, SampleZone};
+use crate::{SampleOscillator, SampleZone, wavetable};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -26,6 +26,128 @@ pub enum Waveform {
     Triangle,
     Noise,
     Sample,
+    // Wavetable variants must remain contiguous and in this order.
+    Sine2,
+    Sine3,
+    Sine4,
+    Sine5,
+    Sine6,
+    Sine7,
+    Sine8,
+    Pulse10,
+    Pulse20,
+    Pulse30,
+    Pulse40,
+    Pulse60,
+    Pulse70,
+    Pulse80,
+    Pulse90,
+    SawFundamental,
+    SawEven,
+    SawOdd,
+    SawSoft,
+    TriangleFundamental,
+    TriangleEven,
+    TriangleBright,
+    TriangleSoft,
+    HalfSine,
+    AbsoluteSine,
+    SineSquared,
+    SineCubed,
+    SineRectified,
+    Parabola,
+    SawTriangle,
+    SquareTriangle,
+}
+
+impl Waveform {
+    pub const BASIC: [Self; 36] = [
+        Self::Sine,
+        Self::Square,
+        Self::Saw,
+        Self::Triangle,
+        Self::Noise,
+        Self::Sine2,
+        Self::Sine3,
+        Self::Sine4,
+        Self::Sine5,
+        Self::Sine6,
+        Self::Sine7,
+        Self::Sine8,
+        Self::Pulse10,
+        Self::Pulse20,
+        Self::Pulse30,
+        Self::Pulse40,
+        Self::Pulse60,
+        Self::Pulse70,
+        Self::Pulse80,
+        Self::Pulse90,
+        Self::SawFundamental,
+        Self::SawEven,
+        Self::SawOdd,
+        Self::SawSoft,
+        Self::TriangleFundamental,
+        Self::TriangleEven,
+        Self::TriangleBright,
+        Self::TriangleSoft,
+        Self::HalfSine,
+        Self::AbsoluteSine,
+        Self::SineSquared,
+        Self::SineCubed,
+        Self::SineRectified,
+        Self::Parabola,
+        Self::SawTriangle,
+        Self::SquareTriangle,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Sine => "Sine",
+            Self::Square => "Square",
+            Self::SquareNaive => "Square (naive)",
+            Self::Saw => "Saw",
+            Self::Triangle => "Triangle",
+            Self::Noise => "Noise",
+            Self::Sample => "Sample",
+            Self::Sine2 => "Sine ×2",
+            Self::Sine3 => "Sine ×3",
+            Self::Sine4 => "Sine ×4",
+            Self::Sine5 => "Sine ×5",
+            Self::Sine6 => "Sine ×6",
+            Self::Sine7 => "Sine ×7",
+            Self::Sine8 => "Sine ×8",
+            Self::Pulse10 => "Pulse 10%",
+            Self::Pulse20 => "Pulse 20%",
+            Self::Pulse30 => "Pulse 30%",
+            Self::Pulse40 => "Pulse 40%",
+            Self::Pulse60 => "Pulse 60%",
+            Self::Pulse70 => "Pulse 70%",
+            Self::Pulse80 => "Pulse 80%",
+            Self::Pulse90 => "Pulse 90%",
+            Self::SawFundamental => "Saw + fundamental",
+            Self::SawEven => "Saw even",
+            Self::SawOdd => "Saw odd",
+            Self::SawSoft => "Saw soft",
+            Self::TriangleFundamental => "Triangle + fundamental",
+            Self::TriangleEven => "Triangle even",
+            Self::TriangleBright => "Triangle bright",
+            Self::TriangleSoft => "Triangle soft",
+            Self::HalfSine => "Half sine",
+            Self::AbsoluteSine => "Absolute sine",
+            Self::SineSquared => "Sine squared",
+            Self::SineCubed => "Sine cubed",
+            Self::SineRectified => "Asymmetric sine",
+            Self::Parabola => "Parabola",
+            Self::SawTriangle => "Saw / triangle",
+            Self::SquareTriangle => "Square / triangle",
+        }
+    }
+
+    pub(crate) fn table_index(self) -> Option<usize> {
+        (self as usize)
+            .checked_sub(Self::Sine2 as usize)
+            .filter(|index| *index < 31)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -157,6 +279,12 @@ impl Oscillator {
             | Waveform::Sample => {
                 return 0.0;
             }
+            _ => {
+                let index = self.waveform.table_index().expect("wavetable waveform");
+                let previous = wavetable::sample(index, previous_phase, phase_step);
+                let reset = wavetable::sample(index, 0.0, phase_step);
+                reset - previous
+            }
         };
         -0.5 * discontinuity * poly_blep(reset_phase, phase_step) * self.amplitude
     }
@@ -189,6 +317,11 @@ impl Oscillator {
         let phase_step = frequency / sample_rate as f32;
         let phase = state.phase;
         let pulse_width = (self.pulse_width + pulse_width_offset).clamp(0.01, 0.99);
+        if let Some(index) = self.waveform.table_index() {
+            let sample = wavetable::sample(index, phase, phase_step);
+            state.phase = (phase + phase_step).fract();
+            return sample * self.amplitude;
+        }
         let sample = match self.waveform {
             Waveform::Sine => (phase * 2.0 * std::f32::consts::PI).sin(),
             Waveform::Square => {
@@ -206,6 +339,7 @@ impl Oscillator {
             Waveform::Saw => 2.0 * phase - 1.0 - poly_blep(phase, phase_step),
             Waveform::Triangle => 1.0 - 4.0 * (phase - 0.5).abs(),
             Waveform::Noise | Waveform::Sample => unreachable!("special sources returned above"),
+            _ => unreachable!("wavetable sources returned above"),
         };
         state.phase = (phase + phase_step).fract();
         sample * self.amplitude
@@ -274,6 +408,20 @@ mod tests {
         assert_eq!(oscillator.sample(&mut state, 0.0, 8_000, 1.0, 0.0), 0.5);
         state.select_sample_zone(&oscillator, 59);
         assert_eq!(oscillator.sample(&mut state, 0.0, 8_000, 1.0, 0.0), -0.25);
+    }
+
+    #[test]
+    fn basic_waveform_inventory_has_36_unique_json_round_trips() {
+        assert_eq!(Waveform::BASIC.len(), 36);
+        let labels = Waveform::BASIC
+            .into_iter()
+            .map(Waveform::label)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(labels.len(), 36);
+        for waveform in Waveform::BASIC {
+            let json = serde_json::to_string(&waveform).unwrap();
+            assert_eq!(serde_json::from_str::<Waveform>(&json).unwrap(), waveform);
+        }
     }
 
     #[test]

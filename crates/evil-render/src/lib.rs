@@ -75,7 +75,9 @@ pub fn render_audition(patch: &Patch) -> Result<RenderOutput, Error> {
             sound: &sound,
             gain: 1.0,
             pan: 0.0,
+            waveshaper: patch.waveshaper.as_ref(),
             delay: patch.delay.as_ref(),
+            controllers: &[],
             dc_block: patch.uses_sync(),
         }],
         1.0,
@@ -113,11 +115,15 @@ pub fn render_project_range(
     let mut output = render_project(&input, patch_base)?;
     let sample_rate = output.sound.sample_rate;
     let start_frame = (start_seconds * f64::from(sample_rate)).round() as usize;
-    let end_frame = end_seconds.map_or(output.sound.left.len(), |seconds| {
-        (seconds * f64::from(sample_rate)).round() as usize
-    });
+    let end_frame = end_seconds.map(|seconds| (seconds * f64::from(sample_rate)).round() as usize);
+    if let Some(end_frame) = end_frame
+        && end_frame > output.sound.left.len()
+    {
+        output.sound.left.resize(end_frame, 0.0);
+        output.sound.right.resize(end_frame, 0.0);
+    }
     let start_frame = start_frame.min(output.sound.left.len());
-    let end_frame = end_frame.min(output.sound.left.len());
+    let end_frame = end_frame.unwrap_or(output.sound.left.len());
     output.sound.left = output.sound.left[start_frame..end_frame].to_vec();
     output.sound.right = output.sound.right[start_frame..end_frame].to_vec();
     output.note_count = performance
@@ -214,7 +220,9 @@ pub fn render_project(project: &Project, patch_base: &Path) -> Result<RenderOutp
                     sound,
                     settings.gain,
                     settings.pan,
+                    patch.waveshaper.clone(),
                     patch.delay.clone(),
+                    controllers,
                     patch.uses_sync(),
                 ));
             }
@@ -252,13 +260,17 @@ pub fn render_project(project: &Project, patch_base: &Path) -> Result<RenderOutp
 
     let tracks: Vec<_> = rendered
         .iter()
-        .map(|(sound, gain, pan, delay, dc_block)| MonoTrack {
-            sound,
-            gain: *gain,
-            pan: *pan,
-            delay: delay.as_ref(),
-            dc_block: *dc_block,
-        })
+        .map(
+            |(sound, gain, pan, waveshaper, delay, controllers, dc_block)| MonoTrack {
+                sound,
+                gain: *gain,
+                pan: *pan,
+                waveshaper: waveshaper.as_ref(),
+                delay: delay.as_ref(),
+                controllers,
+                dc_block: *dc_block,
+            },
+        )
         .collect();
     let stereo_tracks: Vec<_> = stereo_rendered
         .iter()
@@ -347,6 +359,42 @@ mod tests {
     }
 
     #[test]
+    fn insert_waveshaper_precedes_delay_and_can_silence_the_whole_tail() {
+        let delayed = Patch {
+            duration_seconds: 0.01,
+            envelope: evil_synth::Envelope {
+                release_seconds: 0.0,
+                ..evil_synth::Envelope::default()
+            },
+            delay: Some(evil_synth::Delay::default()),
+            ..Patch::default()
+        };
+        let baseline = render_audition(&delayed).unwrap().sound.left;
+        assert!(baseline.iter().any(|sample| sample.abs() > 0.001));
+
+        let silenced = Patch {
+            waveshaper: Some(evil_synth::Waveshaper {
+                level: 0.0,
+                ..evil_synth::Waveshaper::default()
+            }),
+            ..delayed.clone()
+        };
+        assert!(
+            render_audition(&silenced)
+                .unwrap()
+                .sound
+                .left
+                .iter()
+                .all(|sample| *sample == 0.0)
+        );
+        let enabled = Patch {
+            waveshaper: Some(evil_synth::Waveshaper::default()),
+            ..delayed
+        };
+        assert_ne!(render_audition(&enabled).unwrap().sound.left, baseline);
+    }
+
+    #[test]
     fn audition_respects_pitch_tracking() {
         let tracked = Patch::default();
         let fixed = Patch {
@@ -389,6 +437,25 @@ mod tests {
         assert_eq!(rest.sound.left, full.sound.left[24_000..]);
         assert_eq!(rest.note_count, 2);
         assert!(render_project_range(&project, Path::new("."), 960, Some(480)).is_err());
+    }
+
+    #[test]
+    fn project_sections_resample_into_valid_embedded_oscillator_audio() {
+        let mut project = Project::new("Resample");
+        project
+            .add_track(Track {
+                notes: vec![Note::default()],
+                ..Track::default()
+            })
+            .unwrap();
+        let rendered = render_project_range(&project, Path::new("."), 0, Some(480)).unwrap();
+        let sample =
+            evil_synth::SampleOscillator::from_stereo("Resampled bar", &rendered.sound).unwrap();
+        assert_eq!(sample.name, "Resampled bar");
+        assert_eq!(sample.sample_rate, project.sample_rate);
+        assert_eq!(sample.samples.len(), 24_000);
+        assert!(sample.samples.iter().any(|sample| sample.abs() > 0.001));
+        sample.validate().unwrap();
     }
 
     #[test]
@@ -449,6 +516,57 @@ mod tests {
         project.tracks[0].controllers.clear();
         let plain = render_project(&project, Path::new(".")).unwrap();
         assert_ne!(controlled.sound.left, plain.sound.left);
+    }
+
+    #[test]
+    fn project_insert_automation_changes_audio_and_reports_only_unknown_controllers() {
+        let directory = tempfile::tempdir().unwrap();
+        let patch = Patch {
+            waveshaper: Some(evil_synth::Waveshaper::default()),
+            delay: Some(evil_synth::Delay::default()),
+            ..Patch::default()
+        };
+        std::fs::write(
+            directory.path().join("insert.json"),
+            patch.to_json_pretty().unwrap(),
+        )
+        .unwrap();
+        let mut project = Project::new("Insert automation");
+        project
+            .add_track(Track {
+                notes: vec![Note::default()],
+                ..Track::default()
+            })
+            .unwrap();
+        project.instruments[0].source = evil_project::InstrumentSource::Synth {
+            patch: "insert.json".to_owned(),
+        };
+        let plain = render_project(&project, directory.path()).unwrap();
+
+        project.tracks[0].controllers = (20..=25)
+            .map(|controller| evil_project::ControllerEvent {
+                tick: 0,
+                controller,
+                value: 127,
+            })
+            .collect();
+        project.tracks[0]
+            .controllers
+            .push(evil_project::ControllerEvent {
+                tick: 0,
+                controller: 101,
+                value: 0,
+            });
+        project.tracks[0]
+            .controllers
+            .extend((20..=25).map(|controller| evil_project::ControllerEvent {
+                tick: 240,
+                controller,
+                value: 0,
+            }));
+        let automated = render_project(&project, directory.path()).unwrap();
+        assert_ne!(automated.sound.left, plain.sound.left);
+        assert_eq!(automated.unsupported_controller_events, 1);
     }
 
     #[test]

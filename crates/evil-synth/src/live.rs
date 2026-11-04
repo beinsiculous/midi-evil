@@ -1,7 +1,7 @@
 //! Bounded, sample-by-sample synthesis for the performance keyboard.
 use crate::render::{DcBlocker, ModulationState};
 use crate::voice::{VoiceControls, VoiceState};
-use crate::{Delay, DelayMode, Error, Filter, Patch, VoiceMode, Waveform};
+use crate::{Delay, DelayMode, Error, Filter, Patch, VoiceMode, Waveform, Waveshaper};
 
 const MAX_VOICES: usize = 32;
 
@@ -13,6 +13,7 @@ pub struct LiveControls {
     pub pan: f32,
     pub tempo_bpm: f32,
     pub filter: Option<Filter>,
+    pub waveshaper: Option<Waveshaper>,
     pub delay: Option<Delay>,
 }
 
@@ -25,6 +26,7 @@ impl LiveControls {
             pan: 0.0,
             tempo_bpm: 120.0,
             filter: patch.filter.clone(),
+            waveshaper: patch.waveshaper.clone(),
             delay: patch.delay.clone(),
         }
     }
@@ -106,6 +108,7 @@ impl LiveSynth {
         }
         let mut patch = self.patch.clone();
         patch.filter.clone_from(&controls.filter);
+        patch.waveshaper.clone_from(&controls.waveshaper);
         patch.delay.clone_from(&controls.delay);
         patch.validate()?;
         self.patch = patch;
@@ -257,6 +260,11 @@ impl LiveSynth {
         let mono = mono.tanh() * self.controls.gain;
         let angle = (self.controls.pan + 1.0) * std::f32::consts::FRAC_PI_4;
         let mut stereo = [mono * angle.cos(), mono * angle.sin()];
+        if let Some(waveshaper) = &self.controls.waveshaper {
+            for sample in &mut stereo {
+                *sample = waveshaper.process(*sample);
+            }
+        }
         if let Some(delay) = &self.controls.delay {
             let frames = (delay.time_seconds * self.patch.sample_rate as f32)
                 .round()
@@ -390,6 +398,73 @@ mod tests {
     }
 
     #[test]
+    fn all_basic_waveforms_match_offline_at_multiple_pitches_and_sync_modes() {
+        for waveform in Waveform::BASIC {
+            for synced in [false, true] {
+                for pitch in [48, 72, 96] {
+                    let patch = Patch {
+                        duration_seconds: 0.03,
+                        sync: synced.then_some(crate::OscillatorSync { ratio: 1.75 }),
+                        oscillators: vec![crate::Oscillator {
+                            waveform,
+                            ..crate::Oscillator::default()
+                        }],
+                        envelope: crate::Envelope {
+                            attack_seconds: 0.0,
+                            decay_seconds: 0.0,
+                            sustain_level: 1.0,
+                            release_seconds: 0.005,
+                        },
+                        ..Patch::default()
+                    };
+                    assert_offline_matches_live(patch, &[test_note(pitch, 0.0, 0.03)]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn waveshaper_matches_offline_at_multiple_pitches_and_contours() {
+        for contour in [-1.0, 0.0, 1.0] {
+            for pitch in [48, 60, 72] {
+                let patch = Patch {
+                    duration_seconds: 0.04,
+                    waveshaper: Some(crate::Waveshaper {
+                        drive: 8.0,
+                        contour,
+                        level: 0.9,
+                    }),
+                    envelope: crate::Envelope {
+                        attack_seconds: 0.0,
+                        decay_seconds: 0.0,
+                        sustain_level: 1.0,
+                        release_seconds: 0.01,
+                    },
+                    ..Patch::default()
+                };
+                let notes = [test_note(pitch, 0.0, 0.04)];
+                let expected = crate::render_notes(&patch, &notes).unwrap().samples;
+                let mut live = LiveSynth::new(patch.clone()).unwrap();
+                let mut controls = LiveControls::for_patch(&patch);
+                controls.gain = 1.0;
+                controls.pan = -1.0;
+                live.set_controls(controls).unwrap();
+                live.note_on(pitch, 100).unwrap();
+                for (frame, expected) in expected.into_iter().enumerate() {
+                    if frame == 1_920 {
+                        live.note_off(pitch);
+                    }
+                    let actual = live.next_frame()[0];
+                    assert!(
+                        (actual - expected).abs() < 0.0001,
+                        "offline/live mismatch at frame {frame}: {actual} != {expected}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn independent_filter_envelope_and_slopes_match_offline_at_multiple_pitches() {
         for mode in [
             crate::FilterMode::LowPass,
@@ -433,7 +508,7 @@ mod tests {
     #[test]
     fn both_auxiliary_matrix_slots_match_offline_at_multiple_pitches() {
         for second in [false, true] {
-            for route in 0..7 {
+            for route in 0..8 {
                 for sign in [-1.0, 1.0] {
                     for pitch in [48, 60, 72] {
                         let mut aux = crate::AuxEnvelope {
@@ -456,6 +531,7 @@ mod tests {
                                 aux.lfo_rate_depth = sign;
                             }
                             6 => aux.filter_resonance_depth = sign * 0.6,
+                            7 => aux.oscillator_mix_depth = sign * 0.6,
                             _ => unreachable!(),
                         }
                         let mut patch = auxiliary_test_patch();
@@ -464,6 +540,14 @@ mod tests {
                         }
                         if route == 4 {
                             patch.sync = Some(crate::OscillatorSync { ratio: 2.0 });
+                        }
+                        if route == 7 {
+                            patch.oscillators.push(crate::Oscillator {
+                                start_frequency_hz: 660.0,
+                                end_frequency_hz: 660.0,
+                                amplitude: 0.5,
+                                ..crate::Oscillator::default()
+                            });
                         }
                         if second {
                             patch.aux_envelope_2 = Some(aux);
@@ -492,6 +576,7 @@ mod tests {
             sync_ratio_depth: -0.5,
             filter_cutoff_depth_octaves: -1.5,
             filter_resonance_depth: -0.4,
+            oscillator_mix_depth: -0.3,
             target_lfo: Some(0),
             lfo_rate_depth: -0.75,
         };
@@ -508,6 +593,7 @@ mod tests {
             sync_ratio_depth: 0.8,
             filter_cutoff_depth_octaves: 2.0,
             filter_resonance_depth: 0.6,
+            oscillator_mix_depth: 0.5,
             target_lfo: Some(1),
             lfo_rate_depth: 1.25,
         };
@@ -522,6 +608,20 @@ mod tests {
                     ..auxiliary_test_patch()
                 };
                 patch.oscillators[0].waveform = Waveform::Square;
+                patch.modulation.push(crate::Lfo {
+                    rate_hz: 9.0,
+                    destination: crate::LfoDestination::FilterResonance,
+                    waveform: crate::LfoWaveform::SawUp,
+                    filter_resonance_depth: 0.35,
+                    ..crate::Lfo::default()
+                });
+                patch.modulation.push(crate::Lfo {
+                    rate_hz: 11.0,
+                    destination: crate::LfoDestination::OscillatorMix,
+                    waveform: crate::LfoWaveform::Triangle,
+                    oscillator_mix_depth: 0.4,
+                    ..crate::Lfo::default()
+                });
                 let notes = [
                     test_note(pitch, 0.0, 0.1),
                     test_note(pitch + 4, 0.05, 0.1),

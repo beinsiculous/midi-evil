@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AuxEnvelope, Delay, Envelope, Error, Filter, Lfo, LfoDestination, ModalPartial, Oscillator,
-    OscillatorMode, OscillatorSync, Unison, VoiceMode, sample::validate_sample_zones,
+    OscillatorMode, OscillatorSync, Unison, VoiceMode, Waveshaper, sample::validate_sample_zones,
 };
 
 const MAX_DURATION_SECONDS: f32 = 60.0;
@@ -49,6 +49,9 @@ pub struct Patch {
     /// Primary LFO, retained for compatibility with the original patch format.
     pub lfo: Option<Lfo>,
     pub modulation: Vec<Lfo>,
+    /// First instrument insert; applied before the optional delay.
+    pub waveshaper: Option<Waveshaper>,
+    /// Second instrument insert.
     pub delay: Option<Delay>,
 }
 
@@ -81,6 +84,7 @@ impl Default for Patch {
             aux_envelope_2: None,
             lfo: None,
             modulation: Vec::new(),
+            waveshaper: None,
             delay: None,
         }
     }
@@ -241,7 +245,7 @@ impl Patch {
                 && oscillator.sample.is_none()
                 && oscillator.sample_zones.is_empty()
             {
-                return Err(invalid("a sample oscillator needs embedded WAV audio"));
+                return Err(invalid("a sample oscillator needs embedded sample audio"));
             }
             if oscillator.sample.is_some() && !oscillator.sample_zones.is_empty() {
                 return Err(invalid(
@@ -301,6 +305,8 @@ impl Patch {
                 || !(-12.0..=12.0).contains(&aux.filter_cutoff_depth_octaves)
                 || !aux.filter_resonance_depth.is_finite()
                 || !(-1.0..=1.0).contains(&aux.filter_resonance_depth)
+                || !aux.oscillator_mix_depth.is_finite()
+                || !(-1.0..=1.0).contains(&aux.oscillator_mix_depth)
                 || !aux.lfo_rate_depth.is_finite()
                 || !(-4.0..=4.0).contains(&aux.lfo_rate_depth)
                 || (aux.lfo_rate_depth != 0.0 && aux.target_lfo.is_none())
@@ -340,6 +346,10 @@ impl Patch {
                 || !(-16.0..=16.0).contains(&lfo.sync_ratio_depth)
                 || !lfo.filter_cutoff_depth.is_finite()
                 || !(-12.0..=12.0).contains(&lfo.filter_cutoff_depth)
+                || !lfo.filter_resonance_depth.is_finite()
+                || !(-1.0..=1.0).contains(&lfo.filter_resonance_depth)
+                || !lfo.oscillator_mix_depth.is_finite()
+                || !(-1.0..=1.0).contains(&lfo.oscillator_mix_depth)
                 || !lfo.amplitude_depth.is_finite()
                 || !(-1.0..=1.0).contains(&lfo.amplitude_depth)
                 || !lfo.lfo_rate_depth.is_finite()
@@ -351,6 +361,9 @@ impl Patch {
             {
                 return Err(invalid("lfo rate and destination depths must be valid"));
             }
+        }
+        if let Some(waveshaper) = &self.waveshaper {
+            waveshaper.validate()?;
         }
         if let Some(delay) = &self.delay {
             delay.validate()?;
@@ -417,6 +430,7 @@ mod tests {
                 sync_ratio_depth: 1.25,
                 filter_cutoff_depth_octaves: -3.0,
                 filter_resonance_depth: -0.6,
+                oscillator_mix_depth: -0.45,
                 target_lfo: Some(0),
                 lfo_rate_depth: 1.5,
             }),
@@ -433,8 +447,14 @@ mod tests {
                 sync_ratio_depth: -0.75,
                 filter_cutoff_depth_octaves: 2.0,
                 filter_resonance_depth: 0.35,
+                oscillator_mix_depth: 0.55,
                 target_lfo: Some(1),
                 lfo_rate_depth: -2.0,
+            }),
+            waveshaper: Some(Waveshaper {
+                drive: 9.0,
+                contour: -0.4,
+                level: 0.65,
             }),
             delay: Some(Delay::default()),
             lfo: Some(Lfo {
@@ -444,7 +464,9 @@ mod tests {
                 ..Lfo::default()
             }),
             modulation: vec![Lfo {
-                destination: crate::LfoDestination::FilterCutoff,
+                destination: crate::LfoDestination::FilterResonance,
+                filter_resonance_depth: -0.65,
+                oscillator_mix_depth: 0.75,
                 ..Lfo::default()
             }],
             ..Patch::default()
@@ -474,6 +496,7 @@ mod tests {
         assert_eq!(patch.filter_envelope, None);
         assert_eq!(patch.aux_envelope, None);
         assert_eq!(patch.aux_envelope_2, None);
+        assert_eq!(patch.waveshaper, None);
         assert!(!patch.to_json_pretty().unwrap().contains("aux_envelope_2"));
         assert_eq!(patch.oscillators[0].sample, None);
     }
@@ -501,6 +524,10 @@ mod tests {
         assert_eq!(patch.aux_envelope.as_ref().unwrap().sync_ratio_depth, 0.0);
         assert_eq!(
             patch.aux_envelope.as_ref().unwrap().filter_resonance_depth,
+            0.0
+        );
+        assert_eq!(
+            patch.aux_envelope.as_ref().unwrap().oscillator_mix_depth,
             0.0
         );
         assert_eq!(patch.aux_envelope.as_ref().unwrap().target_lfo, None);
@@ -778,6 +805,7 @@ mod tests {
             sync_ratio_depth: 16.0,
             filter_cutoff_depth_octaves: -12.0,
             filter_resonance_depth: 1.0,
+            oscillator_mix_depth: 1.0,
             target_lfo: Some(0),
             lfo_rate_depth: 4.0,
             ..AuxEnvelope::default()
@@ -789,6 +817,7 @@ mod tests {
             sync_ratio_depth: -16.0,
             filter_cutoff_depth_octaves: 4.0,
             filter_resonance_depth: -1.0,
+            oscillator_mix_depth: -1.0,
             target_lfo: Some(0),
             lfo_rate_depth: -4.0,
             ..AuxEnvelope::default()
@@ -857,6 +886,18 @@ mod tests {
                 ..valid.clone()
             },
             AuxEnvelope {
+                oscillator_mix_depth: 1.01,
+                ..valid.clone()
+            },
+            AuxEnvelope {
+                oscillator_mix_depth: -1.01,
+                ..valid.clone()
+            },
+            AuxEnvelope {
+                oscillator_mix_depth: f32::NAN,
+                ..valid.clone()
+            },
+            AuxEnvelope {
                 lfo_rate_depth: 4.01,
                 ..valid.clone()
             },
@@ -901,5 +942,53 @@ mod tests {
             ..Patch::default()
         };
         assert!(patch.validate().is_ok());
+    }
+
+    #[test]
+    fn validation_bounds_lfo_filter_resonance_depth() {
+        for depth in [-1.0, 1.0] {
+            let patch = Patch {
+                lfo: Some(Lfo {
+                    filter_resonance_depth: depth,
+                    ..Lfo::default()
+                }),
+                ..Patch::default()
+            };
+            assert!(patch.validate().is_ok());
+        }
+        for depth in [-1.01, 1.01, f32::NAN] {
+            let patch = Patch {
+                lfo: Some(Lfo {
+                    filter_resonance_depth: depth,
+                    ..Lfo::default()
+                }),
+                ..Patch::default()
+            };
+            assert!(patch.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn validation_bounds_lfo_oscillator_mix_depth() {
+        for depth in [-1.0, 1.0] {
+            let patch = Patch {
+                lfo: Some(Lfo {
+                    oscillator_mix_depth: depth,
+                    ..Lfo::default()
+                }),
+                ..Patch::default()
+            };
+            assert!(patch.validate().is_ok());
+        }
+        for depth in [-1.01, 1.01, f32::NAN] {
+            let patch = Patch {
+                lfo: Some(Lfo {
+                    oscillator_mix_depth: depth,
+                    ..Lfo::default()
+                }),
+                ..Patch::default()
+            };
+            assert!(patch.validate().is_err());
+        }
     }
 }

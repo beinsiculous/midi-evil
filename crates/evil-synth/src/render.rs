@@ -1,7 +1,12 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::delay::apply_delay;
+use crate::insert_automation::{
+    apply_delay_automation, apply_waveshaper_automation, has_delay_automation,
+    has_waveshaper_automation,
+};
 use crate::voice::{VoiceControls, VoiceState};
+use crate::waveshaper::apply_waveshaper;
 use crate::{Error, Lfo, LfoDestination, LfoWaveform, Patch, VoiceMode, Waveform};
 
 const MAX_PERFORMANCE_SECONDS: f64 = 3_600.0;
@@ -58,6 +63,7 @@ struct VoiceAutomation<'a> {
 
 pub fn render(patch: &Patch) -> Result<RenderedSound, Error> {
     patch.validate()?;
+    let controllers: &[SynthController] = &[];
     let mut samples = vec![0.0; voice_frame_count(patch)];
     render_voice_into(
         patch,
@@ -73,7 +79,8 @@ pub fn render(patch: &Patch) -> Result<RenderedSound, Error> {
             tempo_changes: &[],
         },
     );
-    apply_delay(patch, &mut samples);
+    apply_waveshaper_insert(patch, &mut samples, controllers);
+    apply_delay_insert(patch, &mut samples, controllers);
     soft_limit(&mut samples);
     if patch.uses_sync() {
         block_dc(&mut samples, patch.sample_rate);
@@ -220,7 +227,8 @@ fn render_notes_inner(
             tempo_changes,
         )?;
         if apply_insert_effects {
-            apply_delay(patch, &mut samples);
+            apply_waveshaper_insert(patch, &mut samples, controllers);
+            apply_delay_insert(patch, &mut samples, controllers);
         }
         soft_limit(&mut samples);
         if apply_insert_effects && patch.uses_sync() {
@@ -304,7 +312,8 @@ fn render_notes_inner(
         }
     }
     if apply_insert_effects {
-        apply_delay(patch, &mut samples);
+        apply_waveshaper_insert(patch, &mut samples, controllers);
+        apply_delay_insert(patch, &mut samples, controllers);
     }
     soft_limit(&mut samples);
     if apply_insert_effects && patch.uses_sync() {
@@ -672,6 +681,8 @@ pub(crate) struct Modulation {
     pub(crate) pulse_width: f32,
     pub(crate) sync_ratio: f32,
     pub(crate) filter_cutoff_octaves: f32,
+    pub(crate) filter_resonance: f32,
+    pub(crate) oscillator_mix: f32,
     pub(crate) amplitude: f32,
 }
 
@@ -727,6 +738,12 @@ impl ModulationState {
                 LfoDestination::FilterCutoff => {
                     modulation.filter_cutoff_octaves += lfo.filter_cutoff_depth * value;
                 }
+                LfoDestination::FilterResonance => {
+                    modulation.filter_resonance += lfo.filter_resonance_depth * value;
+                }
+                LfoDestination::OscillatorMix => {
+                    modulation.oscillator_mix += lfo.oscillator_mix_depth * value;
+                }
                 LfoDestination::Amplitude => {
                     modulation.amplitude += lfo.amplitude_depth * value;
                 }
@@ -742,6 +759,8 @@ impl ModulationState {
         modulation.pulse_width *= depth;
         modulation.sync_ratio *= depth;
         modulation.filter_cutoff_octaves *= depth;
+        modulation.filter_resonance *= depth;
+        modulation.oscillator_mix *= depth;
         modulation.amplitude *= depth;
         modulation
     }
@@ -817,6 +836,27 @@ fn render_voice_into(
             expression: expression_gain(automation.controllers, absolute_time),
         };
         samples[start_frame + frame] += voice.sample(patch, time, patch.duration_seconds, controls);
+    }
+}
+
+fn apply_waveshaper_insert(patch: &Patch, samples: &mut [f32], controllers: &[SynthController]) {
+    if let Some(waveshaper) = &patch.waveshaper {
+        soft_limit(samples);
+        if has_waveshaper_automation(controllers) {
+            apply_waveshaper_automation(samples, patch.sample_rate, waveshaper, controllers);
+        } else {
+            apply_waveshaper(patch, samples);
+        }
+    }
+}
+
+fn apply_delay_insert(patch: &Patch, samples: &mut Vec<f32>, controllers: &[SynthController]) {
+    if let Some(delay) = &patch.delay
+        && has_delay_automation(controllers)
+    {
+        apply_delay_automation(samples, patch.sample_rate, delay, controllers);
+    } else {
+        apply_delay(patch, samples);
     }
 }
 
@@ -1554,6 +1594,7 @@ mod tests {
                 (4, "sync ratio", [-0.8, 0.8]),
                 (5, "LFO rate", [-1.0, 1.0]),
                 (6, "filter resonance", [-0.6, 0.6]),
+                (7, "oscillator mix", [-0.6, 0.6]),
             ] {
                 let mut route_base = base.clone();
                 if matches!(route, 3 | 4) {
@@ -1561,6 +1602,14 @@ mod tests {
                 }
                 if route == 4 {
                     route_base.sync = Some(OscillatorSync { ratio: 2.0 });
+                }
+                if route == 7 {
+                    route_base.oscillators.push(Oscillator {
+                        start_frequency_hz: 660.0,
+                        end_frequency_hz: 660.0,
+                        amplitude: 0.5,
+                        ..Oscillator::default()
+                    });
                 }
                 let baseline = render(&route_base).unwrap().samples;
                 let mut routed = Vec::new();
@@ -1586,6 +1635,7 @@ mod tests {
                             aux.lfo_rate_depth = depth;
                         }
                         6 => aux.filter_resonance_depth = depth,
+                        7 => aux.oscillator_mix_depth = depth,
                         _ => unreachable!(),
                     }
                     if second {
@@ -1628,6 +1678,7 @@ mod tests {
             sync_ratio_depth: 0.4,
             filter_cutoff_depth_octaves: 1.25,
             filter_resonance_depth: 0.2,
+            oscillator_mix_depth: 0.3,
             target_lfo: Some(0),
             lfo_rate_depth: 0.5,
         };
@@ -1647,6 +1698,7 @@ mod tests {
                 sync_ratio_depth: shared.sync_ratio_depth * 2.0,
                 filter_cutoff_depth_octaves: shared.filter_cutoff_depth_octaves * 2.0,
                 filter_resonance_depth: shared.filter_resonance_depth * 2.0,
+                oscillator_mix_depth: shared.oscillator_mix_depth * 2.0,
                 lfo_rate_depth: shared.lfo_rate_depth * 2.0,
                 ..shared
             }),
@@ -1693,6 +1745,48 @@ mod tests {
     }
 
     #[test]
+    fn filter_resonance_lfo_sums_with_auxiliary_envelopes_before_clamp() {
+        let mut base = auxiliary_test_patch();
+        base.envelope.release_seconds = 0.0;
+        let envelope = Envelope {
+            attack_seconds: 0.0,
+            decay_seconds: 0.0,
+            sustain_level: 1.0,
+            release_seconds: 0.0,
+        };
+        for (depth, clamped_resonance) in [(0.5, 1.0), (-0.5, 0.0)] {
+            let aux = AuxEnvelope {
+                envelope: envelope.clone(),
+                filter_resonance_depth: depth,
+                ..AuxEnvelope::default()
+            };
+            let mut routed = Patch {
+                aux_envelope: Some(aux.clone()),
+                aux_envelope_2: Some(aux),
+                ..base.clone()
+            };
+            routed.modulation.push(Lfo {
+                rate_hz: 0.0,
+                destination: LfoDestination::FilterResonance,
+                waveform: LfoWaveform::SawDown,
+                filter_resonance_depth: depth,
+                ..Lfo::default()
+            });
+            let clamped = Patch {
+                filter: Some(Filter {
+                    resonance: clamped_resonance,
+                    ..base.filter.clone().unwrap()
+                }),
+                ..base.clone()
+            };
+            let expected = render(&clamped).unwrap().samples;
+            let actual = render(&routed).unwrap().samples;
+            assert_eq!(actual, expected, "depth {depth} did not clamp exactly");
+            assert_eq!(actual, render(&routed).unwrap().samples);
+        }
+    }
+
+    #[test]
     fn opposing_auxiliary_routes_cancel_with_performance_modulation() {
         let envelope = Envelope {
             attack_seconds: 0.015,
@@ -1710,6 +1804,7 @@ mod tests {
                 sync_ratio_depth: 0.75,
                 filter_cutoff_depth_octaves: 2.5,
                 filter_resonance_depth: 0.5,
+                oscillator_mix_depth: 0.4,
                 target_lfo: Some(0),
                 lfo_rate_depth: 0.75,
             }),
@@ -1721,6 +1816,7 @@ mod tests {
                 sync_ratio_depth: -0.75,
                 filter_cutoff_depth_octaves: -2.5,
                 filter_resonance_depth: -0.5,
+                oscillator_mix_depth: -0.4,
                 target_lfo: Some(0),
                 lfo_rate_depth: -0.75,
             }),
@@ -1788,6 +1884,142 @@ mod tests {
             render_notes_dry_with_full_automation(&routed, &notes, &bends, &pressure, &expression,)
                 .unwrap()
                 .samples
+        );
+    }
+
+    #[test]
+    fn filter_resonance_lfo_cancels_with_auxiliaries_and_honors_wheel_depth() {
+        let envelope = Envelope {
+            attack_seconds: 0.0,
+            decay_seconds: 0.0,
+            sustain_level: 1.0,
+            release_seconds: 0.0,
+        };
+        let lfo = Lfo {
+            rate_hz: 0.0,
+            destination: LfoDestination::FilterResonance,
+            waveform: LfoWaveform::SawDown,
+            filter_resonance_depth: 0.8,
+            ..Lfo::default()
+        };
+        let mut base = auxiliary_test_patch();
+        base.envelope.release_seconds = 0.0;
+        let mut cancelled = Patch {
+            aux_envelope: Some(AuxEnvelope {
+                envelope: envelope.clone(),
+                filter_resonance_depth: -0.4,
+                ..AuxEnvelope::default()
+            }),
+            aux_envelope_2: Some(AuxEnvelope {
+                envelope,
+                filter_resonance_depth: -0.4,
+                ..AuxEnvelope::default()
+            }),
+            ..base.clone()
+        };
+        cancelled.modulation.push(lfo.clone());
+        let expected = render(&base).unwrap().samples;
+        assert_eq!(render(&cancelled).unwrap().samples, expected);
+        cancelled
+            .modulation
+            .last_mut()
+            .unwrap()
+            .filter_resonance_depth = 0.4;
+        assert_ne!(render(&cancelled).unwrap().samples, expected);
+
+        let mut wheel_routed = Patch {
+            aux_envelope: None,
+            aux_envelope_2: None,
+            ..base.clone()
+        };
+        wheel_routed.modulation.push(lfo);
+        let notes = [note(60)];
+        let no_wheel = [SynthController {
+            time_seconds: 0.0,
+            controller: 1,
+            value: 0,
+        }];
+        assert_eq!(
+            render_notes_dry_with_full_automation(&wheel_routed, &notes, &[], &[], &no_wheel)
+                .unwrap()
+                .samples,
+            render_notes_dry_with_full_automation(&base, &notes, &[], &[], &no_wheel)
+                .unwrap()
+                .samples
+        );
+        assert_ne!(
+            render_notes_dry(&wheel_routed, &notes).unwrap().samples,
+            render_notes_dry(&base, &notes).unwrap().samples
+        );
+    }
+
+    #[test]
+    fn oscillator_mix_routes_cancel_and_clamp_to_exact_a_or_b() {
+        let mut base = auxiliary_test_patch();
+        base.envelope.release_seconds = 0.0;
+        base.oscillators.push(Oscillator {
+            waveform: Waveform::Saw,
+            start_frequency_hz: 660.0,
+            end_frequency_hz: 660.0,
+            amplitude: 0.5,
+            ..Oscillator::default()
+        });
+        let envelope = Envelope {
+            attack_seconds: 0.0,
+            decay_seconds: 0.0,
+            sustain_level: 1.0,
+            release_seconds: 0.0,
+        };
+        let lfo = Lfo {
+            rate_hz: 0.0,
+            destination: LfoDestination::OscillatorMix,
+            waveform: LfoWaveform::SawDown,
+            oscillator_mix_depth: 0.5,
+            ..Lfo::default()
+        };
+        for (depth, muted_oscillator) in [(0.5, 0), (-0.5, 1)] {
+            let aux = AuxEnvelope {
+                envelope: envelope.clone(),
+                oscillator_mix_depth: depth,
+                ..AuxEnvelope::default()
+            };
+            let mut routed = Patch {
+                aux_envelope: Some(aux.clone()),
+                aux_envelope_2: Some(aux),
+                ..base.clone()
+            };
+            routed.modulation.push(Lfo {
+                oscillator_mix_depth: depth,
+                ..lfo.clone()
+            });
+            let mut expected_patch = base.clone();
+            expected_patch.oscillators[muted_oscillator].amplitude = 0.0;
+            let expected = render(&expected_patch).unwrap().samples;
+            let actual = render(&routed).unwrap().samples;
+            assert_eq!(actual, expected, "depth {depth} did not clamp exactly");
+            assert_eq!(actual, render(&routed).unwrap().samples);
+        }
+
+        let mut cancelled = Patch {
+            aux_envelope: Some(AuxEnvelope {
+                envelope: envelope.clone(),
+                oscillator_mix_depth: -0.4,
+                ..AuxEnvelope::default()
+            }),
+            aux_envelope_2: Some(AuxEnvelope {
+                envelope,
+                oscillator_mix_depth: -0.4,
+                ..AuxEnvelope::default()
+            }),
+            ..base.clone()
+        };
+        cancelled.modulation.push(Lfo {
+            oscillator_mix_depth: 0.8,
+            ..lfo
+        });
+        assert_eq!(
+            render(&cancelled).unwrap().samples,
+            render(&base).unwrap().samples
         );
     }
 
@@ -2402,6 +2634,62 @@ mod tests {
             },
             ..Patch::default()
         }
+    }
+
+    #[test]
+    fn insert_automation_matches_static_extremes_and_follows_event_times() {
+        let patch = Patch {
+            sample_rate: 8_000,
+            duration_seconds: 0.05,
+            waveshaper: Some(crate::Waveshaper {
+                drive: 32.0,
+                contour: 1.0,
+                level: 1.0,
+            }),
+            delay: Some(crate::Delay {
+                time_seconds: 2.0,
+                feedback: 0.95,
+                mix: 1.0,
+                ..crate::Delay::default()
+            }),
+            ..Patch::default()
+        };
+        let notes = [SynthNote {
+            start_seconds: 0.0,
+            duration_seconds: 0.05,
+            pitch: 60,
+            velocity: 100,
+        }];
+        let static_audio = render_notes(&patch, &notes).unwrap().samples;
+        let extreme = (20..=25)
+            .map(|controller| SynthController {
+                time_seconds: 0.0,
+                controller,
+                value: 127,
+            })
+            .collect::<Vec<_>>();
+        let dynamic = render_notes_with_full_automation(&patch, &notes, &[], &[], &extreme)
+            .unwrap()
+            .samples;
+        assert_eq!(dynamic, static_audio);
+
+        let mut changed = extreme;
+        changed.extend((20..=25).map(|controller| SynthController {
+            time_seconds: 0.02,
+            controller,
+            value: 0,
+        }));
+        let automated = render_notes_with_full_automation(&patch, &notes, &[], &[], &changed)
+            .unwrap()
+            .samples;
+        assert_eq!(automated[..160], static_audio[..160]);
+        assert_ne!(automated, static_audio);
+        assert_eq!(
+            automated,
+            render_notes_with_full_automation(&patch, &notes, &[], &[], &changed)
+                .unwrap()
+                .samples
+        );
     }
 
     fn auxiliary_test_patch() -> Patch {

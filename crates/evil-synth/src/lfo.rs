@@ -8,6 +8,8 @@ pub enum LfoDestination {
     PulseWidth,
     SyncRatio,
     FilterCutoff,
+    FilterResonance,
+    OscillatorMix,
     Amplitude,
     LfoRate,
 }
@@ -36,6 +38,10 @@ pub struct Lfo {
     pub sync_ratio_depth: f32,
     /// Filter cutoff modulation in octaves.
     pub filter_cutoff_depth: f32,
+    /// Bipolar filter-resonance modulation.
+    pub filter_resonance_depth: f32,
+    /// Signed A/B balance modulation in Mix mode; positive favors Osc B.
+    pub oscillator_mix_depth: f32,
     pub amplitude_depth: f32,
     /// Zero-based index into the patch's primary/additional LFO lanes.
     pub target_lfo: Option<usize>,
@@ -54,6 +60,8 @@ impl Default for Lfo {
             pulse_width_depth: 0.5,
             sync_ratio_depth: 0.5,
             filter_cutoff_depth: 1.0,
+            filter_resonance_depth: 0.5,
+            oscillator_mix_depth: 0.5,
             amplitude_depth: 0.5,
             target_lfo: None,
             lfo_rate_depth: 0.0,

@@ -88,6 +88,7 @@ impl StudioApp {
             pan: instrument.pan,
             tempo_bpm: self.project.tempo_bpm,
             filter: patch.filter.clone(),
+            waveshaper: patch.waveshaper.clone(),
             delay: patch.delay.clone(),
         };
         if self.keyboard_player.is_none()

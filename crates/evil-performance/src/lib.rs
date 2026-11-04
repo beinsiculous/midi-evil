@@ -2,10 +2,10 @@ use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_TICKS_PER_QUARTER: u16 = 480;
 
-/// Continuous controllers currently mapped to synthesis parameters.
+/// Continuous controllers currently mapped to synthesis and instrument-insert parameters.
 /// Other controllers remain editable and are preserved through MIDI export.
 pub fn controller_is_rendered(controller: u8) -> bool {
-    matches!(controller, 1 | 11)
+    matches!(controller, 1 | 11 | 20..=25)
 }
 
 #[derive(Debug)]

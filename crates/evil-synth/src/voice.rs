@@ -26,6 +26,17 @@ pub(crate) struct VoiceControls {
     pub expression: f32,
 }
 
+#[derive(Default)]
+struct AuxModulation {
+    amplitude: f32,
+    pitch_cents: f32,
+    pulse_width: f32,
+    sync_ratio: f32,
+    filter_cutoff_octaves: f32,
+    filter_resonance: f32,
+    oscillator_mix: f32,
+}
+
 pub(crate) struct VoiceState {
     oscillators: Vec<Vec<OscillatorState>>,
     filter: FilterState,
@@ -82,30 +93,20 @@ impl VoiceState {
         let sample_rate = patch.sample_rate;
         let sweep_progress = (time / patch.duration_seconds).min(1.0);
         let amp_envelope = patch.envelope.amplitude(time, gate_seconds);
-        let (
-            aux_amplitude,
-            aux_pitch_cents,
-            aux_pulse_width,
-            aux_sync_ratio,
-            aux_filter_cutoff_octaves,
-            aux_filter_resonance,
-        ) = [patch.aux_envelope.as_ref(), patch.aux_envelope_2.as_ref()]
+        let aux = [patch.aux_envelope.as_ref(), patch.aux_envelope_2.as_ref()]
             .into_iter()
             .flatten()
-            .fold(
-                (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
-                |(amplitude, pitch, pulse_width, sync_ratio, cutoff, resonance), aux| {
-                    let level = aux.envelope.amplitude(time, gate_seconds);
-                    (
-                        amplitude + aux.amplitude_depth * level,
-                        pitch + aux.pitch_depth_cents * level,
-                        pulse_width + aux.pulse_width_depth * level,
-                        sync_ratio + aux.sync_ratio_depth * level,
-                        cutoff + aux.filter_cutoff_depth_octaves * level,
-                        resonance + aux.filter_resonance_depth * level,
-                    )
-                },
-            );
+            .fold(AuxModulation::default(), |mut total, aux| {
+                let level = aux.envelope.amplitude(time, gate_seconds);
+                total.amplitude += aux.amplitude_depth * level;
+                total.pitch_cents += aux.pitch_depth_cents * level;
+                total.pulse_width += aux.pulse_width_depth * level;
+                total.sync_ratio += aux.sync_ratio_depth * level;
+                total.filter_cutoff_octaves += aux.filter_cutoff_depth_octaves * level;
+                total.filter_resonance += aux.filter_resonance_depth * level;
+                total.oscillator_mix += aux.oscillator_mix_depth * level;
+                total
+            });
         let modulation = controls.modulation;
         let bend_semitones = controls.bend_semitones;
         let glide_semitones = if patch.glide_seconds > 0.0 && time < patch.glide_seconds {
@@ -114,13 +115,14 @@ impl VoiceState {
             0.0
         };
         let pitch_multiplier = 2.0_f32.powf(
-            (modulation.pitch_cents + aux_pitch_cents + (bend_semitones + glide_semitones) * 100.0)
+            (modulation.pitch_cents + aux.pitch_cents + (bend_semitones + glide_semitones) * 100.0)
                 / 1200.0,
         );
         let oscillator_mode = patch.effective_oscillator_mode();
-        let pulse_width = modulation.pulse_width + aux_pulse_width;
+        let oscillator_mix = (modulation.oscillator_mix + aux.oscillator_mix).clamp(-1.0, 1.0);
+        let pulse_width = modulation.pulse_width + aux.pulse_width;
         let sync_ratio = patch.uses_sync().then(|| {
-            (patch.sync_ratio() + modulation.sync_ratio + aux_sync_ratio).clamp(0.01, 16.0)
+            (patch.sync_ratio() + modulation.sync_ratio + aux.sync_ratio).clamp(0.01, 16.0)
         });
         let count = self.oscillators.len();
         let mut sample = 0.0;
@@ -171,13 +173,22 @@ impl VoiceState {
                         } else {
                             voice_pitch
                         };
+                    let mix_gain = if oscillator_mode != OscillatorMode::Mix {
+                        1.0
+                    } else {
+                        match index {
+                            0 => 1.0 - oscillator_mix.max(0.0),
+                            1 => 1.0 + oscillator_mix.min(0.0),
+                            _ => 1.0,
+                        }
+                    };
                     voice_sample += oscillator.sample(
                         state,
                         sweep_progress,
                         sample_rate,
                         multiplier,
                         pulse_width,
-                    );
+                    ) * mix_gain;
                 }
             }
             if sync_ratio.is_some() {
@@ -228,16 +239,16 @@ impl VoiceState {
                 sample_rate,
                 filter_envelope,
                 modulation.filter_cutoff_octaves
-                    + aux_filter_cutoff_octaves
+                    + aux.filter_cutoff_octaves
                     + if filter.key_tracking {
                         bend_semitones / 12.0
                     } else {
                         0.0
                     },
-                aux_filter_resonance,
+                modulation.filter_resonance + aux.filter_resonance,
             );
         }
-        let amplitude = (1.0 + modulation.amplitude + aux_amplitude).clamp(0.0, 1.0);
+        let amplitude = (1.0 + modulation.amplitude + aux.amplitude).clamp(0.0, 1.0);
         sample * (amp_envelope * patch.gain * amplitude * controls.pressure * controls.expression)
     }
 }

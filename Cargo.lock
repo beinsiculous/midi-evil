@@ -1596,6 +1596,8 @@ dependencies = [
 name = "midi-evil"
 version = "0.1.0"
 dependencies = [
+ "cpal",
+ "dasp_sample",
  "eframe",
  "evil-beats",
  "evil-exports",

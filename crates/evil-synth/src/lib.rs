@@ -1,7 +1,9 @@
+mod aiff;
 mod aux_envelope;
 mod delay;
 mod envelope;
 mod filter;
+mod insert_automation;
 mod lfo;
 mod live;
 mod mix;
@@ -15,13 +17,20 @@ mod sync;
 mod unison;
 mod voice;
 mod wav;
+mod waveshaper;
+mod wavetable;
 
 pub use live::{LiveControls, LiveSynth};
 
+pub use aiff::read_mono_aiff;
 pub use aux_envelope::AuxEnvelope;
 pub use delay::{Delay, DelayMode};
 pub use envelope::Envelope;
 pub use filter::{Filter, FilterMode};
+pub use insert_automation::{
+    DELAY_FEEDBACK_CC, DELAY_MIX_CC, DELAY_TIME_CC, WAVESHAPER_CONTOUR_CC, WAVESHAPER_DRIVE_CC,
+    WAVESHAPER_LEVEL_CC, controller_is_insert_automation,
+};
 pub use lfo::{Lfo, LfoDestination, LfoWaveform};
 pub use mix::{MonoTrack, StereoSound, StereoTrack, mix_stereo, mix_stereo_with_tracks};
 pub use modal::ModalPartial;
@@ -41,6 +50,7 @@ use thiserror::Error;
 pub use unison::Unison;
 pub use voice::VoiceMode;
 pub use wav::read_mono_wav;
+pub use waveshaper::Waveshaper;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -60,6 +70,8 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     #[error("invalid WAV audio: {0}")]
     InvalidWav(String),
+    #[error("invalid AIFF audio: {0}")]
+    InvalidAiff(String),
     #[error("WAV I/O error: {0}")]
     Wav(#[from] hound::Error),
 }

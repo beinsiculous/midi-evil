@@ -1,13 +1,20 @@
 use crate::delay::apply_stereo_delay;
+use crate::insert_automation::{
+    apply_stereo_delay_automation, apply_stereo_waveshaper_automation, has_delay_automation,
+    has_waveshaper_automation,
+};
 use crate::render::block_dc;
-use crate::{Delay, Error, RenderedSound};
+use crate::waveshaper::apply_stereo_waveshaper;
+use crate::{Delay, Error, RenderedSound, SynthController, Waveshaper};
 
 pub struct MonoTrack<'a> {
     pub sound: &'a RenderedSound,
     pub gain: f32,
     /// Stereo position from -1 (left) to 1 (right).
     pub pan: f32,
+    pub waveshaper: Option<&'a Waveshaper>,
     pub delay: Option<&'a Delay>,
+    pub controllers: &'a [SynthController],
     /// Remove DC introduced by oscillator sync and nonlinear limiting.
     pub dc_block: bool,
 }
@@ -82,9 +89,33 @@ pub fn mix_stereo_with_tracks(
             track_left[frame] = sample * left_gain;
             track_right[frame] = sample * right_gain;
         }
+        if let Some(waveshaper) = track.waveshaper {
+            waveshaper.validate()?;
+            if has_waveshaper_automation(track.controllers) {
+                apply_stereo_waveshaper_automation(
+                    &mut track_left,
+                    &mut track_right,
+                    sample_rate,
+                    waveshaper,
+                    track.controllers,
+                );
+            } else {
+                apply_stereo_waveshaper(&mut track_left, &mut track_right, waveshaper);
+            }
+        }
         if let Some(delay) = track.delay {
             delay.validate()?;
-            apply_stereo_delay(&mut track_left, &mut track_right, sample_rate, delay);
+            if has_delay_automation(track.controllers) {
+                apply_stereo_delay_automation(
+                    &mut track_left,
+                    &mut track_right,
+                    sample_rate,
+                    delay,
+                    track.controllers,
+                );
+            } else {
+                apply_stereo_delay(&mut track_left, &mut track_right, sample_rate, delay);
+            }
         }
         if left.len() < track_left.len() {
             left.resize(track_left.len(), 0.0);
@@ -162,14 +193,18 @@ mod tests {
                     sound: &short,
                     gain: 1.0,
                     pan: -1.0,
+                    waveshaper: None,
                     delay: None,
+                    controllers: &[],
                     dc_block: false,
                 },
                 MonoTrack {
                     sound: &long,
                     gain: 1.0,
                     pan: 1.0,
+                    waveshaper: None,
                     delay: None,
+                    controllers: &[],
                     dc_block: false,
                 },
             ],
@@ -208,7 +243,9 @@ mod tests {
                 sound: &sound,
                 gain: 1.0,
                 pan: -1.0,
+                waveshaper: None,
                 delay: Some(&delay),
+                controllers: &[],
                 dc_block: false,
             }],
             1.0,
@@ -219,6 +256,62 @@ mod tests {
         assert!(stereo.left[50].abs() < 0.001);
         assert!(stereo.left[100] > 0.2);
         assert!(stereo.right[100].abs() < 0.001);
+    }
+
+    #[test]
+    fn stereo_insert_automation_matches_static_extremes() {
+        let sound = RenderedSound {
+            samples: (0..32)
+                .map(|frame| (frame as f32 * 0.3).sin() * 0.5)
+                .collect(),
+            sample_rate: 8_000,
+        };
+        let waveshaper = Waveshaper {
+            drive: 32.0,
+            contour: 1.0,
+            level: 1.0,
+        };
+        let delay = Delay {
+            time_seconds: 2.0,
+            feedback: 0.95,
+            mix: 1.0,
+            mode: crate::DelayMode::StereoCross,
+        };
+        let controllers = (20..=25)
+            .map(|controller| SynthController {
+                time_seconds: 0.0,
+                controller,
+                value: 127,
+            })
+            .collect::<Vec<_>>();
+        let static_mix = mix_stereo(
+            &[MonoTrack {
+                sound: &sound,
+                gain: 0.8,
+                pan: -0.3,
+                waveshaper: Some(&waveshaper),
+                delay: Some(&delay),
+                controllers: &[],
+                dc_block: false,
+            }],
+            1.0,
+        )
+        .unwrap();
+        let dynamic_mix = mix_stereo(
+            &[MonoTrack {
+                sound: &sound,
+                gain: 0.8,
+                pan: -0.3,
+                waveshaper: Some(&waveshaper),
+                delay: Some(&delay),
+                controllers: &controllers,
+                dc_block: false,
+            }],
+            1.0,
+        )
+        .unwrap();
+        assert_eq!(dynamic_mix.left, static_mix.left);
+        assert_eq!(dynamic_mix.right, static_mix.right);
     }
 
     #[test]
@@ -270,14 +363,18 @@ mod tests {
                         sound: &first,
                         gain: 1.0,
                         pan: 0.0,
+                        waveshaper: None,
                         delay: None,
+                        controllers: &[],
                         dc_block: false,
                     },
                     MonoTrack {
                         sound: &second,
                         gain: 1.0,
                         pan: 0.0,
+                        waveshaper: None,
                         delay: None,
+                        controllers: &[],
                         dc_block: false,
                     },
                 ],

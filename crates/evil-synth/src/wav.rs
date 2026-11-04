@@ -29,10 +29,7 @@ pub fn read_mono_wav(path: impl AsRef<Path>) -> Result<RenderedSound, Error> {
                 .collect::<Result<_, _>>()?
         }
     };
-    let samples: Vec<f32> = samples
-        .chunks(usize::from(spec.channels))
-        .map(|frame| frame.iter().sum::<f32>() / frame.len() as f32)
-        .collect();
+    let samples = downmix_interleaved(samples, spec.channels);
     if samples.is_empty() || samples.iter().any(|sample| !sample.is_finite()) {
         return Err(Error::InvalidWav(
             "WAV samples must be nonempty and finite".to_owned(),
@@ -42,6 +39,13 @@ pub fn read_mono_wav(path: impl AsRef<Path>) -> Result<RenderedSound, Error> {
         samples,
         sample_rate: spec.sample_rate,
     })
+}
+
+pub(crate) fn downmix_interleaved(samples: Vec<f32>, channels: u16) -> Vec<f32> {
+    samples
+        .chunks(usize::from(channels))
+        .map(|frame| frame.iter().sum::<f32>() / frame.len() as f32)
+        .collect()
 }
 
 impl RenderedSound {

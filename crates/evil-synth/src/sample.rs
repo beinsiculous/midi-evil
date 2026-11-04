@@ -2,7 +2,7 @@ use std::{ops::Range, path::Path};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Error, read_mono_wav};
+use crate::{Error, RenderedSound, StereoSound, read_mono_aiff, read_mono_wav};
 
 pub const MAX_SAMPLE_SECONDS: u32 = 30;
 
@@ -102,10 +102,51 @@ impl SampleOscillator {
         }
     }
 
+    /// Downmix a rendered stereo section into a portable embedded sample.
+    pub fn from_stereo(name: impl Into<String>, sound: &StereoSound) -> Result<Self, Error> {
+        if sound.left.len() != sound.right.len() {
+            return Err(Error::InvalidMix(
+                "resampled audio channels must have the same frame count".to_owned(),
+            ));
+        }
+        let samples = sound
+            .left
+            .iter()
+            .zip(&sound.right)
+            .map(|(left, right)| (left + right) * 0.5)
+            .collect();
+        let mut sample = Self::new(samples, sound.sample_rate);
+        sample.name = name.into();
+        sample.validate()?;
+        Ok(sample)
+    }
+
+    /// Import a WAV or AIFF/AIFC source based on its file extension.
+    pub fn read(path: impl AsRef<Path>) -> Result<Self, Error> {
+        let path = path.as_ref();
+        if path
+            .extension()
+            .is_some_and(|extension| matches!(extension.to_str(), Some("aif" | "aiff" | "aifc")))
+        {
+            Self::read_aiff(path)
+        } else {
+            Self::read_wav(path)
+        }
+    }
+
     /// Import mono/stereo PCM or float WAV, downmixing stereo to mono.
     pub fn read_wav(path: impl AsRef<Path>) -> Result<Self, Error> {
         let path = path.as_ref();
-        let sound = read_mono_wav(path)?;
+        Self::from_rendered(path, read_mono_wav(path)?)
+    }
+
+    /// Import mono/stereo uncompressed AIFF/AIFC, downmixing stereo to mono.
+    pub fn read_aiff(path: impl AsRef<Path>) -> Result<Self, Error> {
+        let path = path.as_ref();
+        Self::from_rendered(path, read_mono_aiff(path)?)
+    }
+
+    fn from_rendered(path: &Path, sound: RenderedSound) -> Result<Self, Error> {
         let mut sample = Self::new(sound.samples, sound.sample_rate);
         sample.name = path
             .file_stem()
@@ -294,6 +335,24 @@ mod tests {
         assert_eq!(sample.samples, vec![0.25, -0.25]);
         assert!(!sample.loop_enabled);
         assert_eq!(sample.loop_range(), 0..2);
+    }
+
+    #[test]
+    fn stereo_resampling_downmixes_and_validates_embedded_audio() {
+        let sound = crate::StereoSound {
+            left: vec![0.5, -0.25],
+            right: vec![0.25, 0.75],
+            sample_rate: 48_000,
+        };
+        let sample = SampleOscillator::from_stereo("Section", &sound).unwrap();
+        assert_eq!(sample.name, "Section");
+        assert_eq!(sample.samples, vec![0.375, 0.25]);
+        assert_eq!(sample.sample_rate, 48_000);
+        let mismatched = crate::StereoSound {
+            right: Vec::new(),
+            ..sound
+        };
+        assert!(SampleOscillator::from_stereo("Invalid", &mismatched).is_err());
     }
 
     #[test]

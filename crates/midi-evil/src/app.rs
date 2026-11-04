@@ -76,6 +76,11 @@ enum PendingRender {
         repeat: bool,
     },
     Audition(Box<evil_synth::Patch>),
+    Resample {
+        track_index: usize,
+        start_tick: u64,
+        end_tick: Option<u64>,
+    },
     Wav(PathBuf),
 }
 
@@ -574,6 +579,30 @@ impl StudioApp {
                 if ui.button("Audition").clicked() {
                     action = Some(PatchLabAction::Audition);
                 }
+                if ui.button("Resample section → Osc A").clicked() {
+                    let (start_tick, end_tick) = self.transport.range();
+                    self.start_render(PendingRender::Resample {
+                        track_index: lab.track_index,
+                        start_tick,
+                        end_tick,
+                    });
+                }
+                let recording = lab.recording_active();
+                let record_label = if recording {
+                    "Stop & embed mic"
+                } else {
+                    "Record mic → Osc A"
+                };
+                if ui.button(record_label).clicked() {
+                    let result = if recording {
+                        lab.stop_recording()
+                    } else {
+                        lab.start_recording()
+                    };
+                    self.status = match result {
+                        Ok(message) | Err(message) => message,
+                    };
+                }
             });
             ui.separator();
             let message = egui::ScrollArea::vertical()
@@ -881,6 +910,11 @@ impl StudioApp {
                 start_tick,
                 end_tick,
                 ..
+            }
+            | PendingRender::Resample {
+                start_tick,
+                end_tick,
+                ..
             } => RenderJob::start_range(
                 self.project.clone(),
                 self.patch_base().to_path_buf(),
@@ -894,6 +928,9 @@ impl StudioApp {
         self.render_job = Some(job);
         self.status = match &action {
             PendingRender::Audition(patch) => format!("Auditioning '{}'…", patch.name),
+            PendingRender::Resample { .. } => {
+                "Resampling the section in the background…".to_owned()
+            }
             PendingRender::Preview { .. } | PendingRender::Wav(_) => {
                 "Rendering in the background…".to_owned()
             }
@@ -918,6 +955,30 @@ impl StudioApp {
             }
             (Some(PendingRender::Audition(patch)), Ok(rendered)) => {
                 self.play_render(rendered, format!("Auditioning '{}'", patch.name), false);
+            }
+            (Some(PendingRender::Resample { track_index, .. }), Ok(rendered)) => {
+                match evil_synth::SampleOscillator::from_stereo("Project section", &rendered.sound)
+                {
+                    Ok(sample) => {
+                        if let Some(lab) = self
+                            .patch_lab
+                            .as_mut()
+                            .filter(|lab| lab.track_index == track_index)
+                        {
+                            let oscillator = &mut lab.patch.oscillators[0];
+                            oscillator.sample = Some(sample);
+                            oscillator.sample_zones.clear();
+                            oscillator.waveform = evil_synth::Waveform::Sample;
+                            self.status =
+                                "Resampled section into Osc A; use Save As to keep it".to_owned();
+                        } else {
+                            self.status =
+                                "Resampling finished, but the original Patch Lab is no longer open"
+                                    .to_owned();
+                        }
+                    }
+                    Err(error) => self.status = format!("Could not embed resampled audio: {error}"),
+                }
             }
             (Some(PendingRender::Wav(output)), Ok(rendered)) => {
                 match rendered.sound.write_wav(&output) {
