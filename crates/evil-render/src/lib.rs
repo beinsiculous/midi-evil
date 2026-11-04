@@ -605,6 +605,49 @@ mod tests {
     }
 
     #[test]
+    fn project_render_loads_trimmed_reverse_looped_drum_kits() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut kit = evil_beats::DrumKit::empty("Playback modes");
+        kit.gain = 1.0;
+        let mut pad = evil_beats::KitPad::new(evil_beats::DrumPad::new(
+            vec![0.0, 0.25, 0.5, 0.75, 1.0],
+            48_000,
+        ));
+        pad.voice.envelope.release_seconds = 0.0;
+        pad.voice.playback_start_frame = 1;
+        pad.voice.playback_end_frame = Some(4);
+        pad.voice.direction = evil_beats::SampleDirection::Reverse;
+        pad.voice.loop_enabled = true;
+        pad.gate_seconds = Some(0.01);
+        pad.choke_group = 1;
+        kit.pads[0] = Some(pad);
+        std::fs::write(directory.path().join("kit.evilkit"), kit.to_json().unwrap()).unwrap();
+
+        let mut project = Project::new("Drum playback modes");
+        let instrument = project
+            .add_instrument(evil_project::Instrument::drum_kit("Kit", "kit.evilkit"))
+            .unwrap();
+        project
+            .add_track(Track {
+                instrument,
+                notes: vec![Note {
+                    pitch: 36,
+                    ..Note::default()
+                }],
+                ..Track::default()
+            })
+            .unwrap();
+        let reversed = render_project(&project, directory.path()).unwrap();
+        assert_eq!(reversed.note_count, 1);
+        assert!(reversed.sound.left.iter().any(|sample| *sample != 0.0));
+
+        kit.pads[0].as_mut().unwrap().voice.direction = evil_beats::SampleDirection::Forward;
+        std::fs::write(directory.path().join("kit.evilkit"), kit.to_json().unwrap()).unwrap();
+        let forward = render_project(&project, directory.path()).unwrap();
+        assert_ne!(reversed.sound.left, forward.sound.left);
+    }
+
+    #[test]
     fn renders_drum_kit_tracks_and_reports_unmapped_notes() {
         let mut project = Project::new("Drums");
         let instrument = project

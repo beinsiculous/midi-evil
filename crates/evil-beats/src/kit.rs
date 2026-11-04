@@ -24,6 +24,9 @@ pub struct KitPad {
     pub muted: bool,
     #[serde(default)]
     pub gate_seconds: Option<f64>,
+    /// Zero is independent; pads sharing group 1 or 2 silence each other.
+    #[serde(default)]
+    pub choke_group: u8,
 }
 
 impl KitPad {
@@ -33,6 +36,7 @@ impl KitPad {
             pan: 0.0,
             muted: false,
             gate_seconds: None,
+            choke_group: 0,
         }
     }
 
@@ -48,6 +52,11 @@ impl KitPad {
         }
         if !self.pan.is_finite() || !(-1.0..=1.0).contains(&self.pan) {
             return Err(Error::InvalidKit("pad pan must be between -1 and 1".into()));
+        }
+        if self.choke_group > 2 {
+            return Err(Error::InvalidKit(
+                "pad choke group must be 0 (off), 1, or 2".into(),
+            ));
         }
         Ok(())
     }
@@ -136,8 +145,39 @@ mod tests {
         let mut pad = KitPad::new(DrumPad::new(vec![0.0, 0.5, -0.5], 48_000));
         pad.pan = -0.6;
         pad.voice.tuning_semitones = 7.0;
+        pad.voice.playback_start_frame = 1;
+        pad.voice.playback_end_frame = Some(3);
+        pad.voice.direction = crate::SampleDirection::Reverse;
+        pad.voice.loop_enabled = true;
+        pad.gate_seconds = Some(0.25);
+        pad.choke_group = 2;
         kit.pads[15] = Some(pad);
         assert_eq!(DrumKit::from_json(&kit.to_json().unwrap()).unwrap(), kit);
+
+        let mut legacy = serde_json::to_value(&kit).unwrap();
+        let legacy_pad = legacy["pads"][15].as_object_mut().unwrap();
+        legacy_pad.remove("choke_group");
+        legacy_pad.remove("gate_seconds");
+        let voice = legacy_pad["voice"].as_object_mut().unwrap();
+        for field in [
+            "playback_start_frame",
+            "playback_end_frame",
+            "direction",
+            "loop_enabled",
+        ] {
+            voice.remove(field);
+        }
+        let migrated = DrumKit::from_json(&legacy.to_string()).unwrap();
+        let voice = &migrated.pads[15].as_ref().unwrap().voice;
+        assert_eq!(voice.playback_range(), 0..3);
+        assert_eq!(voice.direction, crate::SampleDirection::Forward);
+        assert!(!voice.loop_enabled);
+        assert_eq!(migrated.pads[15].as_ref().unwrap().choke_group, 0);
+
+        kit.pads[15].as_mut().unwrap().choke_group = 3;
+        assert!(kit.validate().is_err());
+        kit.pads[15].as_mut().unwrap().choke_group = 2;
+
         kit.version = 99;
         assert!(kit.to_json().is_err());
     }

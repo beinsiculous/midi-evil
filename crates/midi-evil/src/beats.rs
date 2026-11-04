@@ -2,7 +2,7 @@
 use std::{path::PathBuf, time::Instant};
 
 use eframe::egui::{self, Key, Rect, RichText, TextureHandle, vec2};
-use evil_beats::{DrumKit, PAD_COUNT};
+use evil_beats::{DrumKit, PAD_COUNT, SampleDirection};
 
 mod bank;
 mod drawing;
@@ -242,12 +242,53 @@ impl BeatsPage {
                                 self.dirty |= ui.text_edit_singleline(&mut pad.voice.name).changed();
                                 waveform(ui, &self.peaks[self.selected], 54.0, theme::track_color(self.selected / 4));
                                 ui.label(RichText::new(format!("{:.2} s / {} Hz / mono", pad.voice.samples.len() as f32 / pad.voice.sample_rate as f32, pad.voice.sample_rate)).small().color(theme::MUTED));
+                                let frame_count = pad.voice.samples.len();
+                                let mut trim_start = pad.voice.playback_start_frame;
+                                let mut trim_end = pad.voice.playback_range().end;
+                                let trim_changed = ui.horizontal(|ui| {
+                                    let start_changed = ui.add(egui::DragValue::new(&mut trim_start).range(0..=frame_count - 1).prefix("Trim ")).changed();
+                                    let end_changed = ui.add(egui::DragValue::new(&mut trim_end).range(1..=frame_count).prefix("to ")).changed();
+                                    start_changed || end_changed
+                                }).inner;
+                                if trim_changed {
+                                    trim_start = trim_start.min(frame_count - 1);
+                                    trim_end = trim_end.clamp(trim_start + 1, frame_count);
+                                    pad.voice.playback_start_frame = trim_start;
+                                    pad.voice.playback_end_frame = (trim_end < frame_count).then_some(trim_end);
+                                    pad_changed = true;
+                                }
+                                ui.horizontal(|ui| {
+                                    ui.label("Direction");
+                                    egui::ComboBox::from_id_salt("pad-direction")
+                                        .selected_text(match pad.voice.direction { SampleDirection::Forward => "Forward", SampleDirection::Reverse => "Reverse" })
+                                        .show_ui(ui, |ui| {
+                                            pad_changed |= ui.selectable_value(&mut pad.voice.direction, SampleDirection::Forward, "Forward").changed();
+                                            pad_changed |= ui.selectable_value(&mut pad.voice.direction, SampleDirection::Reverse, "Reverse").changed();
+                                        });
+                                });
+                                if ui.checkbox(&mut pad.voice.loop_enabled, "Loop trimmed range").changed() {
+                                    if pad.voice.loop_enabled && pad.gate_seconds.is_none() {
+                                        pad.gate_seconds = Some(1.0);
+                                    }
+                                    pad_changed = true;
+                                }
+                                ui.horizontal(|ui| {
+                                    ui.label("Choke");
+                                    egui::ComboBox::from_id_salt("pad-choke")
+                                        .selected_text(if pad.choke_group == 0 { "Off".to_owned() } else { format!("Group {}", pad.choke_group) })
+                                        .show_ui(ui, |ui| {
+                                            for (group, label) in [(0, "Off"), (1, "Group 1"), (2, "Group 2")] {
+                                                pad_changed |= ui.selectable_value(&mut pad.choke_group, group, label).changed();
+                                            }
+                                        });
+                                });
                                 pad_changed |= ui.add(egui::Slider::new(&mut pad.voice.tuning_semitones,-48.0..=48.0).text("Tune / st")).changed();
                                 pad_changed |= ui.add(egui::Slider::new(&mut pad.voice.envelope.attack_seconds,0.0..=60.0).logarithmic(true).smallest_positive(0.001).text("Attack / s")).changed();
                                 pad_changed |= ui.add(egui::Slider::new(&mut pad.voice.envelope.decay_seconds,0.0..=60.0).logarithmic(true).smallest_positive(0.001).text("Decay / s")).changed();
                                 pad_changed |= ui.add(egui::Slider::new(&mut pad.voice.envelope.sustain_level,0.0..=1.0).text("Sustain")).changed();
-                                let mut gated = pad.gate_seconds.is_some();
-                                if ui.checkbox(&mut gated,"Short gate").changed() { pad.gate_seconds = gated.then_some(0.1); pad_changed = true; }
+                                let mut gated = pad.gate_seconds.is_some() || pad.voice.loop_enabled;
+                                let gate_label = if pad.voice.loop_enabled { "Loop gate (required)" } else { "Timed gate" };
+                                if ui.add_enabled(!pad.voice.loop_enabled, egui::Checkbox::new(&mut gated, gate_label)).changed() { pad.gate_seconds = gated.then_some(0.1); pad_changed = true; }
                                 if let Some(gate) = &mut pad.gate_seconds {
                                     pad_changed |= ui.add(egui::Slider::new(gate,0.001..=30.0).logarithmic(true).clamping(egui::SliderClamping::Edits).text("Gate / s")).changed();
                                     pad_changed |= ui.add(egui::Slider::new(&mut pad.voice.envelope.release_seconds,0.0..=60.0).logarithmic(true).smallest_positive(0.001).text("Release / s")).changed();

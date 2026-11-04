@@ -1,6 +1,9 @@
 use evil_synth::StereoSound;
 
-use crate::{DrumHit, DrumKit, Error, PAD_COUNT};
+use crate::{
+    DrumHit, DrumKit, Error, PAD_COUNT, PreparedPad,
+    voice::{PlaybackVoice, VOICE_LIMIT, allocate_voice},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct KitHit {
@@ -11,7 +14,7 @@ pub struct KitHit {
     pub velocity: u8,
 }
 
-/// Render a complete kit through the same per-pad voice and stereo panning
+/// Render a complete kit through the same voice, playback and stereo panning
 /// model used by live performance.
 pub fn render_kit(kit: &DrumKit, hits: &[KitHit], sample_rate: u32) -> Result<StereoSound, Error> {
     kit.validate()?;
@@ -20,7 +23,13 @@ pub fn render_kit(kit: &DrumKit, hits: &[KitHit], sample_rate: u32) -> Result<St
             "render sample rate must be 8000..=192000".to_owned(),
         ));
     }
-    let mut pad_hits: [Vec<DrumHit>; PAD_COUNT] = std::array::from_fn(|_| Vec::new());
+    let pads: Vec<Option<PreparedPad>> = kit
+        .pads
+        .iter()
+        .map(|pad| pad.as_ref().map(PreparedPad::new).transpose())
+        .collect::<Result<_, _>>()?;
+
+    let mut scheduled: Vec<(usize, usize, PlaybackVoice)> = Vec::with_capacity(hits.len());
     for (index, hit) in hits.iter().enumerate() {
         if hit.pad_index >= PAD_COUNT {
             return Err(Error::InvalidHit(index));
@@ -31,53 +40,63 @@ pub fn render_kit(kit: &DrumKit, hits: &[KitHit], sample_rate: u32) -> Result<St
             velocity: hit.velocity,
         }
         .validate(index)?;
-        pad_hits[hit.pad_index].push(DrumHit {
-            start_seconds: hit.start_seconds,
-            duration_seconds: hit.duration_seconds.or_else(|| {
-                kit.pads[hit.pad_index]
-                    .as_ref()
-                    .and_then(|pad| pad.gate_seconds)
-            }),
-            velocity: hit.velocity,
-        });
-    }
-
-    let mut rendered = Vec::new();
-    let mut frame_count = 0_usize;
-    for (pad_index, hits) in pad_hits.iter().enumerate() {
-        let Some(pad) = &kit.pads[pad_index] else {
+        let Some(pad) = &pads[hit.pad_index] else {
             continue;
         };
-        if hits.is_empty() || pad.muted {
+        if pad.muted {
             continue;
         }
-        let source = pad.voice.render(hits)?;
-        let source_rate = source.sample_rate;
-        let frames = (source.samples.len() as u64 * u64::from(sample_rate))
-            .div_ceil(u64::from(source_rate)) as usize;
-        frame_count = frame_count.max(frames);
-        rendered.push((source, pad.pan));
-    }
-
-    let mut left = vec![0.0; frame_count];
-    let mut right = vec![0.0; frame_count];
-    for (source, pan) in rendered {
-        let angle = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
-        let left_gain = angle.cos() * kit.gain;
-        let right_gain = angle.sin() * kit.gain;
-        let ratio = f64::from(source.sample_rate) / f64::from(sample_rate);
-        for frame in 0..frame_count {
-            let position = frame as f64 * ratio;
-            let index = position.floor() as usize;
-            if index >= source.samples.len() {
-                break;
-            }
-            let next = (index + 1).min(source.samples.len() - 1);
-            let sample = source.samples[index]
-                + (source.samples[next] - source.samples[index]) * position.fract() as f32;
-            left[frame] += sample * left_gain;
-            right[frame] += sample * right_gain;
+        let voice = pad.playback(
+            hit.pad_index,
+            sample_rate,
+            hit.velocity,
+            hit.duration_seconds,
+        );
+        let duration = voice.duration_seconds().ok_or(Error::UngatedLoop(index))?;
+        if hit.start_seconds + duration > crate::MAX_RENDER_SECONDS {
+            return Err(Error::RenderTooLong);
         }
+        let start_frame = (hit.start_seconds * f64::from(sample_rate)).round() as usize;
+        scheduled.push((start_frame, index, voice));
+    }
+    scheduled.sort_by_key(|(start, index, _)| (*start, *index));
+
+    let mut left = Vec::new();
+    let mut right = Vec::new();
+    let mut active: Vec<PlaybackVoice> = Vec::with_capacity(VOICE_LIMIT);
+    let mut scheduled = scheduled.into_iter().peekable();
+    while !active.is_empty() || scheduled.peek().is_some() {
+        active.retain(|voice| !voice.is_finished());
+        if active.is_empty()
+            && let Some((start, _, _)) = scheduled.peek()
+            && *start > left.len()
+        {
+            left.resize(*start, 0.0);
+            right.resize(*start, 0.0);
+        }
+        let frame = left.len();
+        if frame as f64 >= crate::MAX_RENDER_SECONDS * f64::from(sample_rate) {
+            return Err(Error::RenderTooLong);
+        }
+        while scheduled
+            .peek()
+            .is_some_and(|(start, _, _)| *start == frame)
+        {
+            let (_, _, voice) = scheduled.next().unwrap();
+            allocate_voice(&mut active, voice);
+        }
+        let mut mixed = [0.0; 2];
+        for voice in &mut active {
+            if let Some(sample) = voice.next_sample() {
+                let pad = pads[voice.slot].as_ref().unwrap();
+                let angle = (pad.pan + 1.0) * std::f32::consts::FRAC_PI_4;
+                mixed[0] += sample * pad.voice.gain * angle.cos() * kit.gain;
+                mixed[1] += sample * pad.voice.gain * angle.sin() * kit.gain;
+            }
+        }
+        left.push(mixed[0]);
+        right.push(mixed[1]);
+        active.retain(|voice| !voice.is_finished());
     }
     Ok(StereoSound {
         left,
@@ -158,5 +177,94 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn choke_groups_and_the_shared_voice_limit_apply_across_pads() {
+        let mut kit = DrumKit::empty("Groups");
+        kit.gain = 1.0;
+        for (slot, group) in [(0, 1), (1, 1), (2, 2)] {
+            let mut pad = KitPad::new(DrumPad::new(vec![1.0; 64], 48_000));
+            pad.voice.gain = if slot == 1 { 0.5 } else { 1.0 };
+            pad.voice.envelope.release_seconds = 0.0;
+            pad.pan = -1.0;
+            pad.choke_group = group;
+            kit.pads[slot] = Some(pad);
+        }
+        let hit = |pad_index, start_seconds| KitHit {
+            pad_index,
+            start_seconds,
+            duration_seconds: None,
+            velocity: 127,
+        };
+        let output = render_kit(
+            &kit,
+            &[hit(0, 0.0), hit(2, 0.0), hit(1, 2.0 / 48_000.0)],
+            48_000,
+        )
+        .unwrap();
+        let left_gain = 1.0;
+        assert!((output.left[0] - 2.0 * left_gain).abs() < 1e-6);
+        assert!((output.left[1] - 2.0 * left_gain).abs() < 1e-6);
+        assert!((output.left[2] - 1.5 * left_gain).abs() < 1e-6);
+
+        let mut short_tail = kit.clone();
+        short_tail.pads[2] = None;
+        short_tail.pads[1].as_mut().unwrap().gate_seconds = Some(4.0 / 48_000.0);
+        let choked =
+            render_kit(&short_tail, &[hit(0, 0.0), hit(1, 2.0 / 48_000.0)], 48_000).unwrap();
+        assert_eq!(choked.left.len(), 6);
+
+        let hits: Vec<_> = (0..VOICE_LIMIT + 1)
+            .map(|index| hit(index % 2, 0.0))
+            .collect();
+        let limited = render_kit(&kit, &hits, 48_000).unwrap();
+        // Each group-1 hit chokes its predecessor, leaving the final full-gain voice.
+        assert!((limited.left[0] - left_gain).abs() < 1e-6);
+        kit.pads[2].as_mut().unwrap().choke_group = 0;
+        let independent: Vec<_> = (0..VOICE_LIMIT + 1).map(|_| hit(2, 0.0)).collect();
+        let limited = render_kit(&kit, &independent, 48_000).unwrap();
+        assert!((limited.left[0] - VOICE_LIMIT as f32 * left_gain).abs() < 1e-5);
+    }
+
+    #[test]
+    fn trimmed_reverse_loops_match_live_playback_sample_for_sample() {
+        use crate::{DrumMachine, SampleDirection};
+
+        let mut kit = DrumKit::empty("Live parity");
+        kit.gain = 1.0;
+        let mut pad = KitPad::new(DrumPad::new(vec![0.0, 0.25, 0.5, 0.75, 1.0], 48_000));
+        pad.voice.gain = 0.8;
+        pad.voice.envelope.release_seconds = 0.0;
+        pad.voice.playback_start_frame = 1;
+        pad.voice.playback_end_frame = Some(4);
+        pad.voice.direction = SampleDirection::Reverse;
+        pad.voice.loop_enabled = true;
+        pad.gate_seconds = Some(8.0 / 48_000.0);
+        pad.pan = -1.0;
+        kit.pads[0] = Some(pad);
+        let offline = render_kit(
+            &kit,
+            &[KitHit {
+                pad_index: 0,
+                start_seconds: 0.0,
+                duration_seconds: None,
+                velocity: 100,
+            }],
+            48_000,
+        )
+        .unwrap();
+
+        let mut live = DrumMachine::default();
+        live.set_gain(kit.gain);
+        live.set_pad(
+            0,
+            Some(PreparedPad::new(kit.pads[0].as_ref().unwrap()).unwrap()),
+        );
+        live.set_input(1, 100, None, 120.0).unwrap();
+        for expected in offline.left {
+            let actual = live.next_frame()[0].atanh();
+            assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");
+        }
     }
 }

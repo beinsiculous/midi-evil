@@ -1,6 +1,8 @@
 //! Sample-pad voices for original drum kits and TRG-style performance.
 //! No NanoStudio project or preset data is required by this crate.
 
+use std::{ops::Range, sync::Arc};
+
 use evil_synth::{Envelope, RenderedSound};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -9,12 +11,22 @@ mod kit;
 mod machine;
 mod presets;
 mod render;
+mod voice;
 pub use kit::{DrumKit, KitPad, PAD_COUNT};
 pub use machine::{DrumMachine, PreparedPad};
 pub use presets::maxwell_kit;
 pub use render::{KitHit, render_kit};
+pub use voice::VOICE_LIMIT;
 
 const MAX_RENDER_SECONDS: f64 = 3_600.0;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SampleDirection {
+    #[default]
+    Forward,
+    Reverse,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DrumPad {
@@ -24,6 +36,16 @@ pub struct DrumPad {
     pub gain: f32,
     pub tuning_semitones: f32,
     pub envelope: Envelope,
+    /// First source frame to play. Legacy banks default to the full sample.
+    #[serde(default)]
+    pub playback_start_frame: usize,
+    /// Exclusive playback end. `None` uses the source frame count.
+    #[serde(default)]
+    pub playback_end_frame: Option<usize>,
+    #[serde(default)]
+    pub direction: SampleDirection,
+    #[serde(default)]
+    pub loop_enabled: bool,
 }
 
 impl DrumPad {
@@ -40,7 +62,16 @@ impl DrumPad {
                 sustain_level: 1.0,
                 release_seconds: 0.05,
             },
+            playback_start_frame: 0,
+            playback_end_frame: None,
+            direction: SampleDirection::Forward,
+            loop_enabled: false,
         }
+    }
+
+    /// The selected source region, with an exclusive end frame.
+    pub fn playback_range(&self) -> Range<usize> {
+        self.playback_start_frame..self.playback_end_frame.unwrap_or(self.samples.len())
     }
 
     pub fn validate(&self) -> Result<(), Error> {
@@ -52,6 +83,12 @@ impl DrumPad {
         if self.samples.is_empty() || self.samples.iter().any(|sample| !sample.is_finite()) {
             return Err(Error::InvalidPad(
                 "samples must be nonempty and finite".to_owned(),
+            ));
+        }
+        let playback = self.playback_range();
+        if playback.start >= playback.end || playback.end > self.samples.len() {
+            return Err(Error::InvalidPad(
+                "playback points must satisfy 0 <= start < end <= source frame count".to_owned(),
             ));
         }
         if !self.gain.is_finite() || !(0.0..=1.0).contains(&self.gain) {
@@ -84,49 +121,63 @@ impl DrumPad {
     }
 
     /// Render independent, overlapping hits into one mono stream. `None` gates
-    /// play the complete resampled pad; `Some(seconds)` adds an early release.
+    /// play the complete trimmed pad; looped hits need a finite gate.
     pub fn render(&self, hits: &[DrumHit]) -> Result<RenderedSound, Error> {
         self.validate()?;
         for (index, hit) in hits.iter().enumerate() {
             hit.validate(index)?;
         }
-        let rate = 2.0_f32.powf(self.tuning_semitones / 12.0);
-        let source_seconds =
-            self.samples.len() as f64 / f64::from(self.sample_rate) / f64::from(rate);
-        let frame_count = hits.iter().try_fold(0_usize, |frames, hit| {
-            let gate = hit.duration_seconds.unwrap_or(source_seconds);
-            let end = hit.start_seconds + gate + f64::from(self.envelope.release_seconds);
-            if end > MAX_RENDER_SECONDS {
+
+        let pad = Arc::new(self.clone());
+        let mut scheduled = Vec::with_capacity(hits.len());
+        for (index, hit) in hits.iter().enumerate() {
+            let voice = voice::PlaybackVoice::new(
+                pad.clone(),
+                0,
+                0,
+                self.sample_rate,
+                hit.velocity,
+                hit.duration_seconds,
+            );
+            let duration = voice.duration_seconds().ok_or(Error::UngatedLoop(index))?;
+            if hit.start_seconds + duration > MAX_RENDER_SECONDS {
                 return Err(Error::RenderTooLong);
             }
             let start_frame = (hit.start_seconds * f64::from(self.sample_rate)).round() as usize;
-            let hit_frames = ((gate + f64::from(self.envelope.release_seconds))
-                * f64::from(self.sample_rate))
-            .ceil() as usize;
-            Ok(frames.max(start_frame + hit_frames))
-        })?;
-        let mut output = vec![0.0; frame_count];
-        for hit in hits {
-            let start_frame = (hit.start_seconds * f64::from(self.sample_rate)).round() as usize;
-            let gate = hit.duration_seconds.unwrap_or(source_seconds);
-            let hit_frames = ((gate + f64::from(self.envelope.release_seconds))
-                * f64::from(self.sample_rate))
-            .ceil() as usize;
-            let velocity = f32::from(hit.velocity) / 127.0;
-            for offset in 0..hit_frames {
-                let source_position = offset as f64 * f64::from(rate);
-                let index = source_position.floor() as usize;
-                if index >= self.samples.len() {
-                    break;
-                }
-                let fraction = source_position.fract() as f32;
-                let next = (index + 1).min(self.samples.len() - 1);
-                let sample =
-                    self.samples[index] + (self.samples[next] - self.samples[index]) * fraction;
-                let time = offset as f32 / self.sample_rate as f32;
-                output[start_frame + offset] +=
-                    sample * self.envelope.amplitude(time, gate as f32) * self.gain * velocity;
+            scheduled.push((start_frame, index, voice));
+        }
+        scheduled.sort_by_key(|(start, index, _)| (*start, *index));
+
+        let mut output = Vec::new();
+        let mut active: Vec<voice::PlaybackVoice> = Vec::with_capacity(voice::VOICE_LIMIT);
+        let mut scheduled = scheduled.into_iter().peekable();
+        while !active.is_empty() || scheduled.peek().is_some() {
+            active.retain(|voice| !voice.is_finished());
+            if active.is_empty()
+                && let Some((start, _, _)) = scheduled.peek()
+                && *start > output.len()
+            {
+                output.resize(*start, 0.0);
             }
+            let frame = output.len();
+            if frame as f64 >= MAX_RENDER_SECONDS * f64::from(self.sample_rate) {
+                return Err(Error::RenderTooLong);
+            }
+            while scheduled
+                .peek()
+                .is_some_and(|(start, _, _)| *start == frame)
+            {
+                let (_, _, voice) = scheduled.next().unwrap();
+                voice::allocate_voice(&mut active, voice);
+            }
+            let mut mixed = 0.0;
+            for voice in &mut active {
+                if let Some(sample) = voice.next_sample() {
+                    mixed += sample * self.gain;
+                }
+            }
+            output.push(mixed);
+            active.retain(|voice| !voice.is_finished());
         }
         Ok(RenderedSound {
             samples: output,
@@ -174,6 +225,8 @@ pub enum Error {
     InvalidPad(String),
     #[error("invalid drum hit at index {0}")]
     InvalidHit(usize),
+    #[error("looped drum hit at index {0} needs a finite gate for offline rendering")]
+    UngatedLoop(usize),
     #[error("drum render exceeds the maximum length of one hour")]
     RenderTooLong,
 }
@@ -181,6 +234,91 @@ pub enum Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trim_direction_and_loop_modes_share_exact_playback_boundaries() {
+        let mut pad = DrumPad::new(vec![0.0, 0.25, 0.5, 0.75, 1.0], 48_000);
+        pad.gain = 1.0;
+        pad.envelope.release_seconds = 0.0;
+        pad.playback_start_frame = 1;
+        pad.playback_end_frame = Some(4);
+        let hit = DrumHit {
+            start_seconds: 0.0,
+            duration_seconds: None,
+            velocity: 127,
+        };
+        assert_eq!(pad.render(&[hit]).unwrap().samples, [0.25, 0.5, 0.75]);
+
+        pad.direction = SampleDirection::Reverse;
+        assert_eq!(pad.render(&[hit]).unwrap().samples, [0.75, 0.5, 0.25]);
+
+        pad = DrumPad::new(vec![0.0, 0.5], 8_000);
+        pad.gain = 1.0;
+        pad.envelope.release_seconds = 0.0;
+        pad.loop_enabled = true;
+        let loop_hit = DrumHit {
+            duration_seconds: Some(5.0 / 8_000.0),
+            ..hit
+        };
+        assert_eq!(
+            pad.render(&[loop_hit]).unwrap().samples,
+            [0.0, 0.5, 0.0, 0.5, 0.0]
+        );
+        pad.direction = SampleDirection::Reverse;
+        assert_eq!(
+            pad.render(&[loop_hit]).unwrap().samples,
+            [0.5, 0.0, 0.5, 0.0, 0.5]
+        );
+    }
+
+    #[test]
+    fn ungated_offline_loops_and_invalid_trim_ranges_are_rejected() {
+        let mut pad = DrumPad::new(vec![0.0, 0.5], 8_000);
+        pad.loop_enabled = true;
+        let hit = DrumHit {
+            start_seconds: 0.0,
+            duration_seconds: None,
+            velocity: 127,
+        };
+        assert!(matches!(pad.render(&[hit]), Err(Error::UngatedLoop(0))));
+        pad.playback_start_frame = 2;
+        assert!(pad.validate().is_err());
+        pad.playback_start_frame = 0;
+        pad.playback_end_frame = Some(3);
+        assert!(pad.validate().is_err());
+    }
+
+    #[test]
+    fn one_shots_keep_their_configured_gate_tail_after_the_source_ends() {
+        let mut pad = DrumPad::new(vec![1.0, 1.0], 8_000);
+        pad.gain = 1.0;
+        pad.envelope.release_seconds = 0.0;
+        let output = pad
+            .render(&[DrumHit {
+                start_seconds: 0.0,
+                duration_seconds: Some(5.0 / 8_000.0),
+                velocity: 127,
+            }])
+            .unwrap();
+        assert_eq!(output.samples, [1.0, 1.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn offline_polyphony_is_bounded_to_32_oldest_first_voices() {
+        let mut pad = DrumPad::new(vec![1.0; 64], 48_000);
+        pad.gain = 1.0;
+        pad.envelope.release_seconds = 0.0;
+        let hits = vec![
+            DrumHit {
+                start_seconds: 0.0,
+                duration_seconds: None,
+                velocity: 127,
+            };
+            VOICE_LIMIT + 1
+        ];
+        let output = pad.render(&hits).unwrap();
+        assert_eq!(output.samples[0], VOICE_LIMIT as f32);
+    }
 
     #[test]
     fn overlapping_hits_are_mixed_as_independent_voices() {

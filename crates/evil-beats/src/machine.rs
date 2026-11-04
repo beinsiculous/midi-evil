@@ -1,48 +1,53 @@
 //! Sample-clocked pad playback and held-pad repeat, shared by audio frontends.
 use std::sync::Arc;
 
-use crate::{DrumHit, Error, KitPad, PAD_COUNT};
+use crate::{
+    DrumPad, Error, KitPad, PAD_COUNT,
+    voice::{PlaybackVoice, VOICE_LIMIT, allocate_voice},
+};
 
 #[derive(Clone)]
 pub struct PreparedPad {
-    samples: Arc<[f32]>,
-    sample_rate: u32,
-    gain: f32,
-    pan: f32,
-    muted: bool,
+    pub(crate) voice: Arc<DrumPad>,
+    pub(crate) pan: f32,
+    pub(crate) muted: bool,
+    pub(crate) gate_seconds: Option<f64>,
+    pub(crate) choke_group: u8,
 }
 
 impl PreparedPad {
     pub fn new(pad: &KitPad) -> Result<Self, Error> {
         pad.validate()?;
-        let mut voice = pad.voice.clone();
-        voice.gain = 1.0;
-        let sound = voice.render(&[DrumHit {
-            start_seconds: 0.0,
-            duration_seconds: pad.gate_seconds,
-            velocity: 127,
-        }])?;
         Ok(Self {
-            samples: sound.samples.into(),
-            sample_rate: sound.sample_rate,
-            gain: pad.voice.gain,
+            voice: Arc::new(pad.voice.clone()),
             pan: pad.pan,
             muted: pad.muted,
+            gate_seconds: pad.gate_seconds,
+            choke_group: pad.choke_group,
         })
     }
-}
 
-struct Voice {
-    slot: usize,
-    samples: Arc<[f32]>,
-    position: f64,
-    step: f64,
-    velocity: f32,
+    pub(crate) fn playback(
+        &self,
+        slot: usize,
+        output_sample_rate: u32,
+        velocity: u8,
+        gate_override: Option<f64>,
+    ) -> PlaybackVoice {
+        PlaybackVoice::new(
+            self.voice.clone(),
+            slot,
+            self.choke_group,
+            output_sample_rate,
+            velocity,
+            gate_override.or(self.gate_seconds),
+        )
+    }
 }
 
 pub struct DrumMachine {
     pads: [Option<PreparedPad>; PAD_COUNT],
-    voices: Vec<Voice>,
+    voices: Vec<PlaybackVoice>,
     held: u16,
     velocity: u8,
     repeat: Option<u8>,
@@ -56,7 +61,7 @@ impl Default for DrumMachine {
     fn default() -> Self {
         Self {
             pads: std::array::from_fn(|_| None),
-            voices: Vec::with_capacity(64),
+            voices: Vec::with_capacity(VOICE_LIMIT),
             held: 0,
             velocity: 100,
             repeat: None,
@@ -144,16 +149,8 @@ impl DrumMachine {
         if pad.muted {
             return;
         }
-        if self.voices.len() == 64 {
-            self.voices.remove(0);
-        }
-        self.voices.push(Voice {
-            slot,
-            samples: pad.samples.clone(),
-            position: 0.0,
-            step: f64::from(pad.sample_rate) / f64::from(Self::SAMPLE_RATE),
-            velocity: f32::from(self.velocity) / 127.0,
-        });
+        let voice = pad.playback(slot, Self::SAMPLE_RATE, self.velocity, None);
+        allocate_voice(&mut self.voices, voice);
     }
 
     pub fn next_frame(&mut self) -> [f32; 2] {
@@ -174,21 +171,18 @@ impl DrumMachine {
             }
         }
         let mut output = [0.0; 2];
-        self.voices
-            .retain(|voice| voice.position < voice.samples.len() as f64);
+        self.voices.retain(|voice| !voice.is_finished());
         for voice in &mut self.voices {
-            let i = voice.position as usize;
-            let next = (i + 1).min(voice.samples.len() - 1);
-            let sample = voice.samples[i]
-                + (voice.samples[next] - voice.samples[i]) * voice.position.fract() as f32;
-            if let Some(pad) = &self.pads[voice.slot] {
+            if let Some(sample) = voice.next_sample()
+                && let Some(pad) = &self.pads[voice.slot]
+            {
                 let angle = (pad.pan + 1.0) * std::f32::consts::FRAC_PI_4;
-                let sample = sample * pad.gain * voice.velocity * self.gain;
+                let sample = sample * pad.voice.gain * self.gain;
                 output[0] += sample * angle.cos();
                 output[1] += sample * angle.sin();
             }
-            voice.position += voice.step;
         }
+        self.voices.retain(|voice| !voice.is_finished());
         self.frame = self.frame.wrapping_add(1);
         (output.map(f32::tanh), repeated)
     }
@@ -265,5 +259,50 @@ mod tests {
         pad.muted = true;
         machine.set_pad(0, Some(PreparedPad::new(&pad).unwrap()));
         assert!((0..6_000).all(|_| machine.next_frame() == [0.0; 2]));
+    }
+
+    #[test]
+    fn live_gain_updates_reach_an_active_voice_without_retriggering() {
+        let mut machine = DrumMachine::default();
+        machine.set_gain(1.0);
+        let mut pad = KitPad::new(DrumPad::new(vec![1.0; 16], 48_000));
+        pad.voice.gain = 0.5;
+        pad.voice.envelope.release_seconds = 0.0;
+        pad.pan = -1.0;
+        machine.set_pad(0, Some(PreparedPad::new(&pad).unwrap()));
+        machine.set_input(1, 127, None, 120.0).unwrap();
+        assert!((machine.next_frame()[0] - 0.5_f32.tanh()).abs() < 1e-6);
+
+        pad.voice.gain = 1.0;
+        machine.set_pad(0, Some(PreparedPad::new(&pad).unwrap()));
+        assert!((machine.next_frame()[0] - 1.0_f32.tanh()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn live_chokes_and_steals_voices_with_the_shared_limit() {
+        let mut machine = machine();
+        for _ in 0..VOICE_LIMIT + 1 {
+            machine.set_input(1, 127, None, 120.0).unwrap();
+            machine.set_input(0, 127, None, 120.0).unwrap();
+        }
+        machine.set_input(1, 127, None, 120.0).unwrap();
+        let expected = (VOICE_LIMIT as f32 * 0.8 * 0.8).tanh();
+        assert!((machine.next_frame()[0] - expected).abs() < 1e-6);
+
+        let mut choked = DrumMachine::default();
+        choked.set_gain(1.0);
+        for slot in 0..2 {
+            let mut pad = KitPad::new(DrumPad::new(vec![1.0; 16], 48_000));
+            pad.voice.gain = 1.0;
+            pad.voice.envelope.release_seconds = 0.0;
+            pad.pan = -1.0;
+            pad.choke_group = 1;
+            choked.set_pad(slot, Some(PreparedPad::new(&pad).unwrap()));
+        }
+        choked.set_input(1, 127, None, 120.0).unwrap();
+        assert!(choked.next_frame()[0] > 0.5);
+        choked.set_input(2, 64, None, 120.0).unwrap();
+        let expected = (64.0 / 127.0_f32).tanh();
+        assert!((choked.next_frame()[0] - expected).abs() < 1e-6);
     }
 }
