@@ -1,18 +1,22 @@
 mod aiff;
 mod aux_envelope;
 mod delay;
+mod dynamics;
 mod effects;
 mod envelope;
+mod equalizer;
 mod filter;
 mod insert_automation;
 mod lfo;
 mod live;
 mod mix;
 mod modal;
+mod modulation;
 mod oscillator;
 mod patch;
 mod presets;
 mod render;
+mod reverb;
 mod sample;
 mod sync;
 mod unison;
@@ -26,8 +30,10 @@ pub use live::{LiveControls, LiveSynth};
 pub use aiff::read_mono_aiff;
 pub use aux_envelope::AuxEnvelope;
 pub use delay::{Delay, DelayMode};
+pub use dynamics::Compressor;
 pub use effects::{Bitcrush, INSERT_LIMIT, InsertEffect, SEND_COUNT, SendBus};
 pub use envelope::Envelope;
+pub use equalizer::Equalizer;
 pub use filter::{Filter, FilterMode, FilterProcessor};
 pub use insert_automation::{
     DELAY_FEEDBACK_CC, DELAY_MIX_CC, DELAY_TIME_CC, WAVESHAPER_CONTOUR_CC, WAVESHAPER_DRIVE_CC,
@@ -38,6 +44,7 @@ pub use mix::{
     MonoTrack, StereoSound, StereoTrack, mix_stereo, mix_stereo_with_sends, mix_stereo_with_tracks,
 };
 pub use modal::ModalPartial;
+pub use modulation::{Chorus, Flanger};
 pub use oscillator::{Oscillator, OscillatorMode, Waveform};
 pub use patch::Patch;
 pub use presets::{PRESET_NAMES, preset};
@@ -48,6 +55,7 @@ pub use render::{
     render_notes_dry_with_tempo_and_full_automation, render_notes_with_automation,
     render_notes_with_full_automation, render_notes_with_pitch_bend, render_notes_with_tempo,
 };
+pub use reverb::Reverb;
 pub use sample::{SampleOscillator, SampleZone};
 pub use sync::OscillatorSync;
 use thiserror::Error;

@@ -229,7 +229,7 @@ Right-click a pad or choose **Edit Pad** to rename it, load a mono/stereo PCM or
 
 ### Stereo mixes
 
-Native `.evil` instruments also support four ordered channel inserts and two post-channel sends into project-wide effect buses. The shared offline/live graph currently includes waveshaper, delay, and bitcrush inserts with deterministic tails; older projects default to no extra inserts and zero sends. Channel settings are validated and preserved in project JSON, and the same routing applies to synth and drum tracks.
+Native `.evil` instruments also support four ordered channel inserts and two post-channel sends into project-wide effect buses. The shared offline/live graph currently includes waveshaper, delay, bitcrush, three-band EQ, stereo-linked compression, chorus, flanger, and stereo reverb inserts with deterministic bounded tails; older projects default to no extra inserts and zero sends. Channel settings are validated and preserved in project JSON, and the same routing applies to synth and drum tracks.
 
 Generate a per-track mix configuration, edit the assignments, and render one stereo file:
 

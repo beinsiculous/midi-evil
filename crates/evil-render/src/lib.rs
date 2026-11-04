@@ -689,7 +689,7 @@ mod tests {
 
         project.instruments[0].send_gains = [0.5, 0.0];
         project.send_buses[0].gain = 0.5;
-        let project = Project::from_json(&project.to_json_pretty().unwrap()).unwrap();
+        let mut project = Project::from_json(&project.to_json_pretty().unwrap()).unwrap();
         let sent = render_project(&project, Path::new(".")).unwrap();
         assert_ne!(
             inserted.sound.left,
@@ -710,6 +710,14 @@ mod tests {
                 .sum::<f32>()
         );
         assert_eq!(sent.note_count, 1);
+
+        project.instruments[0].send_gains = [0.0; evil_synth::SEND_COUNT];
+        project.instruments[0].inserts = vec![evil_synth::InsertEffect::Reverb(
+            evil_synth::Reverb::default(),
+        )];
+        let reverbed = render_project(&project, Path::new(".")).unwrap();
+        assert!(reverbed.sound.left.len() > sent.sound.left.len());
+        assert!(reverbed.sound.left.iter().all(|sample| sample.is_finite()));
     }
 
     #[test]
