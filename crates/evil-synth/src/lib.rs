@@ -26,7 +26,7 @@ pub use aiff::read_mono_aiff;
 pub use aux_envelope::AuxEnvelope;
 pub use delay::{Delay, DelayMode};
 pub use envelope::Envelope;
-pub use filter::{Filter, FilterMode};
+pub use filter::{Filter, FilterMode, FilterProcessor};
 pub use insert_automation::{
     DELAY_FEEDBACK_CC, DELAY_MIX_CC, DELAY_TIME_CC, WAVESHAPER_CONTOUR_CC, WAVESHAPER_DRIVE_CC,
     WAVESHAPER_LEVEL_CC, controller_is_insert_automation,

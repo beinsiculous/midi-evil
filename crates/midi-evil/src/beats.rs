@@ -2,7 +2,7 @@
 use std::{path::PathBuf, time::Instant};
 
 use eframe::egui::{self, Key, Rect, RichText, TextureHandle, vec2};
-use evil_beats::{DrumKit, DrumPad, PAD_COUNT, SampleDirection};
+use evil_beats::{DrumFilter, DrumKit, DrumPad, PAD_COUNT, SampleDirection};
 
 mod bank;
 mod drawing;
@@ -197,6 +197,7 @@ impl BeatsPage {
         let mut panic = ui.input(|i| !i.focused || (accepts && i.key_pressed(Key::Escape)));
         let mut action = None;
         let mut pad_changed = false;
+        let mut bus_changed = false;
         let edited_slot = self.selected;
         ui.horizontal_wrapped(|ui| {
             ui.label(
@@ -326,16 +327,29 @@ impl BeatsPage {
                                     pad_changed |= ui.add(egui::Slider::new(gate,0.001..=30.0).logarithmic(true).clamping(egui::SliderClamping::Edits).text("Gate / s")).changed();
                                     pad_changed |= ui.add(egui::Slider::new(&mut pad.voice.envelope.release_seconds,0.0..=60.0).logarithmic(true).smallest_positive(0.001).text("Release / s")).changed();
                                 }
+                                pad_changed |= filter_controls(ui, &mut pad.voice.filter, "pad-filter");
                             }
                             pad_changed |= ui.add(egui::Slider::new(&mut pad.voice.gain,0.0..=1.0).text("Pad gain")).changed();
                             if self.page == Page::Mix {
                                 ui.label(&pad.voice.name);
                                 pad_changed |= ui.add(egui::Slider::new(&mut pad.pan,-1.0..=1.0).text("Pan")).changed();
                                 pad_changed |= ui.checkbox(&mut pad.muted,"Mute pad").changed();
+                                for (index, send) in pad.bus_sends.iter_mut().enumerate() {
+                                    pad_changed |= ui.add(egui::Slider::new(send,0.0..=1.0).text(format!("Bus {} send", index + 1))).changed();
+                                }
                                 ui.separator();
                                 theme::label(ui,"BANK OUTPUT");
                                 self.dirty |= ui.add(egui::Slider::new(&mut self.kit.gain,0.0..=1.0).text("Master")).changed();
                                 ui.label(RichText::new("Stereo / default audio device").small().color(theme::MUTED));
+                                ui.separator();
+                                theme::label(ui,"TRG BUSES");
+                                for (index, bus) in self.kit.buses.iter_mut().enumerate() {
+                                    theme::label(ui,format!("BUS {}",index + 1));
+                                    bus_changed |= ui.add(egui::Slider::new(&mut bus.gain,0.0..=1.0).text("Gain")).changed();
+                                    bus_changed |= ui.add(egui::Slider::new(&mut bus.pan,-1.0..=1.0).text("Pan")).changed();
+                                    bus_changed |= ui.checkbox(&mut bus.muted,"Mute bus").changed();
+                                    bus_changed |= filter_controls(ui,&mut bus.filter,&format!("bus-filter-{index}"));
+                                }
                             }
                         } else {
                             ui.label("Empty pad. Load a WAV to give it a voice.");
@@ -422,6 +436,14 @@ impl BeatsPage {
                 self.message = e;
             }
         }
+        if bus_changed {
+            self.dirty = true;
+            if let Some(player) = &self.player
+                && let Err(e) = player.update_buses(&self.kit)
+            {
+                self.message = e;
+            }
+        }
         if desired != 0 && self.player.is_none() {
             match BeatsPlayer::new(&self.kit) {
                 Ok(player) => self.player = Some(player),
@@ -458,6 +480,62 @@ impl BeatsPage {
         }
         hits
     }
+}
+
+fn filter_controls(ui: &mut egui::Ui, filter: &mut Option<DrumFilter>, id: &str) -> bool {
+    ui.push_id(id, |ui| {
+        let mut changed = false;
+        let mut enabled = filter.is_some();
+        if ui.checkbox(&mut enabled, "Filter").changed() {
+            *filter = enabled.then(DrumFilter::default);
+            changed = true;
+        }
+        if let Some(settings) = filter {
+            ui.horizontal_wrapped(|ui| {
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut settings.cutoff_hz)
+                            .range(1.0..=96_000.0)
+                            .prefix("Cutoff Hz "),
+                    )
+                    .changed();
+                changed |= ui
+                    .add(egui::Slider::new(&mut settings.resonance, 0.0..=1.0).text("Resonance"))
+                    .changed();
+            });
+            ui.horizontal_wrapped(|ui| {
+                egui::ComboBox::from_id_salt("mode")
+                    .selected_text(match settings.mode {
+                        evil_synth::FilterMode::LowPass => "Low-pass",
+                        evil_synth::FilterMode::BandPass => "Band-pass",
+                        evil_synth::FilterMode::HighPass => "High-pass",
+                    })
+                    .show_ui(ui, |ui| {
+                        for (mode, label) in [
+                            (evil_synth::FilterMode::LowPass, "Low-pass"),
+                            (evil_synth::FilterMode::BandPass, "Band-pass"),
+                            (evil_synth::FilterMode::HighPass, "High-pass"),
+                        ] {
+                            changed |= ui
+                                .selectable_value(&mut settings.mode, mode, label)
+                                .changed();
+                        }
+                    });
+                egui::ComboBox::from_id_salt("slope")
+                    .selected_text(format!("{} dB/oct", settings.stages * 6))
+                    .show_ui(ui, |ui| {
+                        changed |= ui
+                            .selectable_value(&mut settings.stages, 2, "12 dB/oct")
+                            .changed();
+                        changed |= ui
+                            .selectable_value(&mut settings.stages, 4, "24 dB/oct")
+                            .changed();
+                    });
+            });
+        }
+        changed
+    })
+    .inner
 }
 
 fn kit_peaks(kit: &DrumKit) -> [Vec<f32>; PAD_COUNT] {

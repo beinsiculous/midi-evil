@@ -2,7 +2,7 @@ use std::{io::Read, path::Path};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{DrumPad, Error};
+use crate::{BUS_COUNT, DrumBus, DrumPad, Error};
 
 pub const PAD_COUNT: usize = 16;
 const MAX_BANK_BYTES: u64 = 128 * 1024 * 1024;
@@ -15,6 +15,8 @@ pub struct DrumKit {
     pub name: String,
     pub gain: f32,
     pub pads: [Option<KitPad>; PAD_COUNT],
+    #[serde(default)]
+    pub buses: [DrumBus; BUS_COUNT],
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -27,6 +29,9 @@ pub struct KitPad {
     /// Zero is independent; pads sharing group 1 or 2 silence each other.
     #[serde(default)]
     pub choke_group: u8,
+    /// Post-pad-gain, pre-pan sends into the three output buses.
+    #[serde(default)]
+    pub bus_sends: [f32; BUS_COUNT],
 }
 
 impl KitPad {
@@ -37,6 +42,7 @@ impl KitPad {
             muted: false,
             gate_seconds: None,
             choke_group: 0,
+            bus_sends: [0.0; BUS_COUNT],
         }
     }
 
@@ -58,6 +64,13 @@ impl KitPad {
                 "pad choke group must be 0 (off), 1, or 2".into(),
             ));
         }
+        if self
+            .bus_sends
+            .iter()
+            .any(|send| !send.is_finite() || !(0.0..=1.0).contains(send))
+        {
+            return Err(Error::InvalidKit("pad bus sends must be 0..=1".into()));
+        }
         Ok(())
     }
 }
@@ -70,6 +83,7 @@ impl DrumKit {
             name: name.into(),
             gain: 0.8,
             pads: std::array::from_fn(|_| None),
+            buses: [DrumBus::default(); BUS_COUNT],
         }
     }
 
@@ -84,6 +98,9 @@ impl DrumKit {
         }
         for pad in self.pads.iter().flatten() {
             pad.validate()?;
+        }
+        for bus in self.buses {
+            bus.validate()?;
         }
         Ok(())
     }
@@ -151,19 +168,35 @@ mod tests {
         pad.voice.loop_enabled = true;
         pad.gate_seconds = Some(0.25);
         pad.choke_group = 2;
+        pad.bus_sends = [0.25, 0.5, 0.75];
+        pad.voice.filter = Some(crate::DrumFilter {
+            mode: evil_synth::FilterMode::HighPass,
+            cutoff_hz: 2_000.0,
+            resonance: 0.3,
+            stages: 4,
+        });
+        kit.buses[0] = DrumBus {
+            filter: Some(crate::DrumFilter::default()),
+            gain: 0.7,
+            pan: 0.4,
+            muted: false,
+        };
         kit.pads[15] = Some(pad);
         assert_eq!(DrumKit::from_json(&kit.to_json().unwrap()).unwrap(), kit);
 
         let mut legacy = serde_json::to_value(&kit).unwrap();
+        legacy.as_object_mut().unwrap().remove("buses");
         let legacy_pad = legacy["pads"][15].as_object_mut().unwrap();
         legacy_pad.remove("choke_group");
         legacy_pad.remove("gate_seconds");
+        legacy_pad.remove("bus_sends");
         let voice = legacy_pad["voice"].as_object_mut().unwrap();
         for field in [
             "playback_start_frame",
             "playback_end_frame",
             "direction",
             "loop_enabled",
+            "filter",
         ] {
             voice.remove(field);
         }
@@ -172,7 +205,35 @@ mod tests {
         assert_eq!(voice.playback_range(), 0..3);
         assert_eq!(voice.direction, crate::SampleDirection::Forward);
         assert!(!voice.loop_enabled);
-        assert_eq!(migrated.pads[15].as_ref().unwrap().choke_group, 0);
+        assert_eq!(voice.filter, None);
+        let legacy_pad = migrated.pads[15].as_ref().unwrap();
+        assert_eq!(legacy_pad.choke_group, 0);
+        assert_eq!(legacy_pad.bus_sends, [0.0; BUS_COUNT]);
+        assert_eq!(migrated.buses, [DrumBus::default(); BUS_COUNT]);
+
+        kit.pads[15].as_mut().unwrap().bus_sends[0] = 1.1;
+        assert!(kit.validate().is_err());
+        kit.pads[15].as_mut().unwrap().bus_sends[0] = 0.25;
+        kit.buses[0].gain = -0.1;
+        assert!(kit.validate().is_err());
+        kit.buses[0].gain = 0.7;
+        kit.pads[15]
+            .as_mut()
+            .unwrap()
+            .voice
+            .filter
+            .as_mut()
+            .unwrap()
+            .cutoff_hz = 0.0;
+        assert!(kit.validate().is_err());
+        kit.pads[15]
+            .as_mut()
+            .unwrap()
+            .voice
+            .filter
+            .as_mut()
+            .unwrap()
+            .cutoff_hz = 2_000.0;
 
         kit.pads[15].as_mut().unwrap().choke_group = 3;
         assert!(kit.validate().is_err());

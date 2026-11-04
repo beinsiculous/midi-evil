@@ -4,11 +4,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use evil_beats::{DrumKit, DrumMachine, PreparedPad};
+use evil_beats::{BUS_COUNT, DrumBus, DrumKit, DrumMachine, PreparedPad};
 use rodio::{DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 
 enum Command {
     Pad(usize, Option<PreparedPad>),
+    Buses([DrumBus; BUS_COUNT]),
     Input(u16, u8, Option<u8>, f32),
     Gain(f32),
     Stop,
@@ -51,6 +52,7 @@ impl BeatsPlayer {
             machine.set_pad(slot, prepared);
         }
         machine.set_gain(kit.gain);
+        machine.set_buses(kit.buses);
         let mut stream = DeviceSinkBuilder::open_default_sink().map_err(|e| e.to_string())?;
         stream.log_on_drop(false);
         let player = Player::connect_new(stream.mixer());
@@ -83,6 +85,12 @@ impl BeatsPlayer {
             .map_err(|e| e.to_string())?;
         self.sender
             .send(Command::Pad(slot, prepared))
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn update_buses(&self, kit: &DrumKit) -> Result<(), String> {
+        self.sender
+            .send(Command::Buses(kit.buses))
             .map_err(|e| e.to_string())
     }
 
@@ -138,6 +146,7 @@ impl Iterator for BeatsSource {
             for _ in 0..256 {
                 match self.receiver.try_recv() {
                     Ok(Command::Pad(slot, pad)) => self.machine.set_pad(slot, pad),
+                    Ok(Command::Buses(buses)) => self.machine.set_buses(buses),
                     Ok(Command::Input(held, velocity, repeat, tempo)) => {
                         let _ = self.machine.set_input(held, velocity, repeat, tempo);
                     }

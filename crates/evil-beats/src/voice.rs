@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use evil_synth::FilterProcessor;
+
 use crate::{DrumPad, SampleDirection};
 
 /// The shared offline/live polyphony limit. The oldest voice is stolen first.
@@ -15,6 +17,7 @@ pub(crate) struct PlaybackVoice {
     frame: u64,
     gate_seconds: f64,
     velocity: f32,
+    filter: Option<FilterProcessor>,
     finished: bool,
 }
 
@@ -49,6 +52,7 @@ impl PlaybackVoice {
             choke_group,
             step: direction * tuning_rate * f64::from(pad.sample_rate)
                 / f64::from(output_sample_rate),
+            filter: pad.filter.map(crate::DrumFilter::processor),
             pad,
             output_sample_rate,
             position,
@@ -87,6 +91,9 @@ impl PlaybackVoice {
             return None;
         }
         let sample = self.sample_at_position().unwrap_or(0.0);
+        let sample = self.filter.as_mut().map_or(sample, |filter| {
+            filter.process(sample, self.output_sample_rate)
+        });
         let amplitude = self
             .pad
             .envelope

@@ -11,11 +11,13 @@ mod kit;
 mod machine;
 mod presets;
 mod render;
+mod routing;
 mod voice;
 pub use kit::{DrumKit, KitPad, PAD_COUNT};
 pub use machine::{DrumMachine, PreparedPad};
 pub use presets::maxwell_kit;
 pub use render::{KitHit, render_kit};
+pub use routing::{BUS_COUNT, DrumBus, DrumFilter};
 pub use voice::VOICE_LIMIT;
 
 const MAX_RENDER_SECONDS: f64 = 3_600.0;
@@ -46,6 +48,9 @@ pub struct DrumPad {
     pub direction: SampleDirection,
     #[serde(default)]
     pub loop_enabled: bool,
+    /// Independent per-voice filtering; `None` preserves legacy dry playback.
+    #[serde(default)]
+    pub filter: Option<DrumFilter>,
 }
 
 impl DrumPad {
@@ -66,6 +71,7 @@ impl DrumPad {
             playback_end_frame: None,
             direction: SampleDirection::Forward,
             loop_enabled: false,
+            filter: None,
         }
     }
 
@@ -122,6 +128,9 @@ impl DrumPad {
             return Err(Error::InvalidPad(
                 "playback points must satisfy 0 <= start < end <= source frame count".to_owned(),
             ));
+        }
+        if let Some(filter) = self.filter {
+            filter.validate()?;
         }
         if !self.gain.is_finite() || !(0.0..=1.0).contains(&self.gain) {
             return Err(Error::InvalidPad("gain must be between 0 and 1".to_owned()));

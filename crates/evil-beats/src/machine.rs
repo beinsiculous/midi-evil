@@ -2,7 +2,8 @@
 use std::sync::Arc;
 
 use crate::{
-    DrumPad, Error, KitPad, PAD_COUNT,
+    BUS_COUNT, DrumBus, DrumPad, Error, KitPad, PAD_COUNT,
+    routing::{BusMixer, VoiceMix},
     voice::{PlaybackVoice, VOICE_LIMIT, allocate_voice},
 };
 
@@ -13,6 +14,7 @@ pub struct PreparedPad {
     pub(crate) muted: bool,
     pub(crate) gate_seconds: Option<f64>,
     pub(crate) choke_group: u8,
+    pub(crate) bus_sends: [f32; BUS_COUNT],
 }
 
 impl PreparedPad {
@@ -24,6 +26,7 @@ impl PreparedPad {
             muted: pad.muted,
             gate_seconds: pad.gate_seconds,
             choke_group: pad.choke_group,
+            bus_sends: pad.bus_sends,
         })
     }
 
@@ -55,6 +58,7 @@ pub struct DrumMachine {
     frame: u64,
     next_repeat: [f64; PAD_COUNT],
     gain: f32,
+    buses: BusMixer,
 }
 
 impl Default for DrumMachine {
@@ -69,6 +73,7 @@ impl Default for DrumMachine {
             frame: 0,
             next_repeat: [0.0; PAD_COUNT],
             gain: 0.8,
+            buses: BusMixer::new([DrumBus::default(); BUS_COUNT]),
         }
     }
 }
@@ -92,6 +97,10 @@ impl DrumMachine {
         }
     }
 
+    pub fn set_buses(&mut self, buses: [DrumBus; BUS_COUNT]) {
+        self.buses.set_buses(buses);
+    }
+
     pub fn input_velocity(&self) -> u8 {
         self.velocity
     }
@@ -99,6 +108,7 @@ impl DrumMachine {
     pub fn stop(&mut self) {
         self.held = 0;
         self.voices.clear();
+        self.buses.reset();
     }
 
     /// A rising held bit fires immediately; held pads repeat on the audio clock.
@@ -170,21 +180,22 @@ impl DrumMachine {
                 }
             }
         }
-        let mut output = [0.0; 2];
+        let mut voice_mix = VoiceMix::default();
         self.voices.retain(|voice| !voice.is_finished());
         for voice in &mut self.voices {
             if let Some(sample) = voice.next_sample()
                 && let Some(pad) = &self.pads[voice.slot]
             {
-                let angle = (pad.pan + 1.0) * std::f32::consts::FRAC_PI_4;
-                let sample = sample * pad.voice.gain * self.gain;
-                output[0] += sample * angle.cos();
-                output[1] += sample * angle.sin();
+                voice_mix.add(pad, sample);
             }
         }
+        let output = self
+            .buses
+            .mix(voice_mix, self.gain, Self::SAMPLE_RATE)
+            .map(f32::tanh);
         self.voices.retain(|voice| !voice.is_finished());
         self.frame = self.frame.wrapping_add(1);
-        (output.map(f32::tanh), repeated)
+        (output, repeated)
     }
 }
 
@@ -259,6 +270,35 @@ mod tests {
         pad.muted = true;
         machine.set_pad(0, Some(PreparedPad::new(&pad).unwrap()));
         assert!((0..6_000).all(|_| machine.next_frame() == [0.0; 2]));
+    }
+
+    #[test]
+    fn bus_gain_updates_preserve_filter_tails_and_stop_resets_them() {
+        let mut machine = DrumMachine::default();
+        machine.set_gain(1.0);
+        let mut pad = KitPad::new(DrumPad::new(vec![1.0], 48_000));
+        pad.voice.envelope.release_seconds = 0.0;
+        pad.pan = -1.0;
+        pad.bus_sends[0] = 1.0;
+        machine.set_pad(0, Some(PreparedPad::new(&pad).unwrap()));
+        let mut buses = [DrumBus::default(); BUS_COUNT];
+        buses[0].filter = Some(crate::DrumFilter {
+            cutoff_hz: 1_000.0,
+            ..crate::DrumFilter::default()
+        });
+        buses[0].pan = 1.0;
+        machine.set_buses(buses);
+        machine.set_input(1, 127, None, 120.0).unwrap();
+        assert!(machine.next_frame()[1] > 0.0);
+
+        buses[0].gain = 0.0;
+        machine.set_buses(buses);
+        assert_eq!(machine.next_frame()[1], 0.0);
+        buses[0].gain = 1.0;
+        machine.set_buses(buses);
+        assert!(machine.next_frame()[1] > 0.0);
+        machine.stop();
+        assert_eq!(machine.next_frame(), [0.0; 2]);
     }
 
     #[test]

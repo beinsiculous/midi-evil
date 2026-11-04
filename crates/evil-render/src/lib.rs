@@ -648,6 +648,50 @@ mod tests {
     }
 
     #[test]
+    fn project_render_loads_filtered_trg_bus_sends_and_tails() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut kit = evil_beats::DrumKit::empty("Filtered bus");
+        kit.gain = 1.0;
+        let mut pad = evil_beats::KitPad::new(evil_beats::DrumPad::new(vec![1.0], 48_000));
+        pad.voice.gain = 1.0;
+        pad.voice.envelope.release_seconds = 0.0;
+        pad.pan = -1.0;
+        pad.bus_sends[0] = 1.0;
+        kit.pads[0] = Some(pad);
+        kit.buses[0].filter = Some(evil_beats::DrumFilter {
+            cutoff_hz: 800.0,
+            resonance: 0.2,
+            ..evil_beats::DrumFilter::default()
+        });
+        kit.buses[0].pan = 1.0;
+        std::fs::write(directory.path().join("kit.evilkit"), kit.to_json().unwrap()).unwrap();
+
+        let mut project = Project::new("Filtered TRG bus");
+        let instrument = project
+            .add_instrument(evil_project::Instrument::drum_kit("Kit", "kit.evilkit"))
+            .unwrap();
+        project
+            .add_track(Track {
+                instrument,
+                notes: vec![Note {
+                    pitch: 36,
+                    ..Note::default()
+                }],
+                ..Track::default()
+            })
+            .unwrap();
+        let filtered = render_project(&project, directory.path()).unwrap();
+        assert!(filtered.sound.left.len() > 1);
+        assert!(filtered.sound.right.iter().any(|sample| *sample != 0.0));
+
+        kit.buses[0].muted = true;
+        std::fs::write(directory.path().join("kit.evilkit"), kit.to_json().unwrap()).unwrap();
+        let muted = render_project(&project, directory.path()).unwrap();
+        assert_eq!(muted.sound.left.len(), 1);
+        assert!(muted.sound.right.iter().all(|sample| *sample == 0.0));
+    }
+
+    #[test]
     fn renders_drum_kit_tracks_and_reports_unmapped_notes() {
         let mut project = Project::new("Drums");
         let instrument = project

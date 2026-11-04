@@ -43,6 +43,52 @@ pub(crate) struct FilterState {
     svf: [[f32; 2]; 4],
 }
 
+/// A stateful, unmodulated filter for non-patch voices and mixer buses.
+/// Each independent audio stream needs its own processor.
+pub struct FilterProcessor {
+    filter: Filter,
+    state: FilterState,
+}
+
+impl FilterProcessor {
+    pub fn new(filter: Filter) -> Self {
+        Self {
+            filter,
+            state: FilterState::default(),
+        }
+    }
+
+    pub fn process(&mut self, input: f32, sample_rate: u32) -> f32 {
+        self.filter
+            .process(input, &mut self.state, sample_rate, 0.0, 0.0, 0.0)
+    }
+
+    pub fn reset(&mut self) {
+        self.state = FilterState::default();
+    }
+
+    /// Whether the internal state has decayed below the offline-tail threshold.
+    pub fn is_quiet(&self) -> bool {
+        const EPSILON: f32 = 0.000_001;
+        self.state
+            .one_pole
+            .iter()
+            .all(|value| value.abs() < EPSILON)
+            && self
+                .state
+                .band_pass
+                .iter()
+                .flatten()
+                .all(|value| value.abs() < EPSILON)
+            && self
+                .state
+                .svf
+                .iter()
+                .flatten()
+                .all(|value| value.abs() < EPSILON)
+    }
+}
+
 impl Filter {
     pub(crate) fn process(
         &self,
@@ -137,6 +183,29 @@ impl Filter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn processor_matches_unmodulated_filtering_and_resets_its_tail() {
+        let filter = Filter {
+            mode: FilterMode::BandPass,
+            cutoff_hz: 1_200.0,
+            resonance: 0.4,
+            stages: 4,
+            ..Filter::default()
+        };
+        let mut state = FilterState::default();
+        let mut processor = FilterProcessor::new(filter.clone());
+        for frame in 0..128 {
+            let input = if frame == 0 { 0.75 } else { 0.0 };
+            let expected = filter.process(input, &mut state, 48_000, 0.0, 0.0, 0.0);
+            assert_eq!(processor.process(input, 48_000), expected);
+        }
+        assert!(!processor.is_quiet());
+        processor.reset();
+        assert!(processor.is_quiet());
+        let mut fresh = FilterProcessor::new(filter);
+        assert_eq!(processor.process(0.5, 48_000), fresh.process(0.5, 48_000));
+    }
 
     #[test]
     fn resonant_stages_use_the_patchs_six_db_slope_units() {

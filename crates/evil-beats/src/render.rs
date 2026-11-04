@@ -2,6 +2,7 @@ use evil_synth::StereoSound;
 
 use crate::{
     DrumHit, DrumKit, Error, PAD_COUNT, PreparedPad,
+    routing::{BusMixer, VoiceMix},
     voice::{PlaybackVoice, VOICE_LIMIT, allocate_voice},
 };
 
@@ -28,6 +29,7 @@ pub fn render_kit(kit: &DrumKit, hits: &[KitHit], sample_rate: u32) -> Result<St
         .iter()
         .map(|pad| pad.as_ref().map(PreparedPad::new).transpose())
         .collect::<Result<_, _>>()?;
+    let mut buses = BusMixer::new(kit.buses);
 
     let mut scheduled: Vec<(usize, usize, PlaybackVoice)> = Vec::with_capacity(hits.len());
     for (index, hit) in hits.iter().enumerate() {
@@ -68,6 +70,7 @@ pub fn render_kit(kit: &DrumKit, hits: &[KitHit], sample_rate: u32) -> Result<St
     while !active.is_empty() || scheduled.peek().is_some() {
         active.retain(|voice| !voice.is_finished());
         if active.is_empty()
+            && buses.is_quiet()
             && let Some((start, _, _)) = scheduled.peek()
             && *start > left.len()
         {
@@ -85,18 +88,29 @@ pub fn render_kit(kit: &DrumKit, hits: &[KitHit], sample_rate: u32) -> Result<St
             let (_, _, voice) = scheduled.next().unwrap();
             allocate_voice(&mut active, voice);
         }
-        let mut mixed = [0.0; 2];
+        let mut voice_mix = VoiceMix::default();
         for voice in &mut active {
             if let Some(sample) = voice.next_sample() {
-                let pad = pads[voice.slot].as_ref().unwrap();
-                let angle = (pad.pan + 1.0) * std::f32::consts::FRAC_PI_4;
-                mixed[0] += sample * pad.voice.gain * angle.cos() * kit.gain;
-                mixed[1] += sample * pad.voice.gain * angle.sin() * kit.gain;
+                voice_mix.add(pads[voice.slot].as_ref().unwrap(), sample);
             }
         }
+        let mixed = buses.mix(voice_mix, kit.gain, sample_rate);
         left.push(mixed[0]);
         right.push(mixed[1]);
         active.retain(|voice| !voice.is_finished());
+    }
+
+    const MAX_BUS_TAIL_SECONDS: u32 = 10;
+    let tail_limit = (MAX_BUS_TAIL_SECONDS * sample_rate) as usize;
+    let mut tail_frames = 0;
+    while !buses.is_quiet() && tail_frames < tail_limit {
+        if left.len() as f64 >= crate::MAX_RENDER_SECONDS * f64::from(sample_rate) {
+            return Err(Error::RenderTooLong);
+        }
+        let mixed = buses.mix(VoiceMix::default(), kit.gain, sample_rate);
+        left.push(mixed[0]);
+        right.push(mixed[1]);
+        tail_frames += 1;
     }
     Ok(StereoSound {
         left,
@@ -225,6 +239,127 @@ mod tests {
         let independent: Vec<_> = (0..VOICE_LIMIT + 1).map(|_| hit(2, 0.0)).collect();
         let limited = render_kit(&kit, &independent, 48_000).unwrap();
         assert!((limited.left[0] - VOICE_LIMIT as f32 * left_gain).abs() < 1e-5);
+    }
+
+    #[test]
+    fn unfiltered_sends_route_post_pad_gain_to_three_buses() {
+        let mut kit = DrumKit::empty("Sends");
+        kit.gain = 0.5;
+        let mut pad = KitPad::new(DrumPad::new(vec![1.0], 48_000));
+        pad.voice.gain = 0.8;
+        pad.voice.envelope.release_seconds = 0.0;
+        pad.pan = -1.0;
+        pad.bus_sends = [0.5, 0.25, 0.125];
+        kit.pads[0] = Some(pad);
+        kit.buses[0].gain = 0.5;
+        kit.buses[0].pan = -1.0;
+        kit.buses[1].pan = 1.0;
+        kit.buses[2].gain = 0.5;
+        let output = render_kit(
+            &kit,
+            &[KitHit {
+                pad_index: 0,
+                start_seconds: 0.0,
+                duration_seconds: None,
+                velocity: 127,
+            }],
+            48_000,
+        )
+        .unwrap();
+        let center = std::f32::consts::FRAC_PI_4.cos();
+        assert_eq!(output.left.len(), 1);
+        assert!((output.left[0] - (0.5 + 0.025 * center)).abs() < 1e-6);
+        assert!((output.right[0] - (0.1 + 0.025 * center)).abs() < 1e-6);
+
+        kit.buses[1].muted = true;
+        let muted = render_kit(
+            &kit,
+            &[KitHit {
+                pad_index: 0,
+                start_seconds: 0.0,
+                duration_seconds: None,
+                velocity: 127,
+            }],
+            48_000,
+        )
+        .unwrap();
+        assert!((muted.right[0] - 0.025 * center).abs() < 1e-6);
+    }
+
+    #[test]
+    fn pad_and_bus_filters_match_live_with_deterministic_bounded_tails() {
+        use crate::{DrumFilter, DrumMachine};
+        use evil_synth::FilterMode;
+
+        let mut kit = DrumKit::empty("Filtered routing");
+        kit.gain = 0.9;
+        let mut pad = KitPad::new(DrumPad::new(vec![1.0, 0.5, -0.25, 0.0], 48_000));
+        pad.voice.gain = 0.7;
+        pad.voice.envelope.release_seconds = 0.0;
+        pad.voice.filter = Some(DrumFilter {
+            mode: FilterMode::LowPass,
+            cutoff_hz: 1_000.0,
+            resonance: 0.2,
+            stages: 2,
+        });
+        pad.bus_sends = [1.0, 0.5, 0.0];
+        kit.pads[0] = Some(pad);
+        kit.buses[0].filter = Some(DrumFilter {
+            mode: FilterMode::HighPass,
+            cutoff_hz: 800.0,
+            resonance: 0.3,
+            stages: 4,
+        });
+        kit.buses[0].gain = 0.7;
+        kit.buses[0].pan = 1.0;
+        kit.buses[1].filter = Some(DrumFilter {
+            mode: FilterMode::LowPass,
+            cutoff_hz: 600.0,
+            resonance: 0.1,
+            stages: 2,
+        });
+        kit.buses[1].gain = 0.4;
+        kit.buses[1].pan = -1.0;
+        let hits = [
+            KitHit {
+                pad_index: 0,
+                start_seconds: 0.0,
+                duration_seconds: None,
+                velocity: 100,
+            },
+            KitHit {
+                pad_index: 0,
+                start_seconds: 8.0 / 48_000.0,
+                duration_seconds: None,
+                velocity: 80,
+            },
+        ];
+        let offline = render_kit(&kit, &hits, 48_000).unwrap();
+        let repeated = render_kit(&kit, &hits, 48_000).unwrap();
+        assert_eq!(offline.left, repeated.left);
+        assert_eq!(offline.right, repeated.right);
+        assert!(offline.left.len() > 12);
+        assert!(offline.left.len() < 48_000);
+        assert!(offline.left.iter().all(|sample| sample.is_finite()));
+        assert!(offline.right.iter().all(|sample| sample.is_finite()));
+
+        let mut live = DrumMachine::default();
+        live.set_gain(kit.gain);
+        live.set_buses(kit.buses);
+        live.set_pad(
+            0,
+            Some(PreparedPad::new(kit.pads[0].as_ref().unwrap()).unwrap()),
+        );
+        live.set_input(1, 100, None, 120.0).unwrap();
+        for frame in 0..offline.left.len() {
+            if frame == 8 {
+                live.set_input(0, 80, None, 120.0).unwrap();
+                live.set_input(1, 80, None, 120.0).unwrap();
+            }
+            let actual = live.next_frame().map(f32::atanh);
+            assert!((actual[0] - offline.left[frame]).abs() < 1e-5);
+            assert!((actual[1] - offline.right[frame]).abs() < 1e-5);
+        }
     }
 
     #[test]
