@@ -6,6 +6,7 @@ pub use evil_performance::{Aftertouch, ControllerEvent, PitchBend, controller_is
 use evil_performance::{
     Performance, PerformanceNote, PerformanceTrack, TempoChange as PerformanceTempoChange,
 };
+use evil_synth::{SEND_COUNT, SendBus};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -57,6 +58,8 @@ pub struct Project {
     pub ticks_per_quarter: u16,
     pub sample_rate: u32,
     pub master_gain: f32,
+    /// Two project-wide post-channel effect sends.
+    pub send_buses: [SendBus; SEND_COUNT],
     /// Original MIDI file to update on save, if this project came from one.
     pub source_midi: Option<String>,
     pub instruments: Vec<Instrument>,
@@ -115,6 +118,7 @@ impl Default for Project {
             ticks_per_quarter: evil_performance::DEFAULT_TICKS_PER_QUARTER,
             sample_rate: 48_000,
             master_gain: 0.8,
+            send_buses: std::array::from_fn(|_| SendBus::default()),
             source_midi: None,
             instruments: Vec::new(),
             patterns: Vec::new(),
@@ -554,6 +558,10 @@ impl Project {
         if !self.master_gain.is_finite() || !(0.0..=1.0).contains(&self.master_gain) {
             return Err(invalid("master_gain must be between 0 and 1"));
         }
+        for bus in &self.send_buses {
+            bus.validate()
+                .map_err(|error| invalid(&error.to_string()))?;
+        }
         if self.source_midi.as_deref().is_some_and(str::is_empty) {
             return Err(invalid("source_midi cannot be empty when present"));
         }
@@ -716,6 +724,17 @@ mod tests {
             })
             .unwrap();
         project.instruments[0].pan = -0.25;
+        project.instruments[0].inserts =
+            vec![evil_synth::InsertEffect::Bitcrush(evil_synth::Bitcrush {
+                bits: 6,
+                downsample: 2,
+                mix: 0.75,
+            })];
+        project.instruments[0].send_gains = [0.25, 0.5];
+        project.send_buses[0].effect = Some(evil_synth::InsertEffect::Waveshaper(
+            evil_synth::Waveshaper::default(),
+        ));
+        project.send_buses[0].gain = 0.5;
         project
             .add_note(
                 track,
@@ -736,6 +755,12 @@ mod tests {
         assert!((start - 0.5).abs() < 0.000_001);
         assert!((duration - 0.25).abs() < 0.000_001);
         assert_eq!(decoded.instruments[0].pan, -0.25);
+        assert_eq!(
+            decoded.instruments[0].inserts,
+            project.instruments[0].inserts
+        );
+        assert_eq!(decoded.instruments[0].send_gains, [0.25, 0.5]);
+        assert_eq!(decoded.send_buses, project.send_buses);
         assert_eq!(decoded.source_midi.as_deref(), Some("song.mid"));
     }
 
@@ -755,6 +780,9 @@ mod tests {
         assert_eq!(project.instruments[0].pitch_bend_range_semitones, 7.0);
         assert_eq!(project.to_performance().unwrap().note_count(), 1);
         assert_eq!(project.tracks[0].instrument, 0);
+        assert!(project.instruments[0].inserts.is_empty());
+        assert_eq!(project.instruments[0].send_gains, [0.0; SEND_COUNT]);
+        assert!(project.send_buses.iter().all(|bus| bus.gain == 0.0));
     }
 
     #[test]
@@ -1096,6 +1124,22 @@ mod tests {
         assert_eq!(Project::load(&path).unwrap().name, "Saved Song");
         project.save(&path).unwrap();
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn channel_and_send_graph_settings_are_validated() {
+        let mut project = Project::new("Invalid graph");
+        project.add_track(Track::default()).unwrap();
+        project.instruments[0].inserts = (0..5)
+            .map(|_| evil_synth::InsertEffect::Bitcrush(evil_synth::Bitcrush::default()))
+            .collect();
+        assert!(project.validate().is_err());
+        project.instruments[0].inserts.truncate(4);
+        project.instruments[0].send_gains[0] = f32::NAN;
+        assert!(project.validate().is_err());
+        project.instruments[0].send_gains[0] = 0.0;
+        project.send_buses[1].gain = -0.1;
+        assert!(project.validate().is_err());
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use evil_synth::{INSERT_LIMIT, InsertEffect, SEND_COUNT};
 use serde::{Deserialize, Serialize};
 
 use crate::{Error, invalid};
@@ -15,6 +16,9 @@ pub struct Instrument {
     pub gain: f32,
     pub pan: f32,
     pub pitch_bend_range_semitones: f32,
+    /// Ordered channel inserts applied after the instrument's legacy patch effects.
+    pub inserts: Vec<InsertEffect>,
+    pub send_gains: [f32; SEND_COUNT],
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -41,6 +45,8 @@ impl Default for Instrument {
             gain: 0.8,
             pan: 0.0,
             pitch_bend_range_semitones: 2.0,
+            inserts: Vec::new(),
+            send_gains: [0.0; SEND_COUNT],
         }
     }
 }
@@ -108,6 +114,21 @@ impl Instrument {
             return Err(invalid(
                 "pitch bend range must be between 0 and 24 semitones",
             ));
+        }
+        if self.inserts.len() > INSERT_LIMIT {
+            return Err(invalid("an instrument supports at most four inserts"));
+        }
+        for effect in &self.inserts {
+            effect
+                .validate()
+                .map_err(|error| invalid(&error.to_string()))?;
+        }
+        if self
+            .send_gains
+            .iter()
+            .any(|gain| !gain.is_finite() || !(0.0..=1.0).contains(gain))
+        {
+            return Err(invalid("instrument send gains must be between 0 and 1"));
         }
         Ok(())
     }

@@ -126,6 +126,7 @@ impl StudioApp {
             filter: patch.filter.clone(),
             waveshaper: patch.waveshaper.clone(),
             delay: patch.delay.clone(),
+            inserts: instrument.inserts.clone(),
         };
         if self
             .keyboard_player

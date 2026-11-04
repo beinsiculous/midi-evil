@@ -4,7 +4,7 @@ use evil_beats::{DrumKit, KitHit};
 use evil_project::{InstrumentSource, Project};
 use evil_synth::{
     MonoTrack, Patch, StereoSound, StereoTrack, SynthAftertouch, SynthController, SynthNote,
-    SynthPitchBend, SynthTempoChange, mix_stereo, mix_stereo_with_tracks,
+    SynthPitchBend, SynthTempoChange, mix_stereo, mix_stereo_with_sends,
 };
 use thiserror::Error;
 
@@ -78,6 +78,8 @@ pub fn render_audition(patch: &Patch) -> Result<RenderOutput, Error> {
             waveshaper: patch.waveshaper.as_ref(),
             delay: patch.delay.as_ref(),
             controllers: &[],
+            inserts: &[],
+            send_gains: [0.0; evil_synth::SEND_COUNT],
             dc_block: patch.uses_sync(),
         }],
         1.0,
@@ -223,6 +225,8 @@ pub fn render_project(project: &Project, patch_base: &Path) -> Result<RenderOutp
                     patch.waveshaper.clone(),
                     patch.delay.clone(),
                     controllers,
+                    settings.inserts.clone(),
+                    settings.send_gains,
                     patch.uses_sync(),
                 ));
             }
@@ -253,7 +257,13 @@ pub fn render_project(project: &Project, patch_base: &Path) -> Result<RenderOutp
                 note_count += hits.len();
                 unsupported_controller_events += track.controllers.len();
                 let sound = evil_beats::render_kit(&kit, &hits, project.sample_rate)?;
-                stereo_rendered.push((sound, settings.gain, settings.pan));
+                stereo_rendered.push((
+                    sound,
+                    settings.gain,
+                    settings.pan,
+                    settings.inserts.clone(),
+                    settings.send_gains,
+                ));
             }
         }
     }
@@ -261,27 +271,38 @@ pub fn render_project(project: &Project, patch_base: &Path) -> Result<RenderOutp
     let tracks: Vec<_> = rendered
         .iter()
         .map(
-            |(sound, gain, pan, waveshaper, delay, controllers, dc_block)| MonoTrack {
-                sound,
-                gain: *gain,
-                pan: *pan,
-                waveshaper: waveshaper.as_ref(),
-                delay: delay.as_ref(),
-                controllers,
-                dc_block: *dc_block,
+            |(sound, gain, pan, waveshaper, delay, controllers, inserts, send_gains, dc_block)| {
+                MonoTrack {
+                    sound,
+                    gain: *gain,
+                    pan: *pan,
+                    waveshaper: waveshaper.as_ref(),
+                    delay: delay.as_ref(),
+                    controllers,
+                    inserts,
+                    send_gains: *send_gains,
+                    dc_block: *dc_block,
+                }
             },
         )
         .collect();
     let stereo_tracks: Vec<_> = stereo_rendered
         .iter()
-        .map(|(sound, gain, pan)| StereoTrack {
+        .map(|(sound, gain, pan, inserts, send_gains)| StereoTrack {
             sound,
             gain: *gain,
             pan: *pan,
+            inserts,
+            send_gains: *send_gains,
         })
         .collect();
     let track_count = tracks.len() + stereo_tracks.len();
-    let sound = mix_stereo_with_tracks(&tracks, &stereo_tracks, project.master_gain)?;
+    let sound = mix_stereo_with_sends(
+        &tracks,
+        &stereo_tracks,
+        &project.send_buses,
+        project.master_gain,
+    )?;
     Ok(RenderOutput {
         sound,
         note_count,
@@ -648,11 +669,55 @@ mod tests {
     }
 
     #[test]
+    fn project_channel_inserts_and_send_buses_change_rendered_audio() {
+        let mut project = Project::new("Channel graph");
+        project
+            .add_track(Track {
+                notes: vec![Note::default()],
+                ..Track::default()
+            })
+            .unwrap();
+        let dry = render_project(&project, Path::new(".")).unwrap();
+        project.instruments[0].inserts =
+            vec![evil_synth::InsertEffect::Bitcrush(evil_synth::Bitcrush {
+                bits: 2,
+                downsample: 1,
+                mix: 0.5,
+            })];
+        let inserted = render_project(&project, Path::new(".")).unwrap();
+        assert_ne!(dry.sound.left, inserted.sound.left);
+
+        project.instruments[0].send_gains = [0.5, 0.0];
+        project.send_buses[0].gain = 0.5;
+        let project = Project::from_json(&project.to_json_pretty().unwrap()).unwrap();
+        let sent = render_project(&project, Path::new(".")).unwrap();
+        assert_ne!(
+            inserted.sound.left,
+            sent.sound.left,
+            "send gain {} / sends {:?} / energy {} vs {}",
+            project.send_buses[0].gain,
+            project.instruments[0].send_gains,
+            inserted
+                .sound
+                .left
+                .iter()
+                .map(|sample| sample.abs())
+                .sum::<f32>(),
+            sent.sound
+                .left
+                .iter()
+                .map(|sample| sample.abs())
+                .sum::<f32>()
+        );
+        assert_eq!(sent.note_count, 1);
+    }
+
+    #[test]
     fn project_render_loads_filtered_trg_bus_sends_and_tails() {
         let directory = tempfile::tempdir().unwrap();
         let mut kit = evil_beats::DrumKit::empty("Filtered bus");
         kit.gain = 1.0;
-        let mut pad = evil_beats::KitPad::new(evil_beats::DrumPad::new(vec![1.0], 48_000));
+        let mut pad = evil_beats::KitPad::new(evil_beats::DrumPad::new(vec![0.3], 48_000));
         pad.voice.gain = 1.0;
         pad.voice.envelope.release_seconds = 0.0;
         pad.pan = -1.0;
@@ -680,9 +745,22 @@ mod tests {
                 ..Track::default()
             })
             .unwrap();
+        let unprocessed = render_project(&project, directory.path()).unwrap();
+        project.instruments[0].inserts =
+            vec![evil_synth::InsertEffect::Bitcrush(evil_synth::Bitcrush {
+                bits: 2,
+                downsample: 1,
+                mix: 0.5,
+            })];
         let filtered = render_project(&project, directory.path()).unwrap();
+        assert_ne!(unprocessed.sound.left, filtered.sound.left);
         assert!(filtered.sound.left.len() > 1);
-        assert!(filtered.sound.right.iter().any(|sample| *sample != 0.0));
+        assert!(
+            filtered.sound.right.iter().any(|sample| *sample != 0.0),
+            "unprocessed right {:?} / filtered right {:?}",
+            &unprocessed.sound.right[..unprocessed.sound.right.len().min(8)],
+            &filtered.sound.right[..filtered.sound.right.len().min(8)]
+        );
 
         kit.buses[0].muted = true;
         std::fs::write(directory.path().join("kit.evilkit"), kit.to_json().unwrap()).unwrap();

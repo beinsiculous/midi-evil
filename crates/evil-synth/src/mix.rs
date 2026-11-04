@@ -1,11 +1,15 @@
 use crate::delay::apply_stereo_delay;
+use crate::effects::apply_insert;
 use crate::insert_automation::{
     apply_stereo_delay_automation, apply_stereo_waveshaper_automation, has_delay_automation,
     has_waveshaper_automation,
 };
 use crate::render::block_dc;
 use crate::waveshaper::apply_stereo_waveshaper;
-use crate::{Delay, Error, RenderedSound, SynthController, Waveshaper};
+use crate::{
+    Delay, Error, INSERT_LIMIT, InsertEffect, RenderedSound, SEND_COUNT, SendBus, SynthController,
+    Waveshaper,
+};
 
 pub struct MonoTrack<'a> {
     pub sound: &'a RenderedSound,
@@ -15,6 +19,9 @@ pub struct MonoTrack<'a> {
     pub waveshaper: Option<&'a Waveshaper>,
     pub delay: Option<&'a Delay>,
     pub controllers: &'a [SynthController],
+    /// Additional ordered channel inserts, after the legacy instrument inserts.
+    pub inserts: &'a [InsertEffect],
+    pub send_gains: [f32; SEND_COUNT],
     /// Remove DC introduced by oscillator sync and nonlinear limiting.
     pub dc_block: bool,
 }
@@ -30,6 +37,8 @@ pub struct StereoTrack<'a> {
     pub gain: f32,
     /// Stereo balance from -1 (left) to 1 (right).
     pub pan: f32,
+    pub inserts: &'a [InsertEffect],
+    pub send_gains: [f32; SEND_COUNT],
 }
 
 pub fn mix_stereo(tracks: &[MonoTrack<'_>], master_gain: f32) -> Result<StereoSound, Error> {
@@ -39,6 +48,20 @@ pub fn mix_stereo(tracks: &[MonoTrack<'_>], master_gain: f32) -> Result<StereoSo
 pub fn mix_stereo_with_tracks(
     tracks: &[MonoTrack<'_>],
     stereo_tracks: &[StereoTrack<'_>],
+    master_gain: f32,
+) -> Result<StereoSound, Error> {
+    mix_stereo_with_sends(
+        tracks,
+        stereo_tracks,
+        &[SendBus::default(), SendBus::default()],
+        master_gain,
+    )
+}
+
+pub fn mix_stereo_with_sends(
+    tracks: &[MonoTrack<'_>],
+    stereo_tracks: &[StereoTrack<'_>],
+    send_buses: &[SendBus; SEND_COUNT],
     master_gain: f32,
 ) -> Result<StereoSound, Error> {
     if tracks.is_empty() && stereo_tracks.is_empty() {
@@ -61,8 +84,12 @@ pub fn mix_stereo_with_tracks(
         .chain(stereo_tracks.iter().map(|track| track.sound.left.len()))
         .max()
         .unwrap_or(0);
-    let mut left = vec![0.0; frame_count];
-    let mut right = vec![0.0; frame_count];
+    let mut buffers = MixBuffers {
+        left: vec![0.0; frame_count],
+        right: vec![0.0; frame_count],
+        send_left: std::array::from_fn(|_| Vec::new()),
+        send_right: std::array::from_fn(|_| Vec::new()),
+    };
 
     for track in tracks {
         if track.sound.sample_rate != sample_rate {
@@ -117,14 +144,14 @@ pub fn mix_stereo_with_tracks(
                 apply_stereo_delay(&mut track_left, &mut track_right, sample_rate, delay);
             }
         }
-        if left.len() < track_left.len() {
-            left.resize(track_left.len(), 0.0);
-            right.resize(track_left.len(), 0.0);
-        }
-        for frame in 0..track_left.len() {
-            left[frame] += track_left[frame];
-            right[frame] += track_right[frame];
-        }
+        mix_channel(
+            &mut buffers,
+            track_left,
+            track_right,
+            track.inserts,
+            track.send_gains,
+            sample_rate,
+        )?;
     }
     for track in stereo_tracks {
         if track.sound.sample_rate != sample_rate
@@ -154,23 +181,106 @@ pub fn mix_stereo_with_tracks(
         } else {
             1.0 + track.pan
         };
-        for frame in 0..track.sound.left.len() {
-            left[frame] += track.sound.left[frame] * track.gain * master_gain * left_balance;
-            right[frame] += track.sound.right[frame] * track.gain * master_gain * right_balance;
+        let mut track_left = track.sound.left.clone();
+        let mut track_right = track.sound.right.clone();
+        for frame in 0..track_left.len() {
+            track_left[frame] *= track.gain * master_gain * left_balance;
+            track_right[frame] *= track.gain * master_gain * right_balance;
+        }
+        mix_channel(
+            &mut buffers,
+            track_left,
+            track_right,
+            track.inserts,
+            track.send_gains,
+            sample_rate,
+        )?;
+    }
+    for (index, bus) in send_buses.iter().enumerate() {
+        bus.validate()?;
+        if buffers.send_left[index].is_empty() || bus.gain == 0.0 {
+            continue;
+        }
+        let mut bus_left = std::mem::take(&mut buffers.send_left[index]);
+        let mut bus_right = std::mem::take(&mut buffers.send_right[index]);
+        if let Some(effect) = &bus.effect {
+            apply_insert(&mut bus_left, &mut bus_right, sample_rate, effect)?;
+        }
+        if buffers.left.len() < bus_left.len() {
+            buffers.left.resize(bus_left.len(), 0.0);
+            buffers.right.resize(bus_left.len(), 0.0);
+        }
+        for frame in 0..bus_left.len() {
+            buffers.left[frame] += bus_left[frame] * bus.gain;
+            buffers.right[frame] += bus_right[frame] * bus.gain;
         }
     }
-    for sample in left.iter_mut().chain(right.iter_mut()) {
+    for sample in buffers.left.iter_mut().chain(buffers.right.iter_mut()) {
         *sample = sample.tanh();
     }
     if tracks.iter().any(|track| track.dc_block) {
-        block_dc(&mut left, sample_rate);
-        block_dc(&mut right, sample_rate);
+        block_dc(&mut buffers.left, sample_rate);
+        block_dc(&mut buffers.right, sample_rate);
     }
     Ok(StereoSound {
-        left,
-        right,
+        left: buffers.left,
+        right: buffers.right,
         sample_rate,
     })
+}
+
+struct MixBuffers {
+    left: Vec<f32>,
+    right: Vec<f32>,
+    send_left: [Vec<f32>; SEND_COUNT],
+    send_right: [Vec<f32>; SEND_COUNT],
+}
+
+fn mix_channel(
+    buffers: &mut MixBuffers,
+    mut track_left: Vec<f32>,
+    mut track_right: Vec<f32>,
+    inserts: &[InsertEffect],
+    send_gains: [f32; SEND_COUNT],
+    sample_rate: u32,
+) -> Result<(), Error> {
+    if inserts.len() > INSERT_LIMIT {
+        return Err(Error::InvalidMix(
+            "a channel supports at most four inserts".to_owned(),
+        ));
+    }
+    if send_gains
+        .iter()
+        .any(|gain| !gain.is_finite() || !(0.0..=1.0).contains(gain))
+    {
+        return Err(Error::InvalidMix("send gains must be 0..=1".to_owned()));
+    }
+    for effect in inserts {
+        apply_insert(&mut track_left, &mut track_right, sample_rate, effect)?;
+    }
+    if buffers.left.len() < track_left.len() {
+        buffers.left.resize(track_left.len(), 0.0);
+        buffers.right.resize(track_left.len(), 0.0);
+    }
+    for frame in 0..track_left.len() {
+        buffers.left[frame] += track_left[frame];
+        buffers.right[frame] += track_right[frame];
+    }
+    for (index, gain) in send_gains.iter().enumerate() {
+        let gain = *gain;
+        if gain == 0.0 {
+            continue;
+        }
+        if buffers.send_left[index].len() < track_left.len() {
+            buffers.send_left[index].resize(track_left.len(), 0.0);
+            buffers.send_right[index].resize(track_left.len(), 0.0);
+        }
+        for frame in 0..track_left.len() {
+            buffers.send_left[index][frame] += track_left[frame] * gain;
+            buffers.send_right[index][frame] += track_right[frame] * gain;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -196,6 +306,8 @@ mod tests {
                     waveshaper: None,
                     delay: None,
                     controllers: &[],
+                    inserts: &[],
+                    send_gains: [0.0; SEND_COUNT],
                     dc_block: false,
                 },
                 MonoTrack {
@@ -205,6 +317,8 @@ mod tests {
                     waveshaper: None,
                     delay: None,
                     controllers: &[],
+                    inserts: &[],
+                    send_gains: [0.0; SEND_COUNT],
                     dc_block: false,
                 },
             ],
@@ -246,6 +360,8 @@ mod tests {
                 waveshaper: None,
                 delay: Some(&delay),
                 controllers: &[],
+                inserts: &[],
+                send_gains: [0.0; SEND_COUNT],
                 dc_block: false,
             }],
             1.0,
@@ -292,6 +408,8 @@ mod tests {
                 waveshaper: Some(&waveshaper),
                 delay: Some(&delay),
                 controllers: &[],
+                inserts: &[],
+                send_gains: [0.0; SEND_COUNT],
                 dc_block: false,
             }],
             1.0,
@@ -305,6 +423,8 @@ mod tests {
                 waveshaper: Some(&waveshaper),
                 delay: Some(&delay),
                 controllers: &controllers,
+                inserts: &[],
+                send_gains: [0.0; SEND_COUNT],
                 dc_block: false,
             }],
             1.0,
@@ -327,6 +447,8 @@ mod tests {
                 sound: &sound,
                 gain: 1.0,
                 pan: 0.0,
+                inserts: &[],
+                send_gains: [0.0; SEND_COUNT],
             }],
             1.0,
         )
@@ -339,11 +461,97 @@ mod tests {
                 sound: &sound,
                 gain: 1.0,
                 pan: -1.0,
+                inserts: &[],
+                send_gains: [0.0; SEND_COUNT],
             }],
             1.0,
         )
         .unwrap();
         assert!(left.right.iter().all(|sample| *sample == 0.0));
+    }
+
+    #[test]
+    fn four_inserts_and_two_sends_share_post_channel_audio_and_bus_tails() {
+        let sound = RenderedSound {
+            samples: vec![0.3; 4],
+            sample_rate: 1_000,
+        };
+        let inserts = vec![
+            InsertEffect::Bitcrush(crate::Bitcrush {
+                mix: 0.0,
+                ..crate::Bitcrush::default()
+            }),
+            InsertEffect::Bitcrush(crate::Bitcrush {
+                mix: 0.0,
+                ..crate::Bitcrush::default()
+            }),
+            InsertEffect::Bitcrush(crate::Bitcrush {
+                mix: 0.0,
+                ..crate::Bitcrush::default()
+            }),
+            InsertEffect::Bitcrush(crate::Bitcrush {
+                bits: 2,
+                downsample: 1,
+                mix: 1.0,
+            }),
+        ];
+        let buses = [
+            SendBus {
+                effect: None,
+                gain: 0.5,
+            },
+            SendBus {
+                effect: Some(InsertEffect::Delay(Delay {
+                    time_seconds: 0.002,
+                    feedback: 0.0,
+                    mix: 1.0,
+                    mode: crate::DelayMode::Mono,
+                })),
+                gain: 1.0,
+            },
+        ];
+        let mixed = mix_stereo_with_sends(
+            &[MonoTrack {
+                sound: &sound,
+                gain: 1.0,
+                pan: -1.0,
+                waveshaper: None,
+                delay: None,
+                controllers: &[],
+                inserts: &inserts,
+                send_gains: [0.5, 0.25],
+                dc_block: false,
+            }],
+            &[],
+            &buses,
+            1.0,
+        )
+        .unwrap();
+        assert_eq!(mixed.left.len(), 20);
+        assert!((mixed.left[0] - 0.75_f32.tanh()).abs() < 1e-6);
+        assert!((mixed.left[2] - 0.875_f32.tanh()).abs() < 1e-6);
+        assert!(mixed.right.iter().all(|sample| *sample == 0.0));
+
+        let too_many = (0..5).map(|_| inserts[0].clone()).collect::<Vec<_>>();
+        assert!(
+            mix_stereo_with_sends(
+                &[MonoTrack {
+                    sound: &sound,
+                    gain: 1.0,
+                    pan: 0.0,
+                    waveshaper: None,
+                    delay: None,
+                    controllers: &[],
+                    inserts: &too_many,
+                    send_gains: [0.0; SEND_COUNT],
+                    dc_block: false,
+                }],
+                &[],
+                &[SendBus::default(), SendBus::default()],
+                1.0,
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -366,6 +574,8 @@ mod tests {
                         waveshaper: None,
                         delay: None,
                         controllers: &[],
+                        inserts: &[],
+                        send_gains: [0.0; SEND_COUNT],
                         dc_block: false,
                     },
                     MonoTrack {
@@ -375,6 +585,8 @@ mod tests {
                         waveshaper: None,
                         delay: None,
                         controllers: &[],
+                        inserts: &[],
+                        send_gains: [0.0; SEND_COUNT],
                         dc_block: false,
                     },
                 ],

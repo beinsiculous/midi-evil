@@ -91,6 +91,7 @@ impl ProjectV1 {
                     gain: track.gain,
                     pan: track.pan,
                     pitch_bend_range_semitones: track.pitch_bend_range_semitones,
+                    ..Instrument::default()
                 });
                 Track {
                     name: track.name,
@@ -115,6 +116,7 @@ impl ProjectV1 {
             ticks_per_quarter: self.ticks_per_quarter,
             sample_rate: self.sample_rate,
             master_gain: self.master_gain,
+            send_buses: std::array::from_fn(|_| evil_synth::SendBus::default()),
             source_midi: self.source_midi,
             instruments,
             patterns: Vec::new(),

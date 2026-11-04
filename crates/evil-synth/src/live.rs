@@ -1,7 +1,11 @@
 //! Bounded, sample-by-sample synthesis for the performance keyboard.
+use crate::effects::InsertProcessor;
 use crate::render::{DcBlocker, ModulationState};
 use crate::voice::{VoiceControls, VoiceState};
-use crate::{Delay, DelayMode, Error, Filter, Patch, VoiceMode, Waveform, Waveshaper};
+use crate::{
+    Delay, DelayMode, Error, Filter, INSERT_LIMIT, InsertEffect, Patch, VoiceMode, Waveform,
+    Waveshaper,
+};
 
 const MAX_VOICES: usize = 32;
 
@@ -15,6 +19,7 @@ pub struct LiveControls {
     pub filter: Option<Filter>,
     pub waveshaper: Option<Waveshaper>,
     pub delay: Option<Delay>,
+    pub inserts: Vec<InsertEffect>,
 }
 
 impl LiveControls {
@@ -28,6 +33,7 @@ impl LiveControls {
             filter: patch.filter.clone(),
             waveshaper: patch.waveshaper.clone(),
             delay: patch.delay.clone(),
+            inserts: Vec::new(),
         }
     }
 }
@@ -65,6 +71,7 @@ pub struct LiveSynth {
     sustain: bool,
     delay_line: Vec<[f32; 2]>,
     delay_position: usize,
+    insert_processors: Vec<InsertProcessor>,
     dc: [DcBlocker; 2],
 }
 
@@ -78,6 +85,7 @@ impl LiveSynth {
             voices: Vec::with_capacity(MAX_VOICES),
             sustain: false,
             delay_position: 0,
+            insert_processors: Vec::new(),
             dc: [DcBlocker::default(), DcBlocker::default()],
         })
     }
@@ -119,6 +127,14 @@ impl LiveSynth {
                 "invalid live performance controls".to_owned(),
             ));
         }
+        if controls.inserts.len() > INSERT_LIMIT {
+            return Err(Error::InvalidPatch(
+                "a live channel supports at most four inserts".to_owned(),
+            ));
+        }
+        for effect in &controls.inserts {
+            effect.validate()?;
+        }
         let mut patch = self.patch.clone();
         patch.filter.clone_from(&controls.filter);
         patch.waveshaper.clone_from(&controls.waveshaper);
@@ -132,6 +148,17 @@ impl LiveSynth {
         if controls.delay.is_none() && self.controls.delay.is_some() {
             self.delay_line.fill([0.0; 2]);
         }
+        for (index, effect) in controls.inserts.iter().enumerate() {
+            if self.controls.inserts.get(index) != Some(effect) {
+                let processor = InsertProcessor::new(effect, self.patch.sample_rate);
+                if index < self.insert_processors.len() {
+                    self.insert_processors[index] = processor;
+                } else {
+                    self.insert_processors.push(processor);
+                }
+            }
+        }
+        self.insert_processors.truncate(controls.inserts.len());
         self.controls = controls;
         Ok(())
     }
@@ -240,6 +267,12 @@ impl LiveSynth {
         self.voices.clear();
         self.sustain = false;
         self.delay_line.fill([0.0; 2]);
+        self.insert_processors = self
+            .controls
+            .inserts
+            .iter()
+            .map(|effect| InsertProcessor::new(effect, self.patch.sample_rate))
+            .collect();
         self.dc = [DcBlocker::default(), DcBlocker::default()];
     }
 
@@ -299,6 +332,9 @@ impl LiveSynth {
             stereo[0] += delayed[0] * delay.mix;
             stereo[1] += delayed[1] * delay.mix;
             self.delay_position = (self.delay_position + 1) % self.delay_line.len();
+        }
+        for processor in &mut self.insert_processors {
+            processor.process(&mut stereo, self.patch.sample_rate);
         }
         for (sample, dc) in stereo.iter_mut().zip(&mut self.dc) {
             *sample = sample.tanh();
@@ -474,6 +510,29 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn live_channel_inserts_are_applied_and_bounded() {
+        let mut dry = LiveSynth::new(Patch::default()).unwrap();
+        dry.note_on(60, 100).unwrap();
+        let dry_frames: Vec<_> = (0..64).map(|_| dry.next_frame()).collect();
+        let mut wet = LiveSynth::new(Patch::default()).unwrap();
+        let mut controls = LiveControls::for_patch(&Patch::default());
+        controls.inserts = vec![crate::InsertEffect::Bitcrush(crate::Bitcrush {
+            bits: 2,
+            downsample: 4,
+            mix: 0.8,
+        })];
+        wet.set_controls(controls.clone()).unwrap();
+        wet.note_on(60, 100).unwrap();
+        let wet_frames: Vec<_> = (0..64).map(|_| wet.next_frame()).collect();
+        assert_ne!(dry_frames, wet_frames);
+
+        controls.inserts = (0..5)
+            .map(|_| crate::InsertEffect::Bitcrush(crate::Bitcrush::default()))
+            .collect();
+        assert!(wet.set_controls(controls).is_err());
     }
 
     #[test]

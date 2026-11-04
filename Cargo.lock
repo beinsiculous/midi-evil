@@ -831,6 +831,7 @@ name = "evil-project"
 version = "0.1.0"
 dependencies = [
  "evil-performance",
+ "evil-synth",
  "serde",
  "serde_json",
  "tempfile",

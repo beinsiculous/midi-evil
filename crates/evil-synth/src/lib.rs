@@ -1,6 +1,7 @@
 mod aiff;
 mod aux_envelope;
 mod delay;
+mod effects;
 mod envelope;
 mod filter;
 mod insert_automation;
@@ -25,6 +26,7 @@ pub use live::{LiveControls, LiveSynth};
 pub use aiff::read_mono_aiff;
 pub use aux_envelope::AuxEnvelope;
 pub use delay::{Delay, DelayMode};
+pub use effects::{Bitcrush, INSERT_LIMIT, InsertEffect, SEND_COUNT, SendBus};
 pub use envelope::Envelope;
 pub use filter::{Filter, FilterMode, FilterProcessor};
 pub use insert_automation::{
@@ -32,7 +34,9 @@ pub use insert_automation::{
     WAVESHAPER_LEVEL_CC, controller_is_insert_automation,
 };
 pub use lfo::{Lfo, LfoDestination, LfoWaveform};
-pub use mix::{MonoTrack, StereoSound, StereoTrack, mix_stereo, mix_stereo_with_tracks};
+pub use mix::{
+    MonoTrack, StereoSound, StereoTrack, mix_stereo, mix_stereo_with_sends, mix_stereo_with_tracks,
+};
 pub use modal::ModalPartial;
 pub use oscillator::{Oscillator, OscillatorMode, Waveform};
 pub use patch::Patch;
