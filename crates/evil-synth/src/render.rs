@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
-use crate::delay::apply_delay;
+use crate::delay::{apply_delay, tempo_bpm_at};
 use crate::insert_automation::{
     apply_delay_automation, apply_waveshaper_automation, has_delay_automation,
     has_waveshaper_automation,
@@ -80,7 +80,7 @@ pub fn render(patch: &Patch) -> Result<RenderedSound, Error> {
         },
     );
     apply_waveshaper_insert(patch, &mut samples, controllers);
-    apply_delay_insert(patch, &mut samples, controllers);
+    apply_delay_insert(patch, &mut samples, controllers, &[]);
     soft_limit(&mut samples);
     if patch.uses_sync() {
         block_dc(&mut samples, patch.sample_rate);
@@ -228,7 +228,7 @@ fn render_notes_inner(
         )?;
         if apply_insert_effects {
             apply_waveshaper_insert(patch, &mut samples, controllers);
-            apply_delay_insert(patch, &mut samples, controllers);
+            apply_delay_insert(patch, &mut samples, controllers, tempo_changes);
         }
         soft_limit(&mut samples);
         if apply_insert_effects && patch.uses_sync() {
@@ -313,7 +313,7 @@ fn render_notes_inner(
     }
     if apply_insert_effects {
         apply_waveshaper_insert(patch, &mut samples, controllers);
-        apply_delay_insert(patch, &mut samples, controllers);
+        apply_delay_insert(patch, &mut samples, controllers, tempo_changes);
     }
     soft_limit(&mut samples);
     if apply_insert_effects && patch.uses_sync() {
@@ -604,13 +604,6 @@ fn validate_tempo_changes(tempo_changes: &[SynthTempoChange]) -> Result<(), Erro
     Ok(())
 }
 
-fn tempo_bpm_at(tempo_changes: &[SynthTempoChange], time_seconds: f64) -> f32 {
-    let index = tempo_changes.partition_point(|event| event.time_seconds <= time_seconds);
-    tempo_changes
-        .get(index.saturating_sub(1))
-        .map_or(120.0, |event| event.bpm)
-}
-
 fn modulation_depth(controllers: &[SynthController], time_seconds: f64) -> f32 {
     if controllers.iter().any(|event| event.controller == 1) {
         controller_gain(controllers, 1, time_seconds, 0.0)
@@ -850,13 +843,24 @@ fn apply_waveshaper_insert(patch: &Patch, samples: &mut [f32], controllers: &[Sy
     }
 }
 
-fn apply_delay_insert(patch: &Patch, samples: &mut Vec<f32>, controllers: &[SynthController]) {
+fn apply_delay_insert(
+    patch: &Patch,
+    samples: &mut Vec<f32>,
+    controllers: &[SynthController],
+    tempo_changes: &[SynthTempoChange],
+) {
     if let Some(delay) = &patch.delay
         && has_delay_automation(controllers)
     {
-        apply_delay_automation(samples, patch.sample_rate, delay, controllers);
+        apply_delay_automation(
+            samples,
+            patch.sample_rate,
+            delay,
+            controllers,
+            tempo_changes,
+        );
     } else {
-        apply_delay(patch, samples);
+        apply_delay(patch, samples, tempo_changes);
     }
 }
 

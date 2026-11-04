@@ -1128,9 +1128,20 @@ fn show_effects(ui: &mut Ui, patch: &mut Patch) {
         patch.delay = delay_enabled.then_some(Delay::default());
     }
     if let Some(delay) = &mut patch.delay {
+        let mut beat_sync = delay.beats_per_cycle.is_some();
+        if ui.checkbox(&mut beat_sync, "Beat sync").changed() {
+            delay.beats_per_cycle = beat_sync.then_some(1.0);
+        }
         ui.horizontal_wrapped(|ui| {
+            if let Some(beats) = &mut delay.beats_per_cycle {
+                ui.label("Beats");
+                ui.add(DragValue::new(beats).range(0.001..=64.0));
+            }
             ui.label("Seconds");
-            ui.add(DragValue::new(&mut delay.time_seconds).range(0.001..=2.0));
+            ui.add_enabled(
+                !beat_sync,
+                DragValue::new(&mut delay.time_seconds).range(0.001..=2.0),
+            );
             ui.add(egui::Slider::new(&mut delay.feedback, 0.0..=0.95).text("Feedback"));
             ui.add(egui::Slider::new(&mut delay.mix, 0.0..=1.0).text("Wet mix"));
         });
@@ -1141,9 +1152,11 @@ fn show_effects(ui: &mut Ui, patch: &mut Patch) {
                 ui.selectable_value(&mut delay.mode, DelayMode::StereoCross, "Stereo cross");
             });
         ui.label(
-            egui::RichText::new("Timeline CC: 23 time · 24 feedback · 25 wet mix")
-                .small()
-                .color(theme::MUTED),
+            egui::RichText::new(
+                "Timeline CC: 23 time (overrides beat sync) · 24 feedback · 25 wet mix",
+            )
+            .small()
+            .color(theme::MUTED),
         );
     }
 }

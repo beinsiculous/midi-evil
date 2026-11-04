@@ -1,14 +1,14 @@
-use crate::delay::apply_stereo_delay;
-use crate::effects::apply_insert;
+use crate::delay::apply_stereo_delay_with_tempo;
+use crate::effects::apply_insert_with_tempo;
 use crate::insert_automation::{
-    apply_stereo_delay_automation, apply_stereo_waveshaper_automation, has_delay_automation,
-    has_waveshaper_automation,
+    apply_stereo_delay_automation_with_tempo, apply_stereo_waveshaper_automation,
+    has_delay_automation, has_waveshaper_automation,
 };
 use crate::render::block_dc;
 use crate::waveshaper::apply_stereo_waveshaper;
 use crate::{
     Delay, Error, INSERT_LIMIT, InsertEffect, RenderedSound, SEND_COUNT, SendBus, SynthController,
-    Waveshaper,
+    SynthTempoChange, Waveshaper,
 };
 
 pub struct MonoTrack<'a> {
@@ -63,6 +63,16 @@ pub fn mix_stereo_with_sends(
     stereo_tracks: &[StereoTrack<'_>],
     send_buses: &[SendBus; SEND_COUNT],
     master_gain: f32,
+) -> Result<StereoSound, Error> {
+    mix_stereo_with_sends_and_tempo(tracks, stereo_tracks, send_buses, master_gain, &[])
+}
+
+pub fn mix_stereo_with_sends_and_tempo(
+    tracks: &[MonoTrack<'_>],
+    stereo_tracks: &[StereoTrack<'_>],
+    send_buses: &[SendBus; SEND_COUNT],
+    master_gain: f32,
+    tempo_changes: &[SynthTempoChange],
 ) -> Result<StereoSound, Error> {
     if tracks.is_empty() && stereo_tracks.is_empty() {
         return Err(Error::InvalidMix(
@@ -133,15 +143,22 @@ pub fn mix_stereo_with_sends(
         if let Some(delay) = track.delay {
             delay.validate()?;
             if has_delay_automation(track.controllers) {
-                apply_stereo_delay_automation(
+                apply_stereo_delay_automation_with_tempo(
                     &mut track_left,
                     &mut track_right,
                     sample_rate,
                     delay,
                     track.controllers,
+                    tempo_changes,
                 );
             } else {
-                apply_stereo_delay(&mut track_left, &mut track_right, sample_rate, delay);
+                apply_stereo_delay_with_tempo(
+                    &mut track_left,
+                    &mut track_right,
+                    sample_rate,
+                    delay,
+                    tempo_changes,
+                );
             }
         }
         mix_channel(
@@ -151,6 +168,7 @@ pub fn mix_stereo_with_sends(
             track.inserts,
             track.send_gains,
             sample_rate,
+            tempo_changes,
         )?;
     }
     for track in stereo_tracks {
@@ -194,6 +212,7 @@ pub fn mix_stereo_with_sends(
             track.inserts,
             track.send_gains,
             sample_rate,
+            tempo_changes,
         )?;
     }
     for (index, bus) in send_buses.iter().enumerate() {
@@ -204,7 +223,13 @@ pub fn mix_stereo_with_sends(
         let mut bus_left = std::mem::take(&mut buffers.send_left[index]);
         let mut bus_right = std::mem::take(&mut buffers.send_right[index]);
         if let Some(effect) = &bus.effect {
-            apply_insert(&mut bus_left, &mut bus_right, sample_rate, effect)?;
+            apply_insert_with_tempo(
+                &mut bus_left,
+                &mut bus_right,
+                sample_rate,
+                effect,
+                tempo_changes,
+            )?;
         }
         if buffers.left.len() < bus_left.len() {
             buffers.left.resize(bus_left.len(), 0.0);
@@ -243,6 +268,7 @@ fn mix_channel(
     inserts: &[InsertEffect],
     send_gains: [f32; SEND_COUNT],
     sample_rate: u32,
+    tempo_changes: &[SynthTempoChange],
 ) -> Result<(), Error> {
     if inserts.len() > INSERT_LIMIT {
         return Err(Error::InvalidMix(
@@ -256,7 +282,13 @@ fn mix_channel(
         return Err(Error::InvalidMix("send gains must be 0..=1".to_owned()));
     }
     for effect in inserts {
-        apply_insert(&mut track_left, &mut track_right, sample_rate, effect)?;
+        apply_insert_with_tempo(
+            &mut track_left,
+            &mut track_right,
+            sample_rate,
+            effect,
+            tempo_changes,
+        )?;
     }
     if buffers.left.len() < track_left.len() {
         buffers.left.resize(track_left.len(), 0.0);
@@ -351,6 +383,7 @@ mod tests {
             feedback: 0.5,
             mix: 1.0,
             mode: crate::DelayMode::StereoCross,
+            beats_per_cycle: None,
         };
         let stereo = mix_stereo(
             &[MonoTrack {
@@ -392,6 +425,7 @@ mod tests {
             feedback: 0.95,
             mix: 1.0,
             mode: crate::DelayMode::StereoCross,
+            beats_per_cycle: None,
         };
         let controllers = (20..=25)
             .map(|controller| SynthController {
@@ -506,6 +540,7 @@ mod tests {
                     feedback: 0.0,
                     mix: 1.0,
                     mode: crate::DelayMode::Mono,
+                    beats_per_cycle: None,
                 })),
                 gain: 1.0,
             },

@@ -1,4 +1,5 @@
 //! Bounded, sample-by-sample synthesis for the performance keyboard.
+use crate::delay::delay_frame_count;
 use crate::effects::InsertProcessor;
 use crate::render::{DcBlocker, ModulationState};
 use crate::voice::{VoiceControls, VoiceState};
@@ -312,9 +313,7 @@ impl LiveSynth {
             }
         }
         if let Some(delay) = &self.controls.delay {
-            let frames = (delay.time_seconds * self.patch.sample_rate as f32)
-                .round()
-                .max(1.0) as usize;
+            let frames = delay_frame_count(self.patch.sample_rate, delay, self.controls.tempo_bpm);
             let read =
                 (self.delay_position + self.delay_line.len() - frames) % self.delay_line.len();
             let delayed = self.delay_line[read];
@@ -334,7 +333,11 @@ impl LiveSynth {
             self.delay_position = (self.delay_position + 1) % self.delay_line.len();
         }
         for processor in &mut self.insert_processors {
-            processor.process(&mut stereo, self.patch.sample_rate);
+            processor.process_with_tempo(
+                &mut stereo,
+                self.patch.sample_rate,
+                self.controls.tempo_bpm,
+            );
         }
         for (sample, dc) in stereo.iter_mut().zip(&mut self.dc) {
             *sample = sample.tanh();

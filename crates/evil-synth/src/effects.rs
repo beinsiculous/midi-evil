@@ -1,12 +1,14 @@
 use serde::{Deserialize, Serialize};
 
-use crate::delay::apply_stereo_delay;
+use crate::delay::{apply_stereo_delay_with_tempo, delay_frame_count, tempo_bpm_at};
 use crate::dynamics::CompressorProcessor;
 use crate::equalizer::EqualizerProcessor;
 use crate::modulation::ModulatedDelayProcessor;
 use crate::reverb::ReverbProcessor;
 use crate::waveshaper::apply_stereo_waveshaper;
-use crate::{Chorus, Compressor, Delay, Equalizer, Error, Flanger, Reverb, Waveshaper};
+use crate::{
+    Chorus, Compressor, Delay, Equalizer, Error, Flanger, Reverb, SynthTempoChange, Waveshaper,
+};
 
 pub const INSERT_LIMIT: usize = 4;
 pub const SEND_COUNT: usize = 2;
@@ -107,11 +109,22 @@ impl SendBus {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn apply_insert(
     left: &mut Vec<f32>,
     right: &mut Vec<f32>,
     sample_rate: u32,
     effect: &InsertEffect,
+) -> Result<(), Error> {
+    apply_insert_with_tempo(left, right, sample_rate, effect, &[])
+}
+
+pub(crate) fn apply_insert_with_tempo(
+    left: &mut Vec<f32>,
+    right: &mut Vec<f32>,
+    sample_rate: u32,
+    effect: &InsertEffect,
+    tempo_changes: &[SynthTempoChange],
 ) -> Result<(), Error> {
     effect.validate()?;
     let bypass = match effect {
@@ -128,7 +141,9 @@ pub(crate) fn apply_insert(
     }
     match effect {
         InsertEffect::Waveshaper(effect) => apply_stereo_waveshaper(left, right, effect),
-        InsertEffect::Delay(effect) => apply_stereo_delay(left, right, sample_rate, effect),
+        InsertEffect::Delay(effect) => {
+            apply_stereo_delay_with_tempo(left, right, sample_rate, effect, tempo_changes)
+        }
         InsertEffect::Bitcrush(effect) => {
             let original_len = left.len();
             left.resize(original_len + usize::from(effect.downsample) - 1, 0.0);
@@ -142,12 +157,26 @@ pub(crate) fn apply_insert(
                 *right = *right + (held[1] - *right) * effect.mix;
             }
         }
-        InsertEffect::Equalizer(_) => {
-            apply_stateful_insert(left, right, sample_rate, effect, sample_rate as usize / 20)
+        InsertEffect::Equalizer(_) => apply_stateful_insert(
+            left,
+            right,
+            sample_rate,
+            effect,
+            sample_rate as usize / 20,
+            tempo_changes,
+        ),
+        InsertEffect::Compressor(_) => {
+            apply_stateful_insert(left, right, sample_rate, effect, 0, tempo_changes)
         }
-        InsertEffect::Compressor(_) => apply_stateful_insert(left, right, sample_rate, effect, 0),
         InsertEffect::Chorus(_) | InsertEffect::Flanger(_) | InsertEffect::Reverb(_) => {
-            apply_stateful_insert(left, right, sample_rate, effect, sample_rate as usize * 2)
+            apply_stateful_insert(
+                left,
+                right,
+                sample_rate,
+                effect,
+                sample_rate as usize * 2,
+                tempo_changes,
+            )
         }
     }
     Ok(())
@@ -159,14 +188,16 @@ fn apply_stateful_insert(
     sample_rate: u32,
     effect: &InsertEffect,
     tail_frames: usize,
+    tempo_changes: &[SynthTempoChange],
 ) {
     let original_len = left.len();
     left.resize(original_len + tail_frames, 0.0);
     right.resize(original_len + tail_frames, 0.0);
     let mut processor = InsertProcessor::new(effect, sample_rate);
-    for (left, right) in left.iter_mut().zip(right) {
+    for (frame, (left, right)) in left.iter_mut().zip(right).enumerate() {
         let mut stereo = [*left, *right];
-        processor.process(&mut stereo, sample_rate);
+        let time = frame as f64 / f64::from(sample_rate);
+        processor.process_with_tempo(&mut stereo, sample_rate, tempo_bpm_at(tempo_changes, time));
         *left = stereo[0];
         *right = stereo[1];
     }
@@ -223,7 +254,17 @@ impl InsertProcessor {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn process(&mut self, stereo: &mut [f32; 2], sample_rate: u32) {
+        self.process_with_tempo(stereo, sample_rate, 120.0);
+    }
+
+    pub(crate) fn process_with_tempo(
+        &mut self,
+        stereo: &mut [f32; 2],
+        sample_rate: u32,
+        tempo_bpm: f32,
+    ) {
         match self {
             Self::Waveshaper(settings) => {
                 for sample in stereo {
@@ -235,9 +276,7 @@ impl InsertProcessor {
                 line,
                 position,
             } => {
-                let frames = (settings.time_seconds * sample_rate as f32)
-                    .round()
-                    .max(1.0) as usize;
+                let frames = delay_frame_count(sample_rate, settings, tempo_bpm);
                 let read = (*position + line.len() - frames) % line.len();
                 let delayed = line[read];
                 line[*position] = if settings.mode == crate::DelayMode::StereoCross {
@@ -333,6 +372,7 @@ mod tests {
                 feedback: 0.5,
                 mix: 0.3,
                 mode: DelayMode::StereoCross,
+                beats_per_cycle: None,
             }),
         ];
         let original: Vec<f32> = (0..64)
@@ -365,6 +405,55 @@ mod tests {
                 live_right[frame], offline_right[frame],
                 "right frame {frame}"
             );
+        }
+    }
+
+    #[test]
+    fn beat_synced_delay_matches_live_across_tempo_changes() {
+        let effect = InsertEffect::Delay(Delay {
+            beats_per_cycle: Some(1.0),
+            feedback: 0.5,
+            mix: 1.0,
+            mode: DelayMode::Mono,
+            ..Delay::default()
+        });
+        let tempo = [
+            SynthTempoChange {
+                time_seconds: 0.0,
+                bpm: 120.0,
+            },
+            SynthTempoChange {
+                time_seconds: 0.1,
+                bpm: 60.0,
+            },
+            SynthTempoChange {
+                time_seconds: 0.2,
+                bpm: 240.0,
+            },
+        ];
+        let original = vec![1.0];
+        let mut offline_left = original.clone();
+        let mut offline_right = original.clone();
+        apply_insert_with_tempo(
+            &mut offline_left,
+            &mut offline_right,
+            1_000,
+            &effect,
+            &tempo,
+        )
+        .unwrap();
+        assert!(offline_left[250] > 0.99);
+        assert!(offline_left[500] > 0.49);
+        assert!(offline_left[750] > 0.24);
+
+        let mut processor = InsertProcessor::new(&effect, 1_000);
+        for frame in 0..offline_left.len() {
+            let input = original.get(frame).copied().unwrap_or(0.0);
+            let mut stereo = [input, input];
+            let time = frame as f64 / 1_000.0;
+            processor.process_with_tempo(&mut stereo, 1_000, tempo_bpm_at(&tempo, time));
+            assert_eq!(stereo[0], offline_left[frame], "left frame {frame}");
+            assert_eq!(stereo[1], offline_right[frame], "right frame {frame}");
         }
     }
 

@@ -1,4 +1,5 @@
-use crate::{Delay, SynthController, Waveshaper};
+use crate::delay::{delay_frame_count, maximum_delay_frames, tempo_bpm_at};
+use crate::{Delay, SynthController, SynthTempoChange, Waveshaper};
 
 pub const WAVESHAPER_DRIVE_CC: u8 = 20;
 pub const WAVESHAPER_CONTOUR_CC: u8 = 21;
@@ -56,52 +57,68 @@ pub(crate) fn apply_delay_automation(
     sample_rate: u32,
     base: &Delay,
     controllers: &[SynthController],
+    tempo_changes: &[SynthTempoChange],
 ) {
-    let maximum_delay = maximum_delay_frames(sample_rate, base, controllers);
+    let maximum_delay =
+        maximum_automated_delay_frames(sample_rate, base, controllers, tempo_changes);
     let original_len = samples.len();
     samples.resize(original_len + maximum_delay * 8, 0.0);
-    let mut delay_line = vec![0.0; samples.len() + maximum_delay];
-    for frame in 0..samples.len() {
+    let mut delay_line = vec![0.0; maximum_delay + 1];
+    let mut position = 0;
+    for (frame, sample) in samples.iter_mut().enumerate() {
         let time = frame as f64 / f64::from(sample_rate);
         let delay = automated_delay(base, controllers, time);
-        let dry = samples[frame];
-        let delayed = delay_line[frame];
-        samples[frame] = dry + delayed * delay.mix;
-        delay_line[frame + delay_frames(sample_rate, &delay)] = dry + delayed * delay.feedback;
+        let delay_frames =
+            delay_frame_count(sample_rate, &delay, tempo_bpm_at(tempo_changes, time));
+        let read = (position + delay_line.len() - delay_frames) % delay_line.len();
+        let dry = *sample;
+        let delayed = delay_line[read];
+        delay_line[position] = dry + delayed * delay.feedback;
+        *sample = dry + delayed * delay.mix;
+        position = (position + 1) % delay_line.len();
     }
 }
 
-pub(crate) fn apply_stereo_delay_automation(
+pub(crate) fn apply_stereo_delay_automation_with_tempo(
     left: &mut Vec<f32>,
     right: &mut Vec<f32>,
     sample_rate: u32,
     base: &Delay,
     controllers: &[SynthController],
+    tempo_changes: &[SynthTempoChange],
 ) {
     debug_assert_eq!(left.len(), right.len());
-    let maximum_delay = maximum_delay_frames(sample_rate, base, controllers);
+    let maximum_delay =
+        maximum_automated_delay_frames(sample_rate, base, controllers, tempo_changes);
     let original_len = left.len();
     left.resize(original_len + maximum_delay * 8, 0.0);
     right.resize(original_len + maximum_delay * 8, 0.0);
-    let mut left_line = vec![0.0; left.len() + maximum_delay];
-    let mut right_line = vec![0.0; right.len() + maximum_delay];
+    let mut left_line = vec![0.0; maximum_delay + 1];
+    let mut right_line = vec![0.0; maximum_delay + 1];
+    let mut position = 0;
     for frame in 0..left.len() {
         let time = frame as f64 / f64::from(sample_rate);
         let delay = automated_delay(base, controllers, time);
+        let delay_frames =
+            delay_frame_count(sample_rate, &delay, tempo_bpm_at(tempo_changes, time));
+        let read = (position + left_line.len() - delay_frames) % left_line.len();
         let dry_left = left[frame];
         let dry_right = right[frame];
-        let delayed_left = left_line[frame];
-        let delayed_right = right_line[frame];
+        let delayed_left = left_line[read];
+        let delayed_right = right_line[read];
+        left_line[position] = if base.mode == crate::DelayMode::StereoCross {
+            dry_right + delayed_right * delay.feedback
+        } else {
+            dry_left + delayed_left * delay.feedback
+        };
+        right_line[position] = if base.mode == crate::DelayMode::StereoCross {
+            dry_left + delayed_left * delay.feedback
+        } else {
+            dry_right + delayed_right * delay.feedback
+        };
         left[frame] = dry_left + delayed_left * delay.mix;
         right[frame] = dry_right + delayed_right * delay.mix;
-        let write = frame + delay_frames(sample_rate, &delay);
-        if base.mode == crate::DelayMode::StereoCross {
-            left_line[write] = dry_right + delayed_right * delay.feedback;
-            right_line[write] = dry_left + delayed_left * delay.feedback;
-        } else {
-            left_line[write] = dry_left + delayed_left * delay.feedback;
-            right_line[write] = dry_right + delayed_right * delay.feedback;
-        }
+        position = (position + 1) % left_line.len();
     }
 }
 
@@ -127,6 +144,7 @@ fn automated_delay(base: &Delay, controllers: &[SynthController], time_seconds: 
     let mut delay = base.clone();
     if let Some(value) = controller_value(controllers, DELAY_TIME_CC, time_seconds) {
         delay.time_seconds = 0.001 + value * 1.999;
+        delay.beats_per_cycle = None;
     }
     if let Some(value) = controller_value(controllers, DELAY_FEEDBACK_CC, time_seconds) {
         delay.feedback = value * 0.95;
@@ -137,18 +155,20 @@ fn automated_delay(base: &Delay, controllers: &[SynthController], time_seconds: 
     delay
 }
 
-fn maximum_delay_frames(sample_rate: u32, base: &Delay, controllers: &[SynthController]) -> usize {
+fn maximum_automated_delay_frames(
+    sample_rate: u32,
+    base: &Delay,
+    controllers: &[SynthController],
+    tempo_changes: &[SynthTempoChange],
+) -> usize {
     let maximum_seconds = controllers
         .iter()
         .filter(|event| event.controller == DELAY_TIME_CC)
         .fold(base.time_seconds, |maximum, event| {
             maximum.max(0.001 + f32::from(event.value) / 127.0 * 1.999)
         });
-    ((maximum_seconds * sample_rate as f32).round() as usize).max(1)
-}
-
-fn delay_frames(sample_rate: u32, delay: &Delay) -> usize {
-    ((delay.time_seconds * sample_rate as f32).round() as usize).max(1)
+    let automated_frames = ((maximum_seconds * sample_rate as f32).round() as usize).max(1);
+    automated_frames.max(maximum_delay_frames(sample_rate, base, tempo_changes))
 }
 
 fn controller_value(
@@ -162,4 +182,40 @@ fn controller_value(
         .rev()
         .find(|event| event.controller == controller)
         .map(|event| f32::from(event.value) / 127.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn time_automation_overrides_beat_sync() {
+        let delay = Delay {
+            beats_per_cycle: Some(1.0),
+            feedback: 0.0,
+            mix: 1.0,
+            ..Delay::default()
+        };
+        let controllers = [SynthController {
+            time_seconds: 0.0,
+            controller: DELAY_TIME_CC,
+            value: 0,
+        }];
+        let tempo = [SynthTempoChange {
+            time_seconds: 0.0,
+            bpm: 60.0,
+        }];
+        let mut left = vec![1.0];
+        let mut right = vec![0.0];
+        apply_stereo_delay_automation_with_tempo(
+            &mut left,
+            &mut right,
+            1_000,
+            &delay,
+            &controllers,
+            &tempo,
+        );
+        assert_eq!(left[1], 1.0);
+        assert_eq!(left[1_000], 0.0);
+    }
 }

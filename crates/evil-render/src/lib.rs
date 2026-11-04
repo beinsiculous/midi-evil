@@ -4,7 +4,7 @@ use evil_beats::{DrumKit, KitHit};
 use evil_project::{InstrumentSource, Project};
 use evil_synth::{
     MonoTrack, Patch, StereoSound, StereoTrack, SynthAftertouch, SynthController, SynthNote,
-    SynthPitchBend, SynthTempoChange, mix_stereo, mix_stereo_with_sends,
+    SynthPitchBend, SynthTempoChange, mix_stereo, mix_stereo_with_sends_and_tempo,
 };
 use thiserror::Error;
 
@@ -297,11 +297,12 @@ pub fn render_project(project: &Project, patch_base: &Path) -> Result<RenderOutp
         })
         .collect();
     let track_count = tracks.len() + stereo_tracks.len();
-    let sound = mix_stereo_with_sends(
+    let sound = mix_stereo_with_sends_and_tempo(
         &tracks,
         &stereo_tracks,
         &project.send_buses,
         project.master_gain,
+        &tempo_changes,
     )?;
     Ok(RenderOutput {
         sound,
@@ -666,6 +667,37 @@ mod tests {
         std::fs::write(directory.path().join("kit.evilkit"), kit.to_json().unwrap()).unwrap();
         let forward = render_project(&project, directory.path()).unwrap();
         assert_ne!(reversed.sound.left, forward.sound.left);
+    }
+
+    #[test]
+    fn project_beat_synced_delay_follows_the_tempo_map() {
+        let mut project = Project::new("Beat delay");
+        project.sample_rate = 8_000;
+        project
+            .add_track(Track {
+                notes: vec![Note::default()],
+                ..Track::default()
+            })
+            .unwrap();
+        project.instruments[0].inserts = vec![evil_synth::InsertEffect::Delay(evil_synth::Delay {
+            beats_per_cycle: Some(1.0),
+            feedback: 0.0,
+            mix: 1.0,
+            mode: evil_synth::DelayMode::Mono,
+            ..evil_synth::Delay::default()
+        })];
+        let fast = render_project(&project, Path::new(".")).unwrap();
+        project.tempo_bpm = 60.0;
+        let slow = render_project(&project, Path::new(".")).unwrap();
+        assert_ne!(fast.sound.left, slow.sound.left);
+        assert!(slow.sound.left.len() > fast.sound.left.len());
+
+        project.tempo_changes.push(evil_project::TempoChange {
+            tick: 480,
+            bpm: 240.0,
+        });
+        let mapped = render_project(&project, Path::new(".")).unwrap();
+        assert_ne!(mapped.sound.left, slow.sound.left);
     }
 
     #[test]

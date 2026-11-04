@@ -41,7 +41,8 @@ pub use insert_automation::{
 };
 pub use lfo::{Lfo, LfoDestination, LfoWaveform};
 pub use mix::{
-    MonoTrack, StereoSound, StereoTrack, mix_stereo, mix_stereo_with_sends, mix_stereo_with_tracks,
+    MonoTrack, StereoSound, StereoTrack, mix_stereo, mix_stereo_with_sends,
+    mix_stereo_with_sends_and_tempo, mix_stereo_with_tracks,
 };
 pub use modal::ModalPartial;
 pub use modulation::{Chorus, Flanger};
