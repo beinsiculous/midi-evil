@@ -14,35 +14,45 @@ impl StudioApp {
         self.pending_midi_notes.clear();
     }
 
-    pub(super) fn keyboard_panel(&mut self, ui: &mut egui::Ui) {
+    /// Bind both keyboard surfaces to the selected track without discarding its draft.
+    pub(super) fn prepare_keyboard(&mut self, ui: &mut egui::Ui) -> bool {
         let index = self.roll.selected_track;
-        let Some(track) = self.project.tracks.get(index) else {
-            return;
-        };
-        let track_name = track.name.clone();
-        let track_muted = track.muted;
-        let Ok(instrument) = self.project.instrument_for_track(index).cloned() else {
-            return;
-        };
-        let Some(source) = instrument.patch().map(str::to_owned) else {
-            self.keyboard_error = Some("Select a synth instrument for the keyboard".to_owned());
-            return;
+        let source = self
+            .project
+            .instrument_for_track(index)
+            .ok()
+            .and_then(|instrument| instrument.patch())
+            .map(str::to_owned);
+        let Some(source) = source else {
+            self.stop_keyboard();
+            ui.label("Select a synth instrument to edit and play it.");
+            return false;
         };
         let binding = (index, source);
         if self.keyboard_binding.as_ref() != Some(&binding) {
+            if self.keyboard_binding.is_some() {
+                self.record_note_events(&[NoteEvent::Panic]);
+            }
+            let source_changed = self
+                .keyboard_binding
+                .as_ref()
+                .is_some_and(|old| old != &binding);
             self.keyboard_player = None;
             self.keyboard.reset();
-            let needs_load = self
-                .patch_lab
-                .as_ref()
-                .is_none_or(|lab| lab.track_index != index)
-                || self.keyboard_binding.is_some()
-                || self.keyboard_error.is_some();
-            self.keyboard_error = None;
-            if needs_load && !self.open_patch_lab() {
-                self.keyboard_error = Some(self.status.clone());
+            let retrying = self.keyboard_error.take().is_some();
+            if source_changed
+                || retrying
+                || self
+                    .patch_lab
+                    .as_ref()
+                    .is_none_or(|lab| lab.track_index != index)
+            {
+                let view = self.view;
+                if !self.open_patch_lab() {
+                    self.keyboard_error = Some(self.status.clone());
+                }
+                self.view = view;
             }
-            self.view = View::Keyboard;
             self.keyboard_binding = Some(binding);
         }
         if let Some(error) = &self.keyboard_error {
@@ -50,9 +60,18 @@ impl StudioApp {
             if ui.button("Retry instrument").clicked() {
                 self.keyboard_binding = None;
             }
+            return false;
+        }
+        self.patch_lab.is_some()
+    }
+
+    pub(super) fn keyboard_panel(&mut self, ui: &mut egui::Ui) {
+        if !self.prepare_keyboard(ui) {
             return;
         }
-        let Some(lab) = &mut self.patch_lab else {
+        let index = self.roll.selected_track;
+        let track_name = self.project.tracks[index].name.clone();
+        let Some(mut lab) = self.patch_lab.take() else {
             return;
         };
         ui.horizontal_wrapped(|ui| {
@@ -66,21 +85,38 @@ impl StudioApp {
                     .color(theme::MUTED),
             );
         });
-        let mut events = keyboard::show(
+        let bend_range = self
+            .project
+            .instrument_for_track(index)
+            .unwrap()
+            .pitch_bend_range_semitones;
+        let events = keyboard::show(
             ui,
             &mut lab.patch,
             &mut self.keyboard,
             &self.keyboard_badge,
-            instrument.pitch_bend_range_semitones,
+            bend_range,
         );
-        let mut patch = lab.patch.clone();
+        self.play_keyboard_events(ui, &lab.patch, events);
+        self.patch_lab = Some(lab);
+    }
+
+    pub(super) fn play_keyboard_events(
+        &mut self,
+        ui: &mut egui::Ui,
+        patch: &evil_synth::Patch,
+        mut events: Vec<NoteEvent>,
+    ) {
         self.record_note_events(&events);
         events.append(&mut self.pending_midi_notes);
-        patch.pitch_bend_range_semitones = instrument.pitch_bend_range_semitones;
+        let index = self.roll.selected_track;
+        let Ok(instrument) = self.project.instrument_for_track(index) else {
+            return;
+        };
         let controls = evil_synth::LiveControls {
             bend: self.keyboard.bend,
             bend_range_semitones: instrument.pitch_bend_range_semitones,
-            gain: if track_muted {
+            gain: if self.project.tracks[index].muted {
                 0.0
             } else {
                 instrument.gain * self.project.master_gain
@@ -91,22 +127,38 @@ impl StudioApp {
             waveshaper: patch.waveshaper.clone(),
             delay: patch.delay.clone(),
         };
+        if self
+            .keyboard_player
+            .as_ref()
+            .is_some_and(|player| player.sample_rate() != patch.sample_rate)
+        {
+            self.record_note_events(&[NoteEvent::Panic]);
+            self.keyboard_player = None;
+            self.keyboard.reset();
+        }
         if self.keyboard_player.is_none()
             && events
                 .iter()
                 .any(|event| matches!(event, NoteEvent::On(..)))
         {
-            match LivePlayer::new(patch, controls.clone()) {
+            match LivePlayer::new(patch.clone(), controls.clone()) {
                 Ok(player) => self.keyboard_player = Some(player),
                 Err(error) => {
                     self.status = format!("Could not start keyboard audio: {error}");
-                    ui.colored_label(theme::RED, &self.status);
+                    self.record_note_events(&[NoteEvent::Panic]);
                     self.keyboard.reset();
                 }
             }
         }
-        if let Some(player) = &mut self.keyboard_player {
-            player.update(controls, self.keyboard.sustain, events);
+        if let Some(player) = &mut self.keyboard_player
+            && let Err(error) = player.update(patch, controls, self.keyboard.sustain, events)
+        {
+            self.status = format!("Could not update keyboard audio: {error}");
+            ui.colored_label(theme::RED, &self.status);
+            // Stop on invalid edits so releases cannot be lost behind a validation error.
+            self.record_note_events(&[NoteEvent::Panic]);
+            self.keyboard_player = None;
+            self.keyboard.reset();
         }
     }
 }

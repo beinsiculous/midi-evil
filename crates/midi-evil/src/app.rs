@@ -75,7 +75,6 @@ enum PendingRender {
         end_tick: Option<u64>,
         repeat: bool,
     },
-    Audition(Box<evil_synth::Patch>),
     Resample {
         track_index: usize,
         start_tick: u64,
@@ -90,7 +89,6 @@ enum PatchLabAction {
     Duplicate,
     Reset,
     SaveAs,
-    Audition,
 }
 
 fn portable_file_reference(path: &Path, base: &Path) -> String {
@@ -528,16 +526,16 @@ impl StudioApp {
             patch: reference.clone(),
         };
         instrument.midi_program = lab.patch.midi_program;
+        self.keyboard_binding = Some((lab.track_index, reference.clone()));
         lab.mark_saved(reference);
         self.dirty = true;
         self.status = format!("Saved synth patch to {}", output.display());
     }
 
-    fn audition_patch(&mut self, patch: &evil_synth::Patch) {
-        self.start_render(PendingRender::Audition(Box::new(patch.clone())));
-    }
-
     fn patch_lab_panel(&mut self, ui: &mut egui::Ui) {
+        if !self.prepare_keyboard(ui) {
+            return;
+        }
         let Some(mut lab) = self.patch_lab.take() else {
             ui.label("Select a track and open its instrument to start designing a sound.");
             if ui.button("Open selected instrument").clicked() {
@@ -545,10 +543,24 @@ impl StudioApp {
             }
             return;
         };
+        let events = egui::Panel::bottom("synth-keyboard")
+            .frame(
+                egui::Frame::new()
+                    .fill(theme::BACKGROUND)
+                    .inner_margin(egui::Margin {
+                        top: 10,
+                        ..Default::default()
+                    }),
+            )
+            .show(ui, |ui| {
+                crate::keyboard::show_compact(ui, &mut self.keyboard)
+            })
+            .inner;
         let mut action = None;
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
                 ui.heading("Evil Synth");
+                ui.label(RichText::new(&lab.patch.name).color(theme::PURPLE));
                 theme::label(
                     ui,
                     format!(
@@ -576,37 +588,19 @@ impl StudioApp {
                 if ui.button("Save As").clicked() {
                     action = Some(PatchLabAction::SaveAs);
                 }
-                if ui.button("Audition").clicked() {
-                    action = Some(PatchLabAction::Audition);
-                }
-                if ui.button("Resample section → Osc A").clicked() {
-                    let (start_tick, end_tick) = self.transport.range();
-                    self.start_render(PendingRender::Resample {
-                        track_index: lab.track_index,
-                        start_tick,
-                        end_tick,
-                    });
-                }
-                let recording = lab.recording_active();
-                let record_label = if recording {
-                    "Stop & embed mic"
-                } else {
-                    "Record mic → Osc A"
-                };
-                if ui.button(record_label).clicked() {
-                    let result = if recording {
-                        lab.stop_recording()
-                    } else {
-                        lab.start_recording()
-                    };
-                    self.status = match result {
-                        Ok(message) | Err(message) => message,
-                    };
-                }
             });
             ui.separator();
+            patch_lab::tabs(ui, &mut lab);
             let message = egui::ScrollArea::vertical()
-                .show(ui, |ui| patch_lab::show(ui, &mut lab))
+                .id_salt(("patch-controls", lab.page))
+                .min_scrolled_height(0.0)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    if lab.page == patch_lab::PatchPage::Samples || lab.recording_active() {
+                        self.sample_capture_controls(ui, &mut lab);
+                    }
+                    patch_lab::show(ui, &mut lab)
+                })
                 .inner;
             if let Some(message) = message {
                 self.status = message;
@@ -627,10 +621,49 @@ impl StudioApp {
                 self.status = "Restored the last opened, duplicated, or saved patch".to_owned();
             }
             Some(PatchLabAction::SaveAs) => self.save_patch_lab(&mut lab),
-            Some(PatchLabAction::Audition) => self.audition_patch(&lab.patch),
             None => {}
         }
+        self.play_keyboard_events(ui, &lab.patch, events);
         self.patch_lab = Some(lab);
+    }
+
+    fn sample_capture_controls(&mut self, ui: &mut egui::Ui, lab: &mut PatchLab) {
+        ui.horizontal_wrapped(|ui| {
+            let can_capture = !lab.patch.oscillators.iter().skip(1)
+                .any(|osc| osc.waveform == evil_synth::Waveform::Sample);
+            if ui.add_enabled(
+                can_capture && !lab.recording_active(),
+                egui::Button::new("Resample section to Osc A"),
+            )
+            .on_hover_text(
+                "Embed the saved instruments' song section, using the transport start and loop end. \
+                 Only one sample oscillator can be active.",
+            )
+            .clicked() {
+                let (start_tick, end_tick) = self.transport.range();
+                self.start_render(PendingRender::Resample {
+                    track_index: lab.track_index,
+                    start_tick,
+                    end_tick,
+                });
+            }
+            let recording = lab.recording_active();
+            let record_label = if recording { "Stop & embed mic" } else { "Record mic to Osc A" };
+            if ui.add_enabled(
+                can_capture || recording,
+                egui::Button::new(record_label).selected(recording),
+            )
+            .on_hover_text(
+                "Record up to 30 seconds into Osc A; stop to embed the audio. \
+                 Only one sample oscillator can be active.",
+            )
+            .clicked() {
+                let result = if recording { lab.stop_recording() } else { lab.start_recording() };
+                self.status = match result {
+                    Ok(message) | Err(message) => message,
+                };
+            }
+        });
     }
 
     fn open_project(&mut self) {
@@ -905,7 +938,6 @@ impl StudioApp {
         }
         self.stop_preview();
         let job = match &action {
-            PendingRender::Audition(patch) => RenderJob::start_audition(patch.as_ref().clone()),
             PendingRender::Preview {
                 start_tick,
                 end_tick,
@@ -927,7 +959,6 @@ impl StudioApp {
         };
         self.render_job = Some(job);
         self.status = match &action {
-            PendingRender::Audition(patch) => format!("Auditioning '{}'…", patch.name),
             PendingRender::Resample { .. } => {
                 "Resampling the section in the background…".to_owned()
             }
@@ -952,9 +983,6 @@ impl StudioApp {
                     rendered.skipped_drum_notes,
                 );
                 self.play_render(rendered, status, repeat);
-            }
-            (Some(PendingRender::Audition(patch)), Ok(rendered)) => {
-                self.play_render(rendered, format!("Auditioning '{}'", patch.name), false);
             }
             (Some(PendingRender::Resample { track_index, .. }), Ok(rendered)) => {
                 match evil_synth::SampleOscillator::from_stereo("Project section", &rendered.sound)
@@ -1202,10 +1230,11 @@ impl eframe::App for StudioApp {
             self.track_panel(root);
             self.beats.stop();
         }
-        if self.view != View::Keyboard || self.project.tracks.is_empty() {
+        if !matches!(self.view, View::Synth | View::Keyboard) || self.project.tracks.is_empty() {
             self.stop_keyboard();
         }
-        if matches!(self.view, View::Keyboard | View::Pads) || self.recorder.is_some() {
+        if matches!(self.view, View::Synth | View::Keyboard | View::Pads) || self.recorder.is_some()
+        {
             root.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(16));
         }

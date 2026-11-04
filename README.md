@@ -174,11 +174,20 @@ cargo run -p evil-imports -- draft Dreams.wav dreams.evil --bpm 110 --grid 16
 
 ## Original synth and sound effects
 
-The `evil-synth` engine generates audio from oscillators, pitch sweeps, ADSR envelopes, filters, and seeded noise. It does not use prerecorded instrument samples. Output is mono PCM16 WAV for playback and interchange.
+The `evil-synth` engine generates audio from oscillators, pitch sweeps, ADSR envelopes, filters, modal partials, and seeded noise, with optional user-imported sample oscillators. Native project rendering produces stereo output; the standalone synth also supports mono PCM16 WAV.
 
 ### Evil Synth instrument editor
 
-Use **Open Evil Synth** on a track or the **Synth** tab to open the instrument editor. It supports multiple oscillators, waveform selection (including an optional naive square), frequency sweeps, detune, pulse width, oscillator sync, gain-normalized unison voices, ADSR, resonant filters with envelope modulation and slope/key tracking, and up to eight LFO lanes for pitch/pulse-width/sync-ratio/filter-cutoff/amplitude modulation and LFO-to-LFO rate modulation, with mono or stereo-cross feedback delay. **New**, **Open**, **Duplicate**, **Reset**, and **Save As** manage presets without changing the original file; **Audition** plays the current unsaved patch at middle C without modifying the project. Save a custom JSON patch to assign it to the editor's original track; its relative path and optional General MIDI `midi_program` are preserved in the project.
+Use **Open Evil Synth** on a track or the **Synth** tab to open the instrument editor. Its controls are grouped into **Voice & Filter**, **Samples**, **Modulation**, and **Insert FX**:
+
+- **Voice & Filter:** 36 basic waveforms, frequency sweeps, detune, pulse width, mix/sync/ring modes, poly/mono/legato voices, unison, glide/accent, modal partials, independent amplitude/filter ADSRs, and LP/BP/HP filters.
+- **Samples:** WAV/AIFF import, playback bounds, loops, key zones, and keyboard slicing. The Samples toolbar records the microphone or resamples the transport section into Osc A.
+- **Modulation:** two auxiliary envelopes with signed routes, plus up to eight LFO lanes with free or tempo-synced rates and selectable modulation targets.
+- **Insert FX:** waveshaper followed by mono/stereo-cross delay. The piano-roll automation controller menu names their six CC lanes (20–25).
+
+A three-octave keyboard stays at the bottom while the controls scroll. Play by mouse, computer keys, or connected MIDI; adjust octave, velocity, and sustain, or use **All notes off / Escape**. Voice edits apply to the next note, and filter/effect edits update live. The separate **Keyboard** page shares the same draft and adds XY pads and a pitch wheel.
+
+**New**, **Open**, **Duplicate**, **Reset**, and **Save As** manage presets. Expand **Preset / Output** for the patch name, gain, pitch tracking, noise seed, and MIDI defaults. **Save As** assigns the custom JSON patch to its track and preserves the relative path and optional General MIDI program in the project.
 
 The built-in **Max Nasty** (`nasty`) preset recreates the character of NanoStudio's A17.Nasty using original synthesis: reference-matched 1.25 oscillator sync and middle-C tuning, independent vibrato, saw-up/saw-down sync-ratio LFO lanes with tempo-map-aware `beats_per_cycle` timing, phase-continuous square-wave LFO4-to-LFO3 rate modulation, calibrated saw-down amplitude articulation, pitch-dependent gain for the original's stronger low notes, a near-open 24 dB key-tracked low-pass filter, and 20% wet stereo-cross delay with reference-calibrated timing and feedback. It uses no copied samples or original NanoStudio audio. The source preset's Hard waveshaper is bypassed and is therefore not needed in the recreation. Mono-only CLI renders fold the delay down to a mono feedback delay; desktop preview and stereo project/mix renders preserve the stereo routing. Full-bar comparison against NanoStudio now closely matches held-note RMS, spectral centroid, and much of the rhythmic envelope, but oscillator/LFO/envelope behavior and the delay tail are still approximate; see `docs/a17-nasty.md` for measurements and remaining differences.
 

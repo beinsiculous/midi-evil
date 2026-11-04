@@ -14,9 +14,17 @@ pub struct PatchLab {
     pub file_name: String,
     pub track_index: usize,
     original_patch: Patch,
-    modulation_page: bool,
+    pub page: PatchPage,
     slicing: SliceControls,
     recording: Option<SampleRecorder>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PatchPage {
+    Voice,
+    Samples,
+    Modulation,
+    Effects,
 }
 
 #[derive(Clone, Copy)]
@@ -43,7 +51,7 @@ impl PatchLab {
             patch,
             file_name,
             track_index,
-            modulation_page: false,
+            page: PatchPage::Voice,
             slicing: SliceControls::default(),
             recording: None,
         }
@@ -105,61 +113,63 @@ fn duplicate_file_name(file_name: &str) -> String {
         .into_owned()
 }
 
+pub fn tabs(ui: &mut Ui, lab: &mut PatchLab) {
+    ui.horizontal_wrapped(|ui| {
+        for (page, title) in [
+            (PatchPage::Voice, "VOICE & FILTER"),
+            (PatchPage::Samples, "SAMPLES"),
+            (PatchPage::Modulation, "MODULATION"),
+            (PatchPage::Effects, "INSERT FX"),
+        ] {
+            ui.selectable_value(&mut lab.page, page, title);
+        }
+    });
+}
+
 pub fn show(ui: &mut Ui, lab: &mut PatchLab) -> Option<String> {
     let mut message = None;
-    ui.horizontal_wrapped(|ui| {
-        ui.selectable_value(&mut lab.modulation_page, false, "VOICE & FILTER");
-        ui.selectable_value(&mut lab.modulation_page, true, "MODULATION & FX");
-        ui.label(
-            egui::RichText::new("Save As assigns the patch to its track")
-                .small()
-                .color(theme::MUTED),
-        );
-    });
-    ui.add_space(8.0);
     let patch = &mut lab.patch;
-    let slicing = &mut lab.slicing;
-    theme::section(ui, "PRESET / OUTPUT", theme::IVORY, |ui| {
-        show_output(ui, patch);
-    });
-    ui.add_space(10.0);
-    if ui.available_width() >= 750.0 {
-        ui.columns(2, |columns| {
-            if lab.modulation_page {
-                theme::section(&mut columns[0], "01 / MODULATION", theme::PURPLE, |ui| {
-                    show_motion(ui, patch)
-                });
-                theme::section(&mut columns[1], "02 / EFFECTS", theme::GREEN, |ui| {
-                    show_effects(ui, patch)
+    egui::CollapsingHeader::new("PRESET / OUTPUT")
+        .default_open(false)
+        .show(ui, |ui| show_output(ui, patch));
+    ui.add_space(8.0);
+    match lab.page {
+        PatchPage::Voice => {
+            if ui.available_width() >= 1_000.0 {
+                ui.columns(2, |columns| {
+                    theme::section(&mut columns[0], "01 / OSCILLATOR BANK", theme::RED, |ui| {
+                        show_voice(ui, patch)
+                    });
+                    theme::section(
+                        &mut columns[1],
+                        "02 / ENVELOPE & FILTER",
+                        theme::IVORY,
+                        |ui| show_shape(ui, patch),
+                    );
                 });
             } else {
-                theme::section(&mut columns[0], "01 / OSCILLATOR BANK", theme::RED, |ui| {
-                    message = show_voice(ui, patch, slicing);
+                theme::section(ui, "01 / OSCILLATOR BANK", theme::RED, |ui| {
+                    show_voice(ui, patch)
                 });
-                theme::section(
-                    &mut columns[1],
-                    "02 / ENVELOPE & FILTER",
-                    theme::IVORY,
-                    |ui| show_shape(ui, patch),
-                );
+                ui.add_space(10.0);
+                theme::section(ui, "02 / ENVELOPE & FILTER", theme::IVORY, |ui| {
+                    show_shape(ui, patch)
+                });
             }
-        });
-    } else if lab.modulation_page {
-        theme::section(ui, "01 / MODULATION", theme::PURPLE, |ui| {
-            show_motion(ui, patch)
-        });
-        ui.add_space(10.0);
-        theme::section(ui, "02 / EFFECTS", theme::GREEN, |ui| {
+        }
+        PatchPage::Samples => {
+            theme::section(ui, "SAMPLE OSCILLATOR / KEY MAPPING", theme::RED, |ui| {
+                message = show_samples(ui, patch, &mut lab.slicing);
+            })
+        }
+        PatchPage::Modulation => {
+            theme::section(ui, "ENVELOPES / MODULATION MATRIX", theme::PURPLE, |ui| {
+                show_motion(ui, patch)
+            })
+        }
+        PatchPage::Effects => theme::section(ui, "INSTRUMENT INSERTS", theme::GREEN, |ui| {
             show_effects(ui, patch)
-        });
-    } else {
-        theme::section(ui, "01 / OSCILLATOR BANK", theme::RED, |ui| {
-            message = show_voice(ui, patch, slicing);
-        });
-        ui.add_space(10.0);
-        theme::section(ui, "02 / ENVELOPE & FILTER", theme::IVORY, |ui| {
-            show_shape(ui, patch)
-        });
+        }),
     }
     message
 }
@@ -189,12 +199,103 @@ fn show_output(ui: &mut Ui, patch: &mut Patch) {
             ui.add(DragValue::new(program).range(0..=127));
         }
         ui.label("Bend range");
-        ui.add(DragValue::new(&mut patch.pitch_bend_range_semitones).range(0.01..=24.0));
+        ui.add(DragValue::new(&mut patch.pitch_bend_range_semitones).range(0.01..=24.0))
+            .on_hover_text("Standalone patch default. The track's Performance bend range controls the live keyboard.");
     });
+    ui.horizontal_wrapped(|ui| {
+        ui.add(
+            egui::Slider::new(&mut patch.pitch_gain_per_octave, -2.0..=2.0).text("Gain / octave"),
+        )
+        .on_hover_text("Positive values favor low notes; zero keeps gain even across the keyboard");
+        ui.label("Noise seed");
+        ui.add(DragValue::new(&mut patch.seed));
+    });
+    ui.label(
+        egui::RichText::new(
+            "Voice edits sound on the next note · Save As assigns this draft to the track",
+        )
+        .small()
+        .color(theme::MUTED),
+    );
 }
 
-fn show_voice(ui: &mut Ui, patch: &mut Patch, slicing: &mut SliceControls) -> Option<String> {
-    let mut message = None;
+fn show_performance(ui: &mut Ui, patch: &mut Patch) {
+    ui.heading("Glide & accent");
+    ui.add(
+        DragValue::new(&mut patch.glide_seconds)
+            .range(0.0..=60.0)
+            .speed(0.01)
+            .prefix("Glide ")
+            .suffix(" s"),
+    );
+    ui.add(
+        DragValue::new(&mut patch.accent_velocity_threshold)
+            .range(0..=127)
+            .prefix("Accent velocity ≥ "),
+    )
+    .on_hover_text(
+        "Zero disables accent. Play harder than this threshold to brighten and boost the note.",
+    );
+    ui.add(
+        egui::Slider::new(&mut patch.accent_filter_octaves, -12.0..=12.0)
+            .text("Accent cutoff (octaves)"),
+    );
+    ui.add(egui::Slider::new(&mut patch.accent_gain, 0.0..=1.0).text("Accent gain"));
+}
+
+fn show_modal_partials(ui: &mut Ui, patch: &mut Patch) {
+    egui::CollapsingHeader::new(format!("Modal partials ({})", patch.modal_partials.len()))
+        .id_salt("modal-partials")
+        .show(ui, |ui| {
+            ui.label(
+                "Inharmonic, decaying tones for bells and mallets. Ratios follow the note pitch.",
+            );
+            let mut remove = None;
+            for (index, partial) in patch.modal_partials.iter_mut().enumerate() {
+                ui.push_id(index, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(format!("{}", index + 1));
+                        ui.add(
+                            DragValue::new(&mut partial.ratio)
+                                .range(0.01..=64.0)
+                                .speed(0.01)
+                                .prefix("Ratio "),
+                        );
+                        ui.add(
+                            DragValue::new(&mut partial.amplitude)
+                                .range(0.0..=1.0)
+                                .speed(0.01)
+                                .prefix("Level "),
+                        );
+                        ui.add(
+                            DragValue::new(&mut partial.decay_seconds)
+                                .range(0.001..=60.0)
+                                .speed(0.01)
+                                .prefix("Decay ")
+                                .suffix(" s"),
+                        );
+                        if ui.button("Remove").clicked() {
+                            remove = Some(index);
+                        }
+                    });
+                });
+            }
+            if let Some(index) = remove {
+                patch.modal_partials.remove(index);
+            }
+            if ui
+                .add_enabled(
+                    patch.modal_partials.len() < 16,
+                    egui::Button::new("Add partial"),
+                )
+                .clicked()
+            {
+                patch.modal_partials.push(Default::default());
+            }
+        });
+}
+
+fn show_voice(ui: &mut Ui, patch: &mut Patch) {
     ui.horizontal_wrapped(|ui| {
         ui.label("Voice mode");
         ComboBox::from_id_salt("voice_mode")
@@ -279,10 +380,14 @@ fn show_voice(ui: &mut Ui, patch: &mut Patch, slicing: &mut SliceControls) -> Op
                 ui.horizontal_wrapped(|ui| {
                     ui.label("Start Hz");
                     ui.add(
-                        DragValue::new(&mut oscillator.start_frequency_hz).range(0.01..=24_000.0),
+                        DragValue::new(&mut oscillator.start_frequency_hz)
+                            .range(0.01..=patch.sample_rate as f32 * 0.49),
                     );
                     ui.label("End Hz");
-                    ui.add(DragValue::new(&mut oscillator.end_frequency_hz).range(0.01..=24_000.0));
+                    ui.add(
+                        DragValue::new(&mut oscillator.end_frequency_hz)
+                            .range(0.01..=patch.sample_rate as f32 * 0.49),
+                    );
                 });
                 ui.horizontal_wrapped(|ui| {
                     ui.label("Detune cents");
@@ -295,27 +400,8 @@ fn show_voice(ui: &mut Ui, patch: &mut Patch, slicing: &mut SliceControls) -> Op
                         ui.add(egui::Slider::new(&mut oscillator.pulse_width, 0.01..=0.99));
                     }
                 });
-                if oscillator.sample_zones.is_empty()
-                    && sample_oscillator.is_none_or(|sample_index| sample_index == index)
-                {
-                    let button = if oscillator.sample.is_some() {
-                        "Replace sample audio"
-                    } else {
-                        "Load sample audio"
-                    };
-                    if ui.button(button).clicked()
-                        && let Some(path) = rfd::FileDialog::new()
-                            .add_filter("WAV / AIFF audio", &["wav", "aif", "aiff", "aifc"])
-                            .pick_file()
-                    {
-                        message = Some(match import_sample(oscillator, index, &path) {
-                            Ok(message) => message,
-                            Err(error) => error.to_string(),
-                        });
-                    }
-                }
                 if oscillator.waveform == Waveform::Sample {
-                    message = show_sample_mapping(ui, oscillator, index, slicing);
+                    ui.label("Edit audio, playback bounds and key zones in Samples.");
                 }
             });
     }
@@ -348,6 +434,52 @@ fn show_voice(ui: &mut Ui, patch: &mut Patch, slicing: &mut SliceControls) -> Op
             ui.label("Voices");
             ui.add(DragValue::new(&mut unison.voices).range(1..=8));
             ui.add(egui::Slider::new(&mut unison.detune_cents, 0.0..=100.0).text("Detune cents"));
+        });
+    }
+    show_performance(ui, patch);
+    show_modal_partials(ui, patch);
+}
+
+fn show_samples(ui: &mut Ui, patch: &mut Patch, slicing: &mut SliceControls) -> Option<String> {
+    let mut message = None;
+    ui.label("Load WAV / AIFF, record the microphone, or resample the song section into Osc A.");
+    ui.label("One sample oscillator per patch · Save As keeps embedded audio with the patch.");
+    let sample_oscillator = patch
+        .oscillators
+        .iter()
+        .position(|osc| osc.waveform == Waveform::Sample);
+    for (index, oscillator) in patch.oscillators.iter_mut().enumerate() {
+        ui.push_id(("sample", index), |ui| {
+            ui.heading(format!("Oscillator {}", index + 1));
+            if oscillator.sample_zones.is_empty()
+                && sample_oscillator.is_none_or(|sample_index| sample_index == index)
+            {
+                let button = if oscillator.sample.is_some() {
+                    "Replace sample audio"
+                } else {
+                    "Load sample audio"
+                };
+                if ui.button(button).clicked()
+                    && let Some(path) = rfd::FileDialog::new()
+                        .add_filter("WAV / AIFF audio", &["wav", "aif", "aiff", "aifc"])
+                        .pick_file()
+                {
+                    message = Some(match import_sample(oscillator, index, &path) {
+                        Ok(message) => message,
+                        Err(error) => error.to_string(),
+                    });
+                }
+            }
+            if oscillator.waveform == Waveform::Sample
+                && let Some(update) = show_sample_mapping(ui, oscillator, index, slicing)
+            {
+                message = Some(update);
+            }
+            if sample_oscillator.is_some_and(|active| active != index) {
+                ui.label(
+                    "Another oscillator is using samples. Change its waveform before loading here.",
+                );
+            }
         });
     }
     message
@@ -403,7 +535,7 @@ fn show_sample_mapping(
                             slicing.high_key,
                             slicing.count,
                         ) {
-                            Ok(count) => format!("Sliced WAV into {count} contiguous key zones"),
+                            Ok(count) => format!("Sliced audio into {count} contiguous key zones"),
                             Err(error) => error.to_string(),
                         },
                     );
@@ -827,7 +959,9 @@ fn show_shape(ui: &mut Ui, patch: &mut Patch) {
     if let Some(filter) = &mut patch.filter {
         ui.horizontal_wrapped(|ui| {
             ui.label("Cutoff Hz");
-            ui.add(DragValue::new(&mut filter.cutoff_hz).range(1.0..=100_000.0));
+            ui.add(
+                DragValue::new(&mut filter.cutoff_hz).range(1.0..=patch.sample_rate as f32 * 0.49),
+            );
             ui.label("Envelope octaves");
             ui.add(DragValue::new(&mut filter.envelope_amount).range(-12.0..=12.0));
         });
@@ -890,7 +1024,7 @@ fn show_motion(ui: &mut Ui, patch: &mut Patch) {
     for index in 0..patch.lfo_count() {
         ui.collapsing(format!("LFO {}", index + 1), |ui| {
             if let Some(lfo) = patch.lfo_mut(index) {
-                show_lfo(ui, lfo, index);
+                show_lfo(ui, lfo, index, lfo_count);
             }
             if ui.button("Remove lane").clicked() {
                 remove_lfo = Some(index);
@@ -940,7 +1074,8 @@ fn show_auxiliary_envelope(
             egui::Slider::new(&mut aux.filter_resonance_depth, -1.0..=1.0).text("Resonance depth"),
         );
         ui.add(egui::Slider::new(&mut aux.oscillator_mix_depth, -1.0..=1.0).text("A/B mix depth"));
-        ui.add(
+        ui.add_enabled(
+            lfo_count > 0,
             egui::Slider::new(&mut aux.lfo_rate_depth, -4.0..=4.0)
                 .text("LFO rate depth (relative)"),
         );
@@ -1046,7 +1181,7 @@ fn envelope_plot(ui: &mut Ui, envelope: &Envelope, label: &str) {
     ));
 }
 
-fn show_lfo(ui: &mut Ui, lfo: &mut Lfo, index: usize) {
+fn show_lfo(ui: &mut Ui, lfo: &mut Lfo, index: usize, lfo_count: usize) {
     ui.horizontal_wrapped(|ui| {
         ComboBox::from_id_salt(("lfo-destination", index))
             .selected_text(format!("{:?}", lfo.destination))
@@ -1078,7 +1213,14 @@ fn show_lfo(ui: &mut Ui, lfo: &mut Lfo, index: usize) {
                     "Oscillator A/B mix",
                 );
                 ui.selectable_value(&mut lfo.destination, LfoDestination::Amplitude, "Amplitude");
-                ui.selectable_value(&mut lfo.destination, LfoDestination::LfoRate, "LFO rate");
+                ui.add_enabled_ui(lfo_count > 1, |ui| {
+                    if ui
+                        .selectable_value(&mut lfo.destination, LfoDestination::LfoRate, "LFO rate")
+                        .changed()
+                    {
+                        lfo.target_lfo = (0..lfo_count).find(|target| *target != index);
+                    }
+                });
             });
         ComboBox::from_id_salt(("lfo-waveform", index))
             .selected_text(format!("{:?}", lfo.waveform))
@@ -1091,8 +1233,25 @@ fn show_lfo(ui: &mut Ui, lfo: &mut Lfo, index: usize) {
             });
     });
     ui.horizontal_wrapped(|ui| {
+        let mut synced = lfo.beats_per_cycle.is_some();
+        if ui.checkbox(&mut synced, "Sync to song tempo").changed() {
+            lfo.beats_per_cycle = synced.then_some(1.0);
+        }
+        if let Some(beats) = &mut lfo.beats_per_cycle {
+            ui.add(
+                DragValue::new(beats)
+                    .range(0.001..=64.0)
+                    .speed(0.125)
+                    .prefix("Beats / cycle "),
+            );
+        }
+    });
+    ui.horizontal_wrapped(|ui| {
         ui.label("Rate Hz");
-        ui.add(DragValue::new(&mut lfo.rate_hz).range(0.0..=100.0));
+        ui.add_enabled(
+            lfo.beats_per_cycle.is_none(),
+            DragValue::new(&mut lfo.rate_hz).range(0.0..=100.0),
+        );
         match lfo.destination {
             LfoDestination::Pitch => {
                 ui.label("Depth cents");
@@ -1104,11 +1263,13 @@ fn show_lfo(ui: &mut Ui, lfo: &mut Lfo, index: usize) {
                 );
             }
             LfoDestination::SyncRatio => {
-                ui.add(egui::Slider::new(&mut lfo.sync_ratio_depth, -4.0..=4.0).text("Sync depth"));
+                ui.add(
+                    egui::Slider::new(&mut lfo.sync_ratio_depth, -16.0..=16.0).text("Sync depth"),
+                );
             }
             LfoDestination::FilterCutoff => {
                 ui.add(
-                    egui::Slider::new(&mut lfo.filter_cutoff_depth, -4.0..=4.0)
+                    egui::Slider::new(&mut lfo.filter_cutoff_depth, -12.0..=12.0)
                         .text("Cutoff octaves"),
                 );
             }
@@ -1134,20 +1295,20 @@ fn show_lfo(ui: &mut Ui, lfo: &mut Lfo, index: usize) {
                     egui::Slider::new(&mut lfo.lfo_rate_depth, -4.0..=4.0)
                         .text("Rate depth (relative)"),
                 );
-                if let Some(mut target) = lfo.target_lfo {
-                    if ui
-                        .add(
-                            DragValue::new(&mut target)
-                                .range(0..=7)
-                                .prefix("Target LFO "),
-                        )
-                        .changed()
-                    {
-                        lfo.target_lfo = Some(target);
-                    }
-                } else {
-                    lfo.target_lfo = Some(0);
-                }
+                ComboBox::from_id_salt(("lfo-target", index))
+                    .selected_text(lfo.target_lfo.map_or_else(
+                        || "Choose target".to_owned(),
+                        |target| format!("LFO {}", target + 1),
+                    ))
+                    .show_ui(ui, |ui| {
+                        for target in (0..lfo_count).filter(|target| *target != index) {
+                            ui.selectable_value(
+                                &mut lfo.target_lfo,
+                                Some(target),
+                                format!("LFO {}", target + 1),
+                            );
+                        }
+                    });
             }
         }
     });

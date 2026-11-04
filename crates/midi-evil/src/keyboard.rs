@@ -102,9 +102,6 @@ pub fn show(
     badge: &TextureHandle,
     bend_range: f32,
 ) -> Vec<NoteEvent> {
-    let accepts_keys =
-        !ui.ctx().egui_wants_keyboard_input() && ui.input(|i| i.focused && !i.modifiers.any());
-    let mut panic = ui.input(|i| !i.focused || (accepts_keys && i.key_pressed(Key::Escape)));
     ui.horizontal_wrapped(|ui| {
         ui.label(
             RichText::new("EVIL KEYS")
@@ -115,6 +112,58 @@ pub fn show(
         ui.label(RichText::new(&patch.name).monospace().color(theme::PURPLE));
         theme::label(ui, "DR. MAXWELL'S PERFORMANCE LAB");
     });
+    let panic = performance_controls(ui, state);
+    ui.add_space(8.0);
+    let deck_height = (ui.available_height() * 0.43).clamp(164.0, 310.0);
+    let plate_width = if ui.available_width() < 800.0 {
+        112.0
+    } else {
+        150.0
+    };
+    let pad_width = ((ui.available_width() - plate_width - 20.0) / 2.0).max(140.0);
+    ui.horizontal_top(|ui| {
+        ui.allocate_ui_with_layout(
+            vec2(plate_width, deck_height),
+            egui::Layout::top_down(egui::Align::Center),
+            |ui| {
+                let width = (plate_width - 12.0).min(deck_height * 0.47);
+                ui.image((badge.id(), vec2(width, width * 0.6)));
+                theme::label(ui, "PITCH");
+                let height = (deck_height - width * 0.6 - 55.0).max(48.0);
+                pitch_wheel(ui, &mut state.bend, height);
+                ui.label(
+                    RichText::new(format!("{:+.2} st", state.bend * bend_range))
+                        .monospace()
+                        .color(theme::IVORY),
+                );
+            },
+        );
+        tone_pad(ui, patch, vec2(pad_width, deck_height));
+        space_pad(ui, patch, vec2(pad_width, deck_height));
+    });
+    ui.add_space(10.0);
+    key_hint(ui);
+    let height = (ui.available_height() - 3.0).clamp(100.0, 340.0);
+    piano(ui, state, height, panic)
+}
+
+/// The same performance input as the full keyboard page, without its XY deck.
+pub fn show_compact(ui: &mut egui::Ui, state: &mut KeyboardState) -> Vec<NoteEvent> {
+    let panic = performance_controls(ui, state);
+    let narrow = ui.available_width() < 700.0;
+    if !narrow {
+        key_hint(ui);
+    }
+    piano(ui, state, if narrow { 84.0 } else { 100.0 }, panic)
+}
+
+fn accepts_keys(ui: &egui::Ui) -> bool {
+    !ui.ctx().egui_wants_keyboard_input() && ui.input(|i| i.focused && !i.modifiers.any())
+}
+
+fn performance_controls(ui: &mut egui::Ui, state: &mut KeyboardState) -> bool {
+    let accepts_keys = accepts_keys(ui);
+    let mut panic = ui.input(|i| !i.focused || (accepts_keys && i.key_pressed(Key::Escape)));
     ui.horizontal_wrapped(|ui| {
         theme::label(ui, "OCTAVE");
         if ui
@@ -145,35 +194,10 @@ pub fn show(
             .on_hover_text("Escape · clear held notes and delay tails")
             .clicked();
     });
-    ui.add_space(8.0);
-    let deck_height = (ui.available_height() * 0.43).clamp(164.0, 310.0);
-    let plate_width = if ui.available_width() < 800.0 {
-        112.0
-    } else {
-        150.0
-    };
-    let pad_width = ((ui.available_width() - plate_width - 20.0) / 2.0).max(140.0);
-    ui.horizontal_top(|ui| {
-        ui.allocate_ui_with_layout(
-            vec2(plate_width, deck_height),
-            egui::Layout::top_down(egui::Align::Center),
-            |ui| {
-                let width = (plate_width - 12.0).min(deck_height * 0.47);
-                ui.image((badge.id(), vec2(width, width * 0.6)));
-                theme::label(ui, "PITCH");
-                let height = (deck_height - width * 0.6 - 55.0).max(48.0);
-                pitch_wheel(ui, &mut state.bend, height);
-                ui.label(
-                    RichText::new(format!("{:+.2} st", state.bend * bend_range))
-                        .monospace()
-                        .color(theme::IVORY),
-                );
-            },
-        );
-        tone_pad(ui, patch, vec2(pad_width, deck_height));
-        space_pad(ui, patch, vec2(pad_width, deck_height));
-    });
-    ui.add_space(10.0);
+    panic
+}
+
+fn key_hint(ui: &mut egui::Ui) {
     ui.horizontal_wrapped(|ui| {
         theme::label(ui, "PLAY / THREE OCTAVES");
         ui.label(
@@ -182,14 +206,16 @@ pub fn show(
                 .color(theme::MUTED),
         );
     });
-    let height = (ui.available_height() - 3.0).clamp(100.0, 340.0);
+}
+
+fn piano(ui: &mut egui::Ui, state: &mut KeyboardState, height: f32, panic: bool) -> Vec<NoteEvent> {
     let (response, painter) = ui.allocate_painter(
         vec2(ui.available_width(), height),
         egui::Sense::click_and_drag(),
     );
     let geometry = key_geometry(response.rect.shrink(2.0), state.base);
     let mut desired = BTreeSet::new();
-    if accepts_keys {
+    if accepts_keys(ui) {
         ui.input(|input| {
             for (offset, (key, _)) in KEY_MAP.iter().enumerate() {
                 if input.key_down(*key) {
@@ -525,6 +551,46 @@ fn draw_key(painter: &egui::Painter, key: &PianoKey, down: bool, base: u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_keyboard_plays_chords_and_silences_on_focus_loss() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let mut state = KeyboardState::default();
+        let mut frame = |events, focused| {
+            let mut notes = Vec::new();
+            let _ = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(900.0, 220.0))),
+                    events,
+                    focused,
+                    ..Default::default()
+                },
+                |ui| {
+                    notes = show_compact(ui, &mut state);
+                },
+            );
+            notes
+        };
+        frame(vec![], true);
+        let key = |key, pressed| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        assert_eq!(
+            frame(vec![key(Key::A, true), key(Key::D, true)], true),
+            vec![NoteEvent::On(48, 100), NoteEvent::On(52, 100)]
+        );
+        assert!(frame(vec![], true).is_empty());
+        assert_eq!(
+            frame(vec![key(Key::A, false)], true),
+            vec![NoteEvent::Off(48)]
+        );
+        assert_eq!(frame(vec![], false), vec![NoteEvent::Panic]);
+    }
 
     #[test]
     fn black_keys_win_overlap_and_all_keys_are_reachable() {

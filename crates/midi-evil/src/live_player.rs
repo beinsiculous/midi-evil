@@ -12,6 +12,7 @@ enum Command {
     Note(NoteEvent),
     Sustain(bool),
     Controls(LiveControls),
+    Patch(Box<Patch>),
 }
 
 pub struct LivePlayer {
@@ -20,11 +21,12 @@ pub struct LivePlayer {
     sender: Sender<Command>,
     controls: LiveControls,
     sustain: bool,
+    patch: Patch,
 }
 
 impl LivePlayer {
     pub fn new(patch: Patch, controls: LiveControls) -> Result<Self, String> {
-        let mut synth = LiveSynth::new(patch).map_err(|error| error.to_string())?;
+        let mut synth = LiveSynth::new(patch.clone()).map_err(|error| error.to_string())?;
         synth
             .set_controls(controls.clone())
             .map_err(|error| error.to_string())?;
@@ -45,10 +47,26 @@ impl LivePlayer {
             sender,
             controls,
             sustain: false,
+            patch,
         })
     }
 
-    pub fn update(&mut self, controls: LiveControls, sustain: bool, events: Vec<NoteEvent>) {
+    pub fn sample_rate(&self) -> u32 {
+        self.patch.sample_rate
+    }
+
+    pub fn update(
+        &mut self,
+        patch: &Patch,
+        controls: LiveControls,
+        sustain: bool,
+        events: Vec<NoteEvent>,
+    ) -> Result<(), String> {
+        if patch != &self.patch {
+            patch.validate().map_err(|error| error.to_string())?;
+            let _ = self.sender.send(Command::Patch(Box::new(patch.clone())));
+            self.patch.clone_from(patch);
+        }
         if controls != self.controls {
             let _ = self.sender.send(Command::Controls(controls.clone()));
             self.controls = controls;
@@ -60,6 +78,7 @@ impl LivePlayer {
         for event in events {
             let _ = self.sender.send(Command::Note(event));
         }
+        Ok(())
     }
 }
 
@@ -89,6 +108,9 @@ impl Iterator for LiveSource {
                     Ok(Command::Sustain(sustain)) => self.synth.set_sustain(sustain),
                     Ok(Command::Controls(controls)) => {
                         let _ = self.synth.set_controls(controls);
+                    }
+                    Ok(Command::Patch(patch)) => {
+                        let _ = self.synth.set_patch(*patch);
                     }
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Disconnected) => return None,

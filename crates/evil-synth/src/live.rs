@@ -89,6 +89,19 @@ impl LiveSynth {
         self.voices.len()
     }
 
+    /// Use an edited patch for subsequent notes, preserving held voices and tails.
+    /// A sample-rate change requires a new audio source.
+    pub fn set_patch(&mut self, patch: Patch) -> Result<(), Error> {
+        patch.validate()?;
+        if patch.sample_rate != self.sample_rate() {
+            return Err(Error::InvalidPatch(
+                "live sample rate cannot change".to_owned(),
+            ));
+        }
+        self.patch = patch;
+        Ok(())
+    }
+
     pub fn set_controls(&mut self, controls: LiveControls) -> Result<(), Error> {
         if !controls.bend.is_finite()
             || !(-1.0..=1.0).contains(&controls.bend)
@@ -310,6 +323,46 @@ fn pitched_filter(filter: Option<Filter>, pitch: u8, sample_rate: u32) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edited_patch_changes_new_notes_and_preserves_held_voices() {
+        let patch = Patch::default();
+        let mut live = LiveSynth::new(patch.clone()).unwrap();
+        let mut reference = LiveSynth::new(patch.clone()).unwrap();
+        live.note_on(60, 100).unwrap();
+        reference.note_on(60, 100).unwrap();
+        let mut edited = patch.clone();
+        edited.oscillators[0].waveform = Waveform::Saw;
+        edited.envelope.attack_seconds = 0.03;
+        live.set_patch(edited.clone()).unwrap();
+        for _ in 0..1000 {
+            assert_eq!(live.next_frame(), reference.next_frame());
+        }
+        live.all_notes_off();
+        let mut edited_reference = LiveSynth::new(edited).unwrap();
+        live.note_on(64, 110).unwrap();
+        edited_reference.note_on(64, 110).unwrap();
+        let frames: Vec<_> = (0..4000).map(|_| live.next_frame()).collect();
+        assert!(frames.iter().any(|frame| frame[0].abs() > 0.01));
+        assert_eq!(
+            frames,
+            (0..4000)
+                .map(|_| edited_reference.next_frame())
+                .collect::<Vec<_>>()
+        );
+        let mut invalid = patch.clone();
+        invalid.oscillators.clear();
+        assert!(live.set_patch(invalid).is_err());
+        let mut wrong_rate = patch;
+        wrong_rate.sample_rate = 44_100;
+        assert!(live.set_patch(wrong_rate).is_err());
+        assert_eq!(live.sample_rate(), 48_000);
+        live.note_off(64);
+        for _ in 0..48_000 {
+            live.next_frame();
+        }
+        assert_eq!(live.voice_count(), 0);
+    }
 
     #[test]
     fn held_notes_sustain_release_and_panic_clears_delay() {

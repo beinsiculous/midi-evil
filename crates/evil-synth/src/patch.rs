@@ -139,7 +139,7 @@ impl Patch {
         if self.lfo_count() >= 8 {
             return;
         }
-        if self.lfo.is_none() {
+        if self.lfo.is_none() && self.modulation.is_empty() {
             self.lfo = Some(Lfo::default());
         } else {
             self.modulation.push(Lfo::default());
@@ -147,6 +147,9 @@ impl Patch {
     }
 
     pub fn remove_lfo(&mut self, index: usize) {
+        if index >= self.lfo_count() {
+            return;
+        }
         if self.lfo.is_none() {
             if index < self.modulation.len() {
                 self.modulation.remove(index);
@@ -159,6 +162,35 @@ impl Patch {
             };
         } else if index <= self.modulation.len() {
             self.modulation.remove(index - 1);
+        }
+        // Routes follow their target lane when its index shifts. Removing the
+        // target disconnects that route rather than silently redirecting it.
+        for lfo in self.lfo.iter_mut().chain(self.modulation.iter_mut()) {
+            if lfo.target_lfo == Some(index) {
+                lfo.target_lfo = None;
+                lfo.lfo_rate_depth = 0.0;
+                if lfo.destination == LfoDestination::LfoRate {
+                    lfo.destination = LfoDestination::Pitch;
+                    lfo.depth_cents = 0.0;
+                }
+            } else if let Some(target) = &mut lfo.target_lfo
+                && *target > index
+            {
+                *target -= 1;
+            }
+        }
+        for aux in [&mut self.aux_envelope, &mut self.aux_envelope_2]
+            .into_iter()
+            .flatten()
+        {
+            if aux.target_lfo == Some(index) {
+                aux.target_lfo = None;
+                aux.lfo_rate_depth = 0.0;
+            } else if let Some(target) = &mut aux.target_lfo
+                && *target > index
+            {
+                *target -= 1;
+            }
         }
     }
 
@@ -396,6 +428,64 @@ fn invalid(message: &str) -> Error {
 mod tests {
     use super::*;
     use crate::Waveform;
+
+    #[test]
+    fn removing_lfo_keeps_routes_on_their_original_lane_or_disconnects_them() {
+        let mut patch = Patch::default();
+        for _ in 0..3 {
+            patch.add_lfo();
+        }
+        let source = patch.lfo_mut(0).unwrap();
+        source.destination = LfoDestination::LfoRate;
+        source.target_lfo = Some(2);
+        source.lfo_rate_depth = 0.5;
+        patch.aux_envelope = Some(AuxEnvelope {
+            target_lfo: Some(1),
+            lfo_rate_depth: 1.0,
+            ..Default::default()
+        });
+        patch.aux_envelope_2 = Some(AuxEnvelope {
+            target_lfo: Some(2),
+            lfo_rate_depth: -0.5,
+            ..Default::default()
+        });
+        patch.validate().unwrap();
+        patch.remove_lfo(1);
+        patch.validate().unwrap();
+        assert_eq!(patch.lfo.as_ref().unwrap().target_lfo, Some(1));
+        assert_eq!(patch.aux_envelope.as_ref().unwrap().target_lfo, None);
+        assert_eq!(patch.aux_envelope.as_ref().unwrap().lfo_rate_depth, 0.0);
+        assert_eq!(patch.aux_envelope_2.as_ref().unwrap().target_lfo, Some(1));
+        patch.remove_lfo(1);
+        patch.validate().unwrap();
+        assert_eq!(
+            patch.lfo.as_ref().unwrap().destination,
+            LfoDestination::Pitch
+        );
+        assert_eq!(patch.lfo.as_ref().unwrap().depth_cents, 0.0);
+        assert_eq!(patch.aux_envelope_2.as_ref().unwrap().target_lfo, None);
+        patch.remove_lfo(0);
+        patch.validate().unwrap();
+        assert_eq!(patch.lfo_count(), 0);
+    }
+
+    #[test]
+    fn adding_an_lfo_to_modulation_only_patch_preserves_route_indices() {
+        let mut patch = Patch {
+            modulation: vec![Lfo::default()],
+            aux_envelope: Some(AuxEnvelope {
+                target_lfo: Some(0),
+                lfo_rate_depth: 0.5,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        patch.modulation[0].rate_hz = 3.0;
+        patch.add_lfo();
+        patch.validate().unwrap();
+        assert_eq!(patch.lfos().next().unwrap().rate_hz, 3.0);
+        assert_eq!(patch.aux_envelope.unwrap().target_lfo, Some(0));
+    }
 
     #[test]
     fn json_round_trip_preserves_the_patch() {

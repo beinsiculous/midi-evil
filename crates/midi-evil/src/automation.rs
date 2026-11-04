@@ -223,15 +223,30 @@ fn show_lane_controls(ui: &mut egui::Ui, state: &mut AutomationState) {
                 }
             }
             Lane::Controller => {
+                let previous = state.controller;
+                egui::ComboBox::from_id_salt("automation-controller")
+                    .selected_text(controller_name(state.controller).unwrap_or("Custom controller"))
+                    .show_ui(ui, |ui| {
+                        for controller in [1, 11, 20, 21, 22, 23, 24, 25, 64, 6, 38, 100, 101] {
+                            ui.selectable_value(
+                                &mut state.controller,
+                                controller,
+                                format!(
+                                    "CC {controller} · {}",
+                                    controller_name(controller).unwrap()
+                                ),
+                            );
+                        }
+                    });
+                if state.controller != previous {
+                    state.clear_selection();
+                }
                 ui.label("CC");
                 if ui
                     .add(egui::DragValue::new(&mut state.controller).range(0..=127))
                     .changed()
                 {
                     state.clear_selection();
-                }
-                if let Some(name) = controller_name(state.controller) {
-                    ui.label(name);
                 }
                 ui.label("Ramp grid");
                 egui::ComboBox::from_id_salt("automation-ramp-grid")
@@ -759,6 +774,12 @@ fn controller_name(controller: u8) -> Option<&'static str> {
         7 => Some("Channel volume · not rendered as automation"),
         10 => Some("Pan · not rendered as automation"),
         11 => Some("Expression · rendered"),
+        evil_synth::WAVESHAPER_DRIVE_CC => Some("Waveshaper drive"),
+        evil_synth::WAVESHAPER_CONTOUR_CC => Some("Waveshaper contour"),
+        evil_synth::WAVESHAPER_LEVEL_CC => Some("Waveshaper level"),
+        evil_synth::DELAY_TIME_CC => Some("Delay time"),
+        evil_synth::DELAY_FEEDBACK_CC => Some("Delay feedback"),
+        evil_synth::DELAY_MIX_CC => Some("Delay wet mix"),
         32 => Some("Bank select LSB · not rendered"),
         38 => Some("RPN data LSB · not rendered"),
         64 => Some("Sustain · not rendered"),
