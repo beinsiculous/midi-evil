@@ -1,4 +1,4 @@
-use super::{Action, BeatsPage, kit_peaks};
+use super::{Action, BeatsPage, SampleUndo, kit_peaks};
 use evil_beats::{DrumHit, DrumKit, DrumPad, KitPad};
 
 impl BeatsPage {
@@ -36,6 +36,7 @@ impl BeatsPage {
                     self.path = path;
                     self.dirty = false;
                     self.selected = 0;
+                    self.sample_undo = None;
                     self.message = "Bank ready / Save bank to update its linked instrument".into();
                 }
                 Action::Save => {
@@ -68,9 +69,62 @@ impl BeatsPage {
                         return Ok(());
                     };
                     let voice = DrumPad::read_wav(&path).map_err(|e| e.to_string())?;
+                    self.sample_undo = None;
                     self.kit.pads[self.selected] = Some(KitPad::new(voice));
                     self.dirty = true;
                     self.message = format!("Loaded WAV into pad {:02}", self.selected + 1);
+                }
+                Action::Crop | Action::Normalize => {
+                    let Some(pad) = &mut self.kit.pads[self.selected] else {
+                        return Ok(());
+                    };
+                    let label = if action == Action::Crop {
+                        "crop"
+                    } else {
+                        "normalization"
+                    };
+                    let undo = SampleUndo::capture(self.selected, &pad.voice, label);
+                    let changed = if action == Action::Crop {
+                        pad.voice.crop_to_playback_range()
+                    } else {
+                        pad.voice.normalize()
+                    }
+                    .map_err(|error| error.to_string())?;
+                    if !changed {
+                        self.message = if action == Action::Crop {
+                            "Pad already uses the complete source".into()
+                        } else {
+                            "Pad is silent or already normalized".into()
+                        };
+                        return Ok(());
+                    }
+                    self.sample_undo = Some(undo);
+                    self.dirty = true;
+                    self.message = format!(
+                        "{} complete on pad {:02} / one-step undo available",
+                        if action == Action::Crop {
+                            "Crop"
+                        } else {
+                            "Normalize"
+                        },
+                        self.selected + 1
+                    );
+                }
+                Action::UndoSample => {
+                    let Some(undo) = self.sample_undo.take() else {
+                        self.message = "No sample edit to undo".into();
+                        return Ok(());
+                    };
+                    let slot = undo.slot;
+                    let label = undo.label;
+                    let Some(pad) = &mut self.kit.pads[slot] else {
+                        self.message = "The edited pad is no longer available".into();
+                        return Ok(());
+                    };
+                    undo.restore(&mut pad.voice);
+                    self.selected = slot;
+                    self.dirty = true;
+                    self.message = format!("Undid {label} on pad {:02}", slot + 1);
                 }
                 Action::Export => {
                     let Some(pad) = &self.kit.pads[self.selected] else {
@@ -95,6 +149,7 @@ impl BeatsPage {
                     self.message = format!("Saved {}", path.display());
                 }
                 Action::Clear => {
+                    self.sample_undo = None;
                     self.kit.pads[self.selected] = None;
                     self.dirty = true;
                     self.message = format!("Pad {:02} cleared", self.selected + 1);

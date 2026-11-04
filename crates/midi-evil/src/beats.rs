@@ -2,7 +2,7 @@
 use std::{path::PathBuf, time::Instant};
 
 use eframe::egui::{self, Key, Rect, RichText, TextureHandle, vec2};
-use evil_beats::{DrumKit, PAD_COUNT, SampleDirection};
+use evil_beats::{DrumKit, DrumPad, PAD_COUNT, SampleDirection};
 
 mod bank;
 mod drawing;
@@ -35,6 +35,7 @@ enum Page {
     Edit,
     Mix,
 }
+#[derive(Clone, Copy, PartialEq)]
 enum Action {
     New,
     Starter,
@@ -42,7 +43,36 @@ enum Action {
     Save,
     Import,
     Export,
+    Crop,
+    Normalize,
+    UndoSample,
     Clear,
+}
+
+struct SampleUndo {
+    slot: usize,
+    samples: Vec<f32>,
+    playback_start_frame: usize,
+    playback_end_frame: Option<usize>,
+    label: &'static str,
+}
+
+impl SampleUndo {
+    fn capture(slot: usize, pad: &DrumPad, label: &'static str) -> Self {
+        Self {
+            slot,
+            samples: pad.samples.clone(),
+            playback_start_frame: pad.playback_start_frame,
+            playback_end_frame: pad.playback_end_frame,
+            label,
+        }
+    }
+
+    fn restore(self, pad: &mut DrumPad) {
+        pad.samples = self.samples;
+        pad.playback_start_frame = self.playback_start_frame;
+        pad.playback_end_frame = self.playback_end_frame;
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -72,6 +102,7 @@ pub struct BeatsPage {
     message: String,
     badge: TextureHandle,
     peaks: [Vec<f32>; PAD_COUNT],
+    sample_undo: Option<SampleUndo>,
 }
 
 impl BeatsPage {
@@ -104,6 +135,7 @@ impl BeatsPage {
             message,
             badge: crate::art::load_beats(context),
             peaks,
+            sample_undo: None,
         }
     }
 
@@ -126,6 +158,7 @@ impl BeatsPage {
         self.track_index = Some(track_index);
         self.dirty = false;
         self.selected = 0;
+        self.sample_undo = None;
         self.message = format!("Linked to song track {:02}", track_index + 1);
         self.peaks = kit_peaks(&self.kit);
     }
@@ -312,6 +345,16 @@ impl BeatsPage {
                                 if ui.button("Load WAV").clicked() { action = Some(Action::Import); }
                                 if ui.add_enabled(self.kit.pads[self.selected].is_some(), egui::Button::new("Save WAV")).clicked() { action = Some(Action::Export); }
                             });
+                            ui.horizontal_wrapped(|ui| {
+                                let has_pad = self.kit.pads[self.selected].is_some();
+                                if ui.add_enabled(has_pad, egui::Button::new("Crop to trim")).clicked() { action = Some(Action::Crop); }
+                                if ui.add_enabled(has_pad, egui::Button::new("Normalize")).clicked() { action = Some(Action::Normalize); }
+                                if let Some(undo) = &self.sample_undo
+                                    && ui.button(format!("Undo {} / pad {:02}", undo.label, undo.slot + 1)).clicked()
+                                {
+                                    action = Some(Action::UndoSample);
+                                }
+                            });
                             if ui.add_enabled(self.kit.pads[self.selected].is_some(), egui::Button::new("Clear pad")).clicked() { action = Some(Action::Clear); }
                         }
                     }
@@ -431,4 +474,29 @@ fn kit_peaks(kit: &DrumKit) -> [Vec<f32>; PAD_COUNT] {
                 .collect()
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sample_undo_restores_audio_and_trim_without_reverting_other_controls() {
+        let mut pad = DrumPad::new(vec![0.0, 0.25, -0.5, 0.75], 48_000);
+        pad.playback_start_frame = 1;
+        pad.playback_end_frame = Some(3);
+        let original_samples = pad.samples.clone();
+        let undo = SampleUndo::capture(4, &pad, "crop");
+        pad.crop_to_playback_range().unwrap();
+        pad.normalize().unwrap();
+        pad.direction = SampleDirection::Reverse;
+        pad.gain = 0.25;
+
+        assert_eq!(undo.slot, 4);
+        undo.restore(&mut pad);
+        assert_eq!(pad.samples, original_samples);
+        assert_eq!(pad.playback_range(), 1..3);
+        assert_eq!(pad.direction, SampleDirection::Reverse);
+        assert_eq!(pad.gain, 0.25);
+    }
 }

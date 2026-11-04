@@ -74,6 +74,38 @@ impl DrumPad {
         self.playback_start_frame..self.playback_end_frame.unwrap_or(self.samples.len())
     }
 
+    /// Destructively crop the embedded audio to the non-destructive trim range.
+    /// Returns `false` when the range already covers the complete source.
+    pub fn crop_to_playback_range(&mut self) -> Result<bool, Error> {
+        self.validate()?;
+        let playback = self.playback_range();
+        if playback.start == 0 && playback.end == self.samples.len() {
+            return Ok(false);
+        }
+        self.samples = self.samples[playback].to_vec();
+        self.playback_start_frame = 0;
+        self.playback_end_frame = None;
+        Ok(true)
+    }
+
+    /// Peak-normalize the complete embedded source without changing pad gain.
+    /// Returns `false` for silence or an already unity-peak source.
+    pub fn normalize(&mut self) -> Result<bool, Error> {
+        self.validate()?;
+        let peak = self
+            .samples
+            .iter()
+            .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+        if peak == 0.0 || peak == 1.0 {
+            return Ok(false);
+        }
+        for sample in &mut self.samples {
+            *sample /= peak;
+        }
+        self.validate()?;
+        Ok(true)
+    }
+
     pub fn validate(&self) -> Result<(), Error> {
         if !(8_000..=192_000).contains(&self.sample_rate) {
             return Err(Error::InvalidPad(
@@ -234,6 +266,49 @@ pub enum Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crop_and_normalize_edit_audio_without_changing_playback_modes() {
+        let mut pad = DrumPad::new(vec![0.0, 0.25, -0.5, 0.75], 48_000);
+        pad.playback_start_frame = 1;
+        pad.playback_end_frame = Some(3);
+        pad.direction = SampleDirection::Reverse;
+        pad.loop_enabled = true;
+        pad.gain = 1.0;
+        pad.envelope.release_seconds = 0.0;
+        let hit = DrumHit {
+            start_seconds: 0.0,
+            duration_seconds: Some(6.0 / 48_000.0),
+            velocity: 127,
+        };
+        let trimmed_render = pad.render(&[hit]).unwrap();
+        assert!(pad.crop_to_playback_range().unwrap());
+        assert_eq!(pad.samples, [0.25, -0.5]);
+        assert_eq!(pad.playback_range(), 0..2);
+        assert_eq!(pad.direction, SampleDirection::Reverse);
+        assert!(pad.loop_enabled);
+        assert!(!pad.crop_to_playback_range().unwrap());
+        assert_eq!(pad.render(&[hit]).unwrap().samples, trimmed_render.samples);
+
+        assert!(pad.normalize().unwrap());
+        assert_eq!(pad.samples, [0.5, -1.0]);
+        let normalized_render = pad.render(&[hit]).unwrap();
+        for (normalized, original) in normalized_render.samples.iter().zip(trimmed_render.samples) {
+            assert!((normalized - 2.0 * original).abs() < 1e-6);
+        }
+        assert!(!pad.normalize().unwrap());
+        let mut silent = DrumPad::new(vec![0.0, 0.0], 48_000);
+        assert!(!silent.normalize().unwrap());
+        assert_eq!(silent.samples, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn tiny_sources_normalize_without_overflow() {
+        let mut pad = DrumPad::new(vec![0.0, f32::from_bits(1)], 48_000);
+        assert!(pad.normalize().unwrap());
+        assert_eq!(pad.samples, [0.0, 1.0]);
+        assert!(pad.samples.iter().all(|sample| sample.is_finite()));
+    }
 
     #[test]
     fn trim_direction_and_loop_modes_share_exact_playback_boundaries() {
