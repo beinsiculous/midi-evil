@@ -1,7 +1,14 @@
 [package]
 name = "evil-synth"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+include.workspace = true
+description = "Deterministic original synthesis, effects, and stereo rendering for MIDI Evil"
+readme = "README.md"
 
 [dependencies]
 evil-performance = { path = "../evil-performance", version = "0.1.0" }

@@ -4,7 +4,7 @@
 
 This is an **original deterministic synthesized approximation**, not a sample-identical recreation and not a redistribution of the factory bank. The only reference material was the user-owned local bank at:
 
-`/home/jedi/.wine/drive_c/ProgramData/NanoStudio/Documents/User/TRG Banks/Chiptune.trg/`
+`NanoStudio/Documents/User/TRG Banks/Chiptune.trg/` in the user-owned local installation (the machine-specific prefix is intentionally omitted).
 
 That directory contains 16 mono PCM16 44.1 kHz WAVs and `Package.trg`. The files were read only for measurement. No factory audio, sample arrays, or NanoStudio format dependency is present in `evil-beats`; all native samples are generated from oscillators, seeded xorshift32 noise, filters, envelopes, soft clipping, and 8-bit-style quantization.
 

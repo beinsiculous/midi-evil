@@ -292,7 +292,7 @@ mod tests {
     }
 
     #[test]
-    fn native_mixer_edits_render_and_feed_preview_meters_without_an_audio_device() {
+    fn native_parity_mixer_edits_render_and_feed_preview_meters_without_an_audio_device() {
         use evil_project::{Note, Project, Track};
         use evil_synth::{Bitcrush, Chorus, Delay, Equalizer, InsertEffect, Reverb};
 

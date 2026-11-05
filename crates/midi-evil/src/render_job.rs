@@ -120,7 +120,7 @@ impl WavExportQueue {
 mod tests {
     use std::path::Path;
 
-    use evil_project::{Note, Track};
+    use evil_project::{Note, Part, Pattern, Track};
 
     use super::*;
 
@@ -224,6 +224,94 @@ mod tests {
         .wait()
         .unwrap();
         assert_eq!(std::fs::read(&section_path).unwrap(), section_bytes);
+    }
+
+    #[test]
+    fn native_parity_desktop_save_midi_stem_and_part_export_workflow() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut project = Project::new("Desktop release workflow");
+        project
+            .add_track(Track {
+                name: "Lead".to_owned(),
+                notes: vec![Note::default()],
+                ..Track::default()
+            })
+            .unwrap();
+        let pattern = project
+            .add_pattern(Pattern {
+                name: "Verse".to_owned(),
+                length_ticks: 480,
+                notes: vec![Note {
+                    pitch: 67,
+                    ..Note::default()
+                }],
+                ..Pattern::default()
+            })
+            .unwrap();
+        project
+            .add_part(
+                0,
+                Part {
+                    pattern,
+                    start_tick: 960,
+                    length_ticks: 480,
+                },
+            )
+            .unwrap();
+
+        let project_path = directory.path().join("workflow.evil");
+        project.save(&project_path).unwrap();
+        let loaded = Project::load(&project_path).unwrap();
+        assert_eq!(loaded, project);
+
+        let midi_path = directory.path().join("workflow.mid");
+        let midi_report =
+            evil_exports::export_native_project_to_path(&loaded, directory.path(), &midi_path)
+                .unwrap();
+        assert_eq!(midi_report.note_count, 2);
+        let imported = evil_imports::import_midi(&std::fs::read(&midi_path).unwrap()).unwrap();
+        assert_eq!(imported.note_count(), 2);
+        assert_eq!(imported.tracks[0].name, "Lead");
+
+        let plans = [
+            (
+                "stems",
+                evil_render::stem_export_plan(&loaded, None).unwrap(),
+                "01-lead.wav",
+                2,
+            ),
+            (
+                "parts",
+                evil_render::part_export_plan(&loaded, None, None).unwrap(),
+                "01-lead__part-0001-verse.wav",
+                1,
+            ),
+        ];
+        for (name, plan, expected_file, expected_notes) in plans {
+            let output_directory = directory.path().join(name);
+            std::fs::create_dir(&output_directory).unwrap();
+            let mut queue = WavExportQueue::new(output_directory, plan);
+            assert_eq!(queue.total, 1);
+            let spec = queue.next_spec().unwrap();
+            assert_eq!(spec.file_name, expected_file);
+            let output = queue.output_for(&spec);
+            let rendered = RenderJob::start_scoped_wav(
+                loaded.clone(),
+                PathBuf::from("."),
+                spec.scope,
+                output.clone(),
+            )
+            .wait()
+            .unwrap();
+            assert_eq!(rendered.note_count, expected_notes);
+            let mut wav = hound::WavReader::open(output).unwrap();
+            assert_eq!(wav.spec().channels, 2);
+            assert_eq!(wav.spec().bits_per_sample, 16);
+            assert_eq!(wav.samples::<i16>().count(), rendered.sound.left.len() * 2);
+            queue.complete_current();
+            assert!(queue.next_spec().is_none());
+            assert_eq!(queue.completed, 1);
+        }
     }
 
     #[test]

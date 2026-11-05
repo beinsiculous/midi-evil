@@ -1,7 +1,22 @@
 [package]
 name = "midi-evil"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+include = [
+    "src/**",
+    "assets/midi-evil-*",
+    "assets/maxwell-*",
+    "assets/SOURCE.md",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE",
+]
+description = "Desktop music workstation for original synthesis, drums, MIDI, and .evil projects"
+readme = "README.md"
 
 [dependencies]
 eframe = { version = "0.35", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }

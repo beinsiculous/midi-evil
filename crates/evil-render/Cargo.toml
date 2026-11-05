@@ -1,7 +1,14 @@
 [package]
 name = "evil-render"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+include.workspace = true
+description = "Shared stereo project rendering and scoped WAV exports for MIDI Evil"
+readme = "README.md"
 
 [dependencies]
 evil-beats = { path = "../evil-beats", version = "0.1.0" }

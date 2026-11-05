@@ -10,6 +10,14 @@ Build and run the native desktop app:
 cargo run -p midi-evil
 ```
 
+Install the desktop executable on Cargo's `PATH` (normally `$HOME/.cargo/bin`):
+
+```bash
+cargo install --path crates/midi-evil
+```
+
+For the Insiculous external-tool preset, either use this installed `midi-evil` or paste the absolute path to `target/release/midi-evil` into the preset's **Program** field.
+
 The root workspace contains only native `evil-*` crates and builds without any Oracle source. Run the native verification suite with:
 
 ```bash
@@ -31,7 +39,15 @@ cargo publish -p evil-exports
 cargo publish -p midi-evil
 ```
 
-Use `cargo package -p midi-evil --allow-dirty --list` to inspect the desktop package contents. Full registry verification requires the preceding native crates to have been published; it does not require any Oracle package.
+Inspect every native package without uploading anything:
+
+```bash
+tools/audit-public-packages.sh
+```
+
+The audit uses `cargo package --list` in the order above, checks for packaged README/license notices, and rejects private compatibility paths/dependencies, local absolute paths, proprietary fixtures, and generated WAVs. Package allowlists contain only crate sources, explicitly selected desktop artwork, manifests, READMEs, and licenses. Reports are written under `target/public-package-audit/`. Use `--allow-dirty` only for a working-tree audit.
+
+Full Cargo archive/registry verification requires the preceding native crates to have been published; it does not require any Oracle package. `cargo package -p evil-performance` can be verified independently because it has no native path dependencies. No publish step is part of the audit.
 
 ## Native `.evil` projects
 
@@ -280,7 +296,7 @@ Run the tracked, hardware-independent native parity audit from a clean checkout:
 tools/audit-native.sh
 ```
 
-It checks formatting, all native tests, strict Clippy, the focused `native_parity` end-to-end workflows, and a release desktop build. The focused workflows cover public-file MIDI edit/save/export/reimport, portable 16-pad WAV kits and dense hits, Chiptune project rendering, and deterministic full/section/scoped WAV artifacts. Keep these native checks distinct from the private compatibility/Oracle suite. Reference-calibration commands and their remaining approximation limits are documented in `docs/a17-nasty.md`, `docs/nano303.md`, `docs/glocken.md`, and `docs/chiptune.md`.
+It checks formatting, all native tests, strict Clippy, the focused `native_parity` end-to-end workflows, and a release desktop build. The focused workflows cover public-file MIDI edit/save/export/reimport, portable 16-pad WAV kits and dense hits, Chiptune project rendering, deterministic full/section/scoped WAV artifacts, desktop save/reload and MIDI export/reimport, queued stem/part WAV workers, and preview-source/meter consumption without an audio device. Keep these native checks distinct from the private compatibility/Oracle suite. Reference-calibration commands and their remaining approximation limits are documented in `docs/a17-nasty.md`, `docs/nano303.md`, `docs/glocken.md`, and `docs/chiptune.md`.
 
 The virtual-microphone test is ignored by default rather than silently passing. On Linux, run it only with the tracked ALSA null input, which captures silence without touching a physical microphone:
 
@@ -290,4 +306,8 @@ MIDI_EVIL_VIRTUAL_AUDIO_SMOKE=1 \
 cargo test -p midi-evil virtual_microphone_records_and_embeds_in_osc_a -- --ignored --nocapture
 ```
 
-Interactive and physical-device release gates are separate from headless parity results: exercise direct arranger drag and editing during playback; piano-roll add/move/resize/delete and automation gestures in shared and unique contexts; physical MIDI note/velocity, bend, aftertouch, CC, disconnect/reconnect and loop recording; and real audio-output/microphone listening checks. Packaging still requires a clean public-clone build, desktop smoke, and package-content inspection. No physical MIDI device or real microphone is exercised by the automated audit.
+Interactive and physical-device release gates are separate from headless parity results: exercise direct arranger drag and editing during playback; piano-roll add/move/resize/delete and automation gestures in shared and unique contexts; physical MIDI note/velocity, bend, aftertouch, CC, disconnect/reconnect and loop recording; and real audio-output/microphone listening checks. The detailed packaging status and remaining release gates are tracked in `docs/release-readiness.md`. No physical MIDI device or real microphone is exercised by the automated audit.
+
+## License and redistribution
+
+Native source code is available under the [MIT License](LICENSE), and every publishable crate carries the license and a crate-specific README. Dr. Maxwell/Aseprite provenance is preserved in `crates/midi-evil/assets/SOURCE.md`. The selected source assets are byte-identical to their recorded Insiculous revision; that project's policy permits them in free releases and requires a documented human cleanup pass before paid distribution. The public-domain Bach fixture has its own source and checksum notice beside the MIDI files. Proprietary NanoStudio projects, banks, artwork, fixtures, and generated reference WAVs are not packaged.
