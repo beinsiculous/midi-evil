@@ -112,6 +112,26 @@ impl DrumPad {
         Ok(true)
     }
 
+    /// Destructively render one native insert effect into the complete source.
+    /// Playback bounds and direction/loop modes are preserved; generated effect
+    /// tails remain available by widening the trim range. Returns `false` when
+    /// processing is a no-op, such as a zero-mix effect.
+    pub fn apply_effect(
+        &mut self,
+        effect: &evil_synth::InsertEffect,
+        tempo_bpm: f32,
+    ) -> Result<bool, Error> {
+        self.validate()?;
+        let mut processed = self.samples.clone();
+        evil_synth::apply_mono_insert(&mut processed, self.sample_rate, effect, tempo_bpm)?;
+        if processed == self.samples {
+            return Ok(false);
+        }
+        self.samples = processed;
+        self.validate()?;
+        Ok(true)
+    }
+
     pub fn validate(&self) -> Result<(), Error> {
         if !(8_000..=192_000).contains(&self.sample_rate) {
             return Err(Error::InvalidPad(
@@ -309,6 +329,46 @@ mod tests {
         let mut silent = DrumPad::new(vec![0.0, 0.0], 48_000);
         assert!(!silent.normalize().unwrap());
         assert_eq!(silent.samples, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn effect_preprocessing_matches_the_shared_engine_and_preserves_playback_modes() {
+        let mut pad = DrumPad::new(vec![1.0, 0.0, 0.0, 0.0], 8_000);
+        pad.playback_start_frame = 1;
+        pad.playback_end_frame = Some(4);
+        pad.direction = SampleDirection::Reverse;
+        pad.loop_enabled = true;
+        let effect = evil_synth::InsertEffect::Delay(evil_synth::Delay {
+            time_seconds: 0.00025,
+            feedback: 0.0,
+            mix: 1.0,
+            ..evil_synth::Delay::default()
+        });
+        let mut expected = pad.samples.clone();
+        evil_synth::apply_mono_insert(&mut expected, 8_000, &effect, 120.0).unwrap();
+        assert!(pad.apply_effect(&effect, 120.0).unwrap());
+        assert_eq!(pad.samples, expected);
+        assert_eq!(pad.samples.len(), 20);
+        assert!(pad.samples[2] > 0.99);
+        assert_eq!(pad.playback_start_frame, 1);
+        assert_eq!(pad.playback_end_frame, Some(4));
+        assert_eq!(pad.direction, SampleDirection::Reverse);
+        assert!(pad.loop_enabled);
+
+        let before = pad.clone();
+        assert!(
+            !pad.apply_effect(
+                &evil_synth::InsertEffect::Bitcrush(evil_synth::Bitcrush {
+                    mix: 0.0,
+                    ..evil_synth::Bitcrush::default()
+                }),
+                120.0,
+            )
+            .unwrap()
+        );
+        assert_eq!(pad, before);
+        assert!(pad.apply_effect(&effect, f32::NAN).is_err());
+        assert_eq!(pad, before);
     }
 
     #[test]

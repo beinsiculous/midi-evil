@@ -101,6 +101,7 @@ pub fn timeline_ticks(sequence: &(impl EventSequence + ?Sized), ticks_per_quarte
         .chain(sequence.pitch_bends().iter().map(|event| event.tick))
         .chain(sequence.aftertouch().iter().map(|event| event.tick))
         .chain(sequence.controllers().iter().map(|event| event.tick))
+        .chain(sequence.mixer_automation().iter().map(|event| event.tick))
         .max()
         .unwrap_or(0);
     (longest_event.saturating_add(4 * beat)).max(16 * beat)

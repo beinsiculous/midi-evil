@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{Aftertouch, ControllerEvent, Error, Note, PitchBend, Project, invalid, validate_note};
+use crate::{
+    Aftertouch, ControllerEvent, Error, MixerAutomationEvent, Note, PitchBend, Project, invalid,
+    validate_note,
+};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -11,6 +14,7 @@ pub struct Pattern {
     pub pitch_bends: Vec<PitchBend>,
     pub aftertouch: Vec<Aftertouch>,
     pub controllers: Vec<ControllerEvent>,
+    pub mixer_automation: Vec<MixerAutomationEvent>,
 }
 
 impl Default for Pattern {
@@ -22,6 +26,7 @@ impl Default for Pattern {
             pitch_bends: Vec::new(),
             aftertouch: Vec::new(),
             controllers: Vec::new(),
+            mixer_automation: Vec::new(),
         }
     }
 }
@@ -41,6 +46,7 @@ impl Pattern {
             &self.pitch_bends,
             &self.aftertouch,
             &self.controllers,
+            &self.mixer_automation,
         )?;
         if self
             .notes
@@ -58,6 +64,10 @@ impl Pattern {
                 .controllers
                 .iter()
                 .any(|event| event.tick >= self.length_ticks)
+            || self
+                .mixer_automation
+                .iter()
+                .any(|event| event.tick >= self.length_ticks)
         {
             return Err(invalid("pattern events must start inside the pattern"));
         }
@@ -71,6 +81,7 @@ pub(crate) fn validate_events(
     pitch_bends: &[PitchBend],
     aftertouch: &[Aftertouch],
     controllers: &[ControllerEvent],
+    mixer_automation: &[MixerAutomationEvent],
 ) -> Result<(), Error> {
     if length_ticks == 0 {
         return Err(invalid("pattern length must be greater than zero"));
@@ -96,6 +107,11 @@ pub(crate) fn validate_events(
                 "controller numbers and values must be between 0 and 127",
             ));
         }
+    }
+    if mixer_automation.iter().any(|event| !event.is_valid()) {
+        return Err(invalid(
+            "mixer automation has an invalid target, non-finite value, or out-of-range value",
+        ));
     }
     Ok(())
 }
@@ -181,6 +197,7 @@ impl Project {
             &mut track.pitch_bends,
             &mut track.aftertouch,
             &mut track.controllers,
+            &mut track.mixer_automation,
         );
         track.parts.remove(part_index);
         Ok(())
@@ -243,6 +260,17 @@ impl Project {
                 .collect();
             copied += controllers.len();
             track.controllers.extend(controllers);
+            let mixer_automation: Vec<_> = track
+                .mixer_automation
+                .iter()
+                .filter(|event| (start_tick..end_tick).contains(&event.tick))
+                .map(|event| MixerAutomationEvent {
+                    tick: event.tick + length,
+                    ..*event
+                })
+                .collect();
+            copied += mixer_automation.len();
+            track.mixer_automation.extend(mixer_automation);
             let parts: Vec<_> = track
                 .parts
                 .iter()
@@ -277,6 +305,7 @@ pub(crate) fn expand_part(
     pitch_bends: &mut Vec<PitchBend>,
     aftertouch: &mut Vec<Aftertouch>,
     controllers: &mut Vec<ControllerEvent>,
+    mixer_automation: &mut Vec<MixerAutomationEvent>,
 ) {
     let part_end = part.start_tick + part.length_ticks;
     for occurrence_start in (part.start_tick..part_end).step_by(pattern.length_ticks as usize) {
@@ -307,6 +336,12 @@ pub(crate) fn expand_part(
                 controllers.push(ControllerEvent { tick, ..*event });
             }
         }
+        for event in &pattern.mixer_automation {
+            let tick = occurrence_start + event.tick;
+            if tick < part_end {
+                mixer_automation.push(MixerAutomationEvent { tick, ..*event });
+            }
+        }
     }
 }
 
@@ -325,6 +360,11 @@ mod tests {
                     start_tick: 120,
                     duration_ticks: 60,
                     ..Note::default()
+                }],
+                mixer_automation: vec![MixerAutomationEvent {
+                    tick: 120,
+                    parameter: crate::MixerParameter::Gain,
+                    value: 0.5,
                 }],
                 ..Pattern::default()
             })
@@ -376,6 +416,14 @@ mod tests {
                 .notes
                 .iter()
                 .map(|note| note.start_tick)
+                .collect::<Vec<_>>(),
+            [600, 1080]
+        );
+        assert_eq!(
+            project.tracks[0]
+                .mixer_automation
+                .iter()
+                .map(|event| event.tick)
                 .collect::<Vec<_>>(),
             [600, 1080]
         );

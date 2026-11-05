@@ -853,6 +853,7 @@ dependencies = [
 name = "evil-synth"
 version = "0.1.0"
 dependencies = [
+ "evil-performance",
  "hound",
  "serde",
  "serde_json",

@@ -31,7 +31,10 @@ pub use aiff::read_mono_aiff;
 pub use aux_envelope::AuxEnvelope;
 pub use delay::{Delay, DelayMode};
 pub use dynamics::Compressor;
-pub use effects::{Bitcrush, INSERT_LIMIT, InsertEffect, SEND_COUNT, SendBus};
+pub use effects::{
+    Bitcrush, INSERT_LIMIT, InsertEffect, SEND_COUNT, SendBus, apply_mono_insert, effect_parameter,
+    set_effect_parameter,
+};
 pub use envelope::Envelope;
 pub use equalizer::Equalizer;
 pub use filter::{Filter, FilterMode, FilterProcessor};
@@ -41,8 +44,10 @@ pub use insert_automation::{
 };
 pub use lfo::{Lfo, LfoDestination, LfoWaveform};
 pub use mix::{
-    MonoTrack, StereoSound, StereoTrack, mix_stereo, mix_stereo_with_sends,
-    mix_stereo_with_sends_and_tempo, mix_stereo_with_tracks,
+    AnalyzedMix, ChannelMeter, METER_BLOCK_FRAMES, MixAnalysis, MonoTrack, StereoSound,
+    StereoTrack, SynthMixerAutomation, mix_stereo, mix_stereo_analyzed, mix_stereo_with_sends,
+    mix_stereo_with_sends_and_tempo, mix_stereo_with_sends_and_tempo_analyzed,
+    mix_stereo_with_sends_and_tempo_analyzed_range, mix_stereo_with_tracks,
 };
 pub use modal::ModalPartial;
 pub use modulation::{Chorus, Flanger};

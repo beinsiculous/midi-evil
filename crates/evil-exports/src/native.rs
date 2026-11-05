@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, btree_map::Entry};
 use std::path::Path;
 
-use evil_project::InstrumentSource;
+use evil_project::{InstrumentSource, MixerParameter};
 
 use midly::num::{u4, u7, u15, u24, u28};
 use midly::{Format, Header, MetaMessage, MidiMessage, Smf, Timing, TrackEvent, TrackEventKind};
@@ -17,6 +17,8 @@ pub struct NativeMidiReport {
     pub note_count: usize,
     pub track_count: usize,
     pub event_count: usize,
+    /// Typed effect/send lanes are native-only; gain and pan export as CC 7 and 10.
+    pub native_only_mixer_automation_events: usize,
 }
 
 pub fn export_native_project_to_path(
@@ -39,6 +41,7 @@ pub fn export_native_project(
     let mut instrument_channels = BTreeMap::new();
     let mut track_count = 0;
     let mut event_count = tracks[0].len();
+    let mut native_only_mixer_automation_events = 0;
 
     for (track_index, track) in project.tracks.iter().enumerate() {
         let instrument = project.instrument_for_track(track_index)?;
@@ -123,6 +126,29 @@ pub fn export_native_project(
                     },
                 });
             }
+            for event in &performance_track.mixer_automation {
+                let controller = match event.parameter {
+                    MixerParameter::Gain => 7,
+                    MixerParameter::Pan => 10,
+                    _ => {
+                        native_only_mixer_automation_events += 1;
+                        continue;
+                    }
+                };
+                let value = if controller == 7 {
+                    gain_value(event.value)
+                } else {
+                    pan_value(event.value)
+                };
+                events.push(TimedEvent {
+                    tick: event.tick,
+                    priority: 0,
+                    message: MidiMessage::Controller {
+                        controller: u7::new(controller),
+                        value: u7::new(value),
+                    },
+                });
+            }
         }
         events.sort_by_key(|event| (event.tick, event.priority));
         let channel = u4::new(channel);
@@ -174,6 +200,7 @@ pub fn export_native_project(
         note_count: performance.note_count(),
         track_count,
         event_count,
+        native_only_mixer_automation_events,
     })
 }
 
@@ -345,6 +372,47 @@ mod tests {
             smf.tracks[1].last().map(|event| event.kind),
             Some(TrackEventKind::Meta(MetaMessage::EndOfTrack))
         ));
+    }
+
+    #[test]
+    fn typed_gain_and_pan_export_as_controllers_and_native_only_lanes_are_counted() {
+        let mut project = evil_project::Project::new("Mixer automation");
+        project
+            .add_track(Track {
+                notes: vec![Note::default()],
+                ..Track::default()
+            })
+            .unwrap();
+        project.tracks[0].mixer_automation = vec![
+            evil_project::MixerAutomationEvent {
+                tick: 0,
+                parameter: MixerParameter::Gain,
+                value: 0.25,
+            },
+            evil_project::MixerAutomationEvent {
+                tick: 480,
+                parameter: MixerParameter::Pan,
+                value: 1.0,
+            },
+            evil_project::MixerAutomationEvent {
+                tick: 480,
+                parameter: MixerParameter::SendGain { bus: 0 },
+                value: 0.5,
+            },
+            evil_project::MixerAutomationEvent {
+                tick: 480,
+                parameter: MixerParameter::Insert {
+                    slot: 0,
+                    parameter: evil_project::EffectParameter::ReverbMix,
+                },
+                value: 0.5,
+            },
+        ];
+        let report = export_native_project(&project, Path::new(".")).unwrap();
+        assert_eq!(report.native_only_mixer_automation_events, 2);
+        let smf = Smf::parse(&report.data).unwrap();
+        assert!(has_controller(&smf.tracks[1], 7, 32));
+        assert!(has_controller(&smf.tracks[1], 10, 127));
     }
 
     #[test]

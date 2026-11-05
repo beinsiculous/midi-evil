@@ -1,12 +1,11 @@
 use std::path::Path;
 
-use crate::{sample_recorder::SampleRecorder, theme};
+use crate::{effect_ui, sample_recorder::SampleRecorder, theme};
 use eframe::egui::{self, ComboBox, DragValue, Ui};
 
 use evil_synth::{
-    AuxEnvelope, Delay, DelayMode, Envelope, FilterMode, Lfo, LfoDestination, LfoWaveform,
-    Oscillator, OscillatorMode, Patch, SampleOscillator, SampleZone, VoiceMode, Waveform,
-    Waveshaper,
+    AuxEnvelope, Delay, Envelope, FilterMode, Lfo, LfoDestination, LfoWaveform, Oscillator,
+    OscillatorMode, Patch, SampleOscillator, SampleZone, VoiceMode, Waveform, Waveshaper,
 };
 
 pub struct PatchLab {
@@ -1110,11 +1109,7 @@ fn show_effects(ui: &mut Ui, patch: &mut Patch) {
         patch.waveshaper = waveshaper_enabled.then_some(Waveshaper::default());
     }
     if let Some(waveshaper) = &mut patch.waveshaper {
-        ui.horizontal_wrapped(|ui| {
-            ui.add(egui::Slider::new(&mut waveshaper.drive, 1.0..=32.0).text("Drive"));
-            ui.add(egui::Slider::new(&mut waveshaper.contour, -1.0..=1.0).text("Contour"));
-            ui.add(egui::Slider::new(&mut waveshaper.level, 0.0..=1.0).text("Level"));
-        });
+        effect_ui::waveshaper_controls(ui, waveshaper);
     }
 
     ui.label(
@@ -1128,29 +1123,7 @@ fn show_effects(ui: &mut Ui, patch: &mut Patch) {
         patch.delay = delay_enabled.then_some(Delay::default());
     }
     if let Some(delay) = &mut patch.delay {
-        let mut beat_sync = delay.beats_per_cycle.is_some();
-        if ui.checkbox(&mut beat_sync, "Beat sync").changed() {
-            delay.beats_per_cycle = beat_sync.then_some(1.0);
-        }
-        ui.horizontal_wrapped(|ui| {
-            if let Some(beats) = &mut delay.beats_per_cycle {
-                ui.label("Beats");
-                ui.add(DragValue::new(beats).range(0.001..=64.0));
-            }
-            ui.label("Seconds");
-            ui.add_enabled(
-                !beat_sync,
-                DragValue::new(&mut delay.time_seconds).range(0.001..=2.0),
-            );
-            ui.add(egui::Slider::new(&mut delay.feedback, 0.0..=0.95).text("Feedback"));
-            ui.add(egui::Slider::new(&mut delay.mix, 0.0..=1.0).text("Wet mix"));
-        });
-        ComboBox::from_label("Delay mode")
-            .selected_text(format!("{:?}", delay.mode))
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut delay.mode, DelayMode::Mono, "Mono / dual mono");
-                ui.selectable_value(&mut delay.mode, DelayMode::StereoCross, "Stereo cross");
-            });
+        effect_ui::delay_controls(ui, delay);
         ui.label(
             egui::RichText::new(
                 "Timeline CC: 23 time (overrides beat sync) · 24 feedback · 25 wet mix",

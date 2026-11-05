@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::delay::{apply_stereo_delay_with_tempo, delay_frame_count, tempo_bpm_at};
+use crate::delay::{
+    apply_stereo_delay_with_tempo, delay_frame_count, maximum_delay_frames, tempo_bpm_at,
+};
 use crate::dynamics::CompressorProcessor;
 use crate::equalizer::EqualizerProcessor;
 use crate::modulation::ModulatedDelayProcessor;
@@ -9,6 +11,7 @@ use crate::waveshaper::apply_stereo_waveshaper;
 use crate::{
     Chorus, Compressor, Delay, Equalizer, Error, Flanger, Reverb, SynthTempoChange, Waveshaper,
 };
+use evil_performance::EffectParameter;
 
 pub const INSERT_LIMIT: usize = 4;
 pub const SEND_COUNT: usize = 2;
@@ -79,6 +82,153 @@ impl InsertEffect {
             Self::Reverb(effect) => effect.validate(),
         }
     }
+    pub fn automatable_parameters(&self) -> &'static [EffectParameter] {
+        use EffectParameter::*;
+        match self {
+            Self::Waveshaper(_) => &[WaveshaperDrive, WaveshaperContour, WaveshaperLevel],
+            Self::Delay(_) => &[
+                DelayTimeSeconds,
+                DelayBeatsPerCycle,
+                DelayFeedback,
+                DelayMix,
+            ],
+            Self::Bitcrush(_) => &[BitcrushBits, BitcrushDownsample, BitcrushMix],
+            Self::Equalizer(_) => &[
+                EqualizerLowGainDb,
+                EqualizerMidGainDb,
+                EqualizerHighGainDb,
+                EqualizerMix,
+            ],
+            Self::Compressor(_) => &[
+                CompressorThresholdDb,
+                CompressorRatio,
+                CompressorAttackSeconds,
+                CompressorReleaseSeconds,
+                CompressorMakeupGainDb,
+                CompressorMix,
+            ],
+            Self::Chorus(_) => &[
+                ChorusRateHz,
+                ChorusDepthSeconds,
+                ChorusDelaySeconds,
+                ChorusFeedback,
+                ChorusMix,
+            ],
+            Self::Flanger(_) => &[
+                FlangerRateHz,
+                FlangerDepthSeconds,
+                FlangerDelaySeconds,
+                FlangerFeedback,
+                FlangerMix,
+            ],
+            Self::Reverb(_) => &[ReverbRoomSize, ReverbDamping, ReverbMix],
+        }
+    }
+}
+
+pub fn effect_parameter(effect: &InsertEffect, parameter: EffectParameter) -> Option<f32> {
+    use EffectParameter::*;
+    match (effect, parameter) {
+        (InsertEffect::Waveshaper(effect), WaveshaperDrive) => Some(effect.drive),
+        (InsertEffect::Waveshaper(effect), WaveshaperContour) => Some(effect.contour),
+        (InsertEffect::Waveshaper(effect), WaveshaperLevel) => Some(effect.level),
+        (InsertEffect::Delay(effect), DelayTimeSeconds) => Some(effect.time_seconds),
+        (InsertEffect::Delay(effect), DelayBeatsPerCycle) => {
+            Some(effect.beats_per_cycle.unwrap_or(1.0))
+        }
+        (InsertEffect::Delay(effect), DelayFeedback) => Some(effect.feedback),
+        (InsertEffect::Delay(effect), DelayMix) => Some(effect.mix),
+        (InsertEffect::Bitcrush(effect), BitcrushBits) => Some(f32::from(effect.bits)),
+        (InsertEffect::Bitcrush(effect), BitcrushDownsample) => Some(f32::from(effect.downsample)),
+        (InsertEffect::Bitcrush(effect), BitcrushMix) => Some(effect.mix),
+        (InsertEffect::Equalizer(effect), EqualizerLowGainDb) => Some(effect.low_gain_db),
+        (InsertEffect::Equalizer(effect), EqualizerMidGainDb) => Some(effect.mid_gain_db),
+        (InsertEffect::Equalizer(effect), EqualizerHighGainDb) => Some(effect.high_gain_db),
+        (InsertEffect::Equalizer(effect), EqualizerMix) => Some(effect.mix),
+        (InsertEffect::Compressor(effect), CompressorThresholdDb) => Some(effect.threshold_db),
+        (InsertEffect::Compressor(effect), CompressorRatio) => Some(effect.ratio),
+        (InsertEffect::Compressor(effect), CompressorAttackSeconds) => Some(effect.attack_seconds),
+        (InsertEffect::Compressor(effect), CompressorReleaseSeconds) => {
+            Some(effect.release_seconds)
+        }
+        (InsertEffect::Compressor(effect), CompressorMakeupGainDb) => Some(effect.makeup_gain_db),
+        (InsertEffect::Compressor(effect), CompressorMix) => Some(effect.mix),
+        (InsertEffect::Chorus(effect), ChorusRateHz) => Some(effect.rate_hz),
+        (InsertEffect::Flanger(effect), FlangerRateHz) => Some(effect.rate_hz),
+        (InsertEffect::Chorus(effect), ChorusDepthSeconds) => Some(effect.depth_seconds),
+        (InsertEffect::Flanger(effect), FlangerDepthSeconds) => Some(effect.depth_seconds),
+        (InsertEffect::Chorus(effect), ChorusDelaySeconds) => Some(effect.delay_seconds),
+        (InsertEffect::Flanger(effect), FlangerDelaySeconds) => Some(effect.delay_seconds),
+        (InsertEffect::Chorus(effect), ChorusFeedback) => Some(effect.feedback),
+        (InsertEffect::Flanger(effect), FlangerFeedback) => Some(effect.feedback),
+        (InsertEffect::Chorus(effect), ChorusMix) => Some(effect.mix),
+        (InsertEffect::Flanger(effect), FlangerMix) => Some(effect.mix),
+        (InsertEffect::Reverb(effect), ReverbRoomSize) => Some(effect.room_size),
+        (InsertEffect::Reverb(effect), ReverbDamping) => Some(effect.damping),
+        (InsertEffect::Reverb(effect), ReverbMix) => Some(effect.mix),
+        _ => None,
+    }
+}
+
+pub fn set_effect_parameter(
+    effect: &mut InsertEffect,
+    parameter: EffectParameter,
+    value: f32,
+) -> bool {
+    use EffectParameter::*;
+    if !value.is_finite() || !parameter.range().contains(&value) {
+        return false;
+    }
+    match (effect, parameter) {
+        (InsertEffect::Waveshaper(effect), WaveshaperDrive) => effect.drive = value,
+        (InsertEffect::Waveshaper(effect), WaveshaperContour) => effect.contour = value,
+        (InsertEffect::Waveshaper(effect), WaveshaperLevel) => effect.level = value,
+        (InsertEffect::Delay(effect), DelayTimeSeconds) => {
+            effect.time_seconds = value;
+            effect.beats_per_cycle = None;
+        }
+        (InsertEffect::Delay(effect), DelayBeatsPerCycle) => {
+            effect.beats_per_cycle = Some(value);
+        }
+        (InsertEffect::Delay(effect), DelayFeedback) => effect.feedback = value,
+        (InsertEffect::Delay(effect), DelayMix) => effect.mix = value,
+        (InsertEffect::Bitcrush(effect), BitcrushBits) => effect.bits = value.round() as u8,
+        (InsertEffect::Bitcrush(effect), BitcrushDownsample) => {
+            effect.downsample = value.round() as u8;
+        }
+        (InsertEffect::Bitcrush(effect), BitcrushMix) => effect.mix = value,
+        (InsertEffect::Equalizer(effect), EqualizerLowGainDb) => effect.low_gain_db = value,
+        (InsertEffect::Equalizer(effect), EqualizerMidGainDb) => effect.mid_gain_db = value,
+        (InsertEffect::Equalizer(effect), EqualizerHighGainDb) => effect.high_gain_db = value,
+        (InsertEffect::Equalizer(effect), EqualizerMix) => effect.mix = value,
+        (InsertEffect::Compressor(effect), CompressorThresholdDb) => effect.threshold_db = value,
+        (InsertEffect::Compressor(effect), CompressorRatio) => effect.ratio = value,
+        (InsertEffect::Compressor(effect), CompressorAttackSeconds) => {
+            effect.attack_seconds = value;
+        }
+        (InsertEffect::Compressor(effect), CompressorReleaseSeconds) => {
+            effect.release_seconds = value;
+        }
+        (InsertEffect::Compressor(effect), CompressorMakeupGainDb) => {
+            effect.makeup_gain_db = value;
+        }
+        (InsertEffect::Compressor(effect), CompressorMix) => effect.mix = value,
+        (InsertEffect::Chorus(effect), ChorusRateHz) => effect.rate_hz = value,
+        (InsertEffect::Flanger(effect), FlangerRateHz) => effect.rate_hz = value,
+        (InsertEffect::Chorus(effect), ChorusDepthSeconds) => effect.depth_seconds = value,
+        (InsertEffect::Flanger(effect), FlangerDepthSeconds) => effect.depth_seconds = value,
+        (InsertEffect::Chorus(effect), ChorusDelaySeconds) => effect.delay_seconds = value,
+        (InsertEffect::Flanger(effect), FlangerDelaySeconds) => effect.delay_seconds = value,
+        (InsertEffect::Chorus(effect), ChorusFeedback) => effect.feedback = value,
+        (InsertEffect::Flanger(effect), FlangerFeedback) => effect.feedback = value,
+        (InsertEffect::Chorus(effect), ChorusMix) => effect.mix = value,
+        (InsertEffect::Flanger(effect), FlangerMix) => effect.mix = value,
+        (InsertEffect::Reverb(effect), ReverbRoomSize) => effect.room_size = value,
+        (InsertEffect::Reverb(effect), ReverbDamping) => effect.damping = value,
+        (InsertEffect::Reverb(effect), ReverbMix) => effect.mix = value,
+        _ => return false,
+    }
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -127,15 +277,7 @@ pub(crate) fn apply_insert_with_tempo(
     tempo_changes: &[SynthTempoChange],
 ) -> Result<(), Error> {
     effect.validate()?;
-    let bypass = match effect {
-        InsertEffect::Bitcrush(effect) => effect.mix == 0.0,
-        InsertEffect::Equalizer(effect) => effect.mix == 0.0,
-        InsertEffect::Compressor(effect) => effect.mix == 0.0,
-        InsertEffect::Chorus(effect) => effect.mix == 0.0,
-        InsertEffect::Flanger(effect) => effect.mix == 0.0,
-        InsertEffect::Reverb(effect) => effect.mix == 0.0,
-        _ => false,
-    };
+    let bypass = insert_is_bypassed(effect);
     if bypass {
         return Ok(());
     }
@@ -178,6 +320,85 @@ pub(crate) fn apply_insert_with_tempo(
                 tempo_changes,
             )
         }
+    }
+    Ok(())
+}
+
+/// Destructively preprocess mono sample audio with one native insert effect.
+/// Effect tails are retained and beat-synced delays use `tempo_bpm` throughout.
+pub fn apply_mono_insert(
+    samples: &mut Vec<f32>,
+    sample_rate: u32,
+    effect: &InsertEffect,
+    tempo_bpm: f32,
+) -> Result<(), Error> {
+    if !tempo_bpm.is_finite() || tempo_bpm <= 0.0 {
+        return Err(Error::InvalidMix(
+            "sample effect tempo must be finite and positive".to_owned(),
+        ));
+    }
+    let mut right = samples.clone();
+    apply_insert_with_tempo(
+        samples,
+        &mut right,
+        sample_rate,
+        effect,
+        &[SynthTempoChange {
+            time_seconds: 0.0,
+            bpm: tempo_bpm,
+        }],
+    )
+}
+
+pub(crate) fn insert_is_bypassed(effect: &InsertEffect) -> bool {
+    match effect {
+        InsertEffect::Bitcrush(effect) => effect.mix == 0.0,
+        InsertEffect::Equalizer(effect) => effect.mix == 0.0,
+        InsertEffect::Compressor(effect) => effect.mix == 0.0,
+        InsertEffect::Chorus(effect) => effect.mix == 0.0,
+        InsertEffect::Flanger(effect) => effect.mix == 0.0,
+        InsertEffect::Reverb(effect) => effect.mix == 0.0,
+        _ => false,
+    }
+}
+
+pub(crate) fn insert_tail_frames(
+    effect: &InsertEffect,
+    sample_rate: u32,
+    tempo_changes: &[SynthTempoChange],
+) -> usize {
+    match effect {
+        InsertEffect::Waveshaper(_) | InsertEffect::Compressor(_) => 0,
+        InsertEffect::Delay(effect) => maximum_delay_frames(sample_rate, effect, tempo_changes) * 8,
+        InsertEffect::Bitcrush(effect) => usize::from(effect.downsample) - 1,
+        InsertEffect::Equalizer(_) => sample_rate as usize / 20,
+        InsertEffect::Chorus(_) | InsertEffect::Flanger(_) | InsertEffect::Reverb(_) => {
+            sample_rate as usize * 2
+        }
+    }
+}
+
+pub(crate) fn apply_insert_automated(
+    left: &mut Vec<f32>,
+    right: &mut Vec<f32>,
+    sample_rate: u32,
+    effect: &InsertEffect,
+    tempo_changes: &[SynthTempoChange],
+    tail_frames: usize,
+    mut automate: impl FnMut(&mut InsertProcessor, f64),
+) -> Result<(), Error> {
+    effect.validate()?;
+    let original_len = left.len();
+    left.resize(original_len + tail_frames, 0.0);
+    right.resize(original_len + tail_frames, 0.0);
+    let mut processor = InsertProcessor::new(effect, sample_rate);
+    for (frame, (left, right)) in left.iter_mut().zip(right).enumerate() {
+        let mut stereo = [*left, *right];
+        let time = frame as f64 / f64::from(sample_rate);
+        automate(&mut processor, time);
+        processor.process_with_tempo(&mut stereo, sample_rate, tempo_bpm_at(tempo_changes, time));
+        *left = stereo[0];
+        *right = stereo[1];
     }
     Ok(())
 }
@@ -251,6 +472,45 @@ impl InsertProcessor {
             InsertEffect::Reverb(settings) => {
                 Self::Reverb(Box::new(ReverbProcessor::new(settings, sample_rate)))
             }
+        }
+    }
+
+    pub(crate) fn set_parameter(
+        &mut self,
+        parameter: EffectParameter,
+        value: f32,
+        sample_rate: u32,
+    ) -> bool {
+        match self {
+            Self::Waveshaper(settings) => {
+                let mut effect = InsertEffect::Waveshaper(settings.clone());
+                let updated = set_effect_parameter(&mut effect, parameter, value);
+                if let InsertEffect::Waveshaper(updated_settings) = effect {
+                    *settings = updated_settings;
+                }
+                updated
+            }
+            Self::Delay { settings, .. } => {
+                let mut effect = InsertEffect::Delay(settings.clone());
+                let updated = set_effect_parameter(&mut effect, parameter, value);
+                if let InsertEffect::Delay(updated_settings) = effect {
+                    *settings = updated_settings;
+                }
+                updated
+            }
+            Self::Bitcrush { settings, .. } => {
+                let mut effect = InsertEffect::Bitcrush(settings.clone());
+                let updated = set_effect_parameter(&mut effect, parameter, value);
+                if let InsertEffect::Bitcrush(updated_settings) = effect {
+                    *settings = updated_settings;
+                }
+                updated
+            }
+            Self::Equalizer(processor) => processor.set_parameter(parameter, value, sample_rate),
+            Self::Compressor(processor) => processor.set_parameter(parameter, value),
+            Self::Chorus(processor) => processor.set_parameter(parameter, value, true),
+            Self::Flanger(processor) => processor.set_parameter(parameter, value, false),
+            Self::Reverb(processor) => processor.set_parameter(parameter, value),
         }
     }
 

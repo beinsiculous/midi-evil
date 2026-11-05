@@ -206,6 +206,7 @@ pub fn import_midi(data: &[u8]) -> Result<Performance, Error> {
                 pitch_bends,
                 aftertouch,
                 controllers,
+                mixer_automation: Vec::new(),
                 pitch_bend_range_semitones,
                 program,
                 volume,

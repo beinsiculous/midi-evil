@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::Error;
+use evil_performance::EffectParameter;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -152,6 +153,31 @@ impl ModulatedDelayProcessor {
             position: 0,
             frame: 0,
         }
+    }
+
+    pub(crate) fn set_parameter(
+        &mut self,
+        parameter: EffectParameter,
+        value: f32,
+        chorus: bool,
+    ) -> bool {
+        use EffectParameter::*;
+        if !value.is_finite() || !parameter.range().contains(&value) {
+            return false;
+        }
+        match (chorus, parameter) {
+            (true, ChorusRateHz) | (false, FlangerRateHz) => self.rate_hz = value,
+            (true, ChorusDepthSeconds) | (false, FlangerDepthSeconds) => {
+                self.depth_seconds = value;
+            }
+            (true, ChorusDelaySeconds) | (false, FlangerDelaySeconds) => {
+                self.delay_seconds = value;
+            }
+            (true, ChorusFeedback) | (false, FlangerFeedback) => self.feedback = value,
+            (true, ChorusMix) | (false, FlangerMix) => self.mix = value,
+            _ => return false,
+        }
+        true
     }
 
     pub(crate) fn process(&mut self, stereo: &mut [f32; 2], sample_rate: u32) {

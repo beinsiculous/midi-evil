@@ -4,7 +4,8 @@ use evil_beats::{DrumKit, KitHit};
 use evil_project::{InstrumentSource, Project};
 use evil_synth::{
     MonoTrack, Patch, StereoSound, StereoTrack, SynthAftertouch, SynthController, SynthNote,
-    SynthPitchBend, SynthTempoChange, mix_stereo, mix_stereo_with_sends_and_tempo,
+    SynthPitchBend, SynthTempoChange, mix_stereo_analyzed,
+    mix_stereo_with_sends_and_tempo_analyzed_range,
 };
 use thiserror::Error;
 
@@ -30,9 +31,12 @@ pub enum Error {
 
 pub struct RenderOutput {
     pub sound: StereoSound,
+    pub mix_analysis: evil_synth::MixAnalysis,
+    pub channel_meters: Vec<(usize, evil_synth::ChannelMeter)>,
     pub note_count: usize,
     pub track_count: usize,
     pub unsupported_controller_events: usize,
+    pub unsupported_mixer_automation_events: usize,
     pub skipped_drum_notes: usize,
 }
 
@@ -70,7 +74,7 @@ pub fn render_audition(patch: &Patch) -> Result<RenderOutput, Error> {
             velocity: 100,
         }],
     )?;
-    let sound = mix_stereo(
+    let mixed = mix_stereo_analyzed(
         &[MonoTrack {
             sound: &sound,
             gain: 1.0,
@@ -78,6 +82,7 @@ pub fn render_audition(patch: &Patch) -> Result<RenderOutput, Error> {
             waveshaper: patch.waveshaper.as_ref(),
             delay: patch.delay.as_ref(),
             controllers: &[],
+            automation: &[],
             inserts: &[],
             send_gains: [0.0; evil_synth::SEND_COUNT],
             dc_block: patch.uses_sync(),
@@ -85,10 +90,20 @@ pub fn render_audition(patch: &Patch) -> Result<RenderOutput, Error> {
         1.0,
     )?;
     Ok(RenderOutput {
-        sound,
+        sound: mixed.sound,
+        mix_analysis: mixed.analysis,
+        channel_meters: vec![(
+            0,
+            mixed
+                .channel_meters
+                .into_iter()
+                .next()
+                .expect("one audition channel"),
+        )],
         note_count: 1,
         track_count: 1,
         unsupported_controller_events: 0,
+        unsupported_mixer_automation_events: 0,
         skipped_drum_notes: 0,
     })
 }
@@ -110,14 +125,18 @@ pub fn render_project_range(
     let performance = project.to_performance()?;
     let start_seconds = performance.seconds_at(start_tick);
     let end_seconds = end_tick.map(|end| performance.seconds_at(end));
+    let sample_rate = project.sample_rate;
+    let start_frame = (start_seconds * f64::from(sample_rate)).round() as usize;
+    let end_frame = end_seconds.map(|seconds| (seconds * f64::from(sample_rate)).round() as usize);
     let mut input = project.clone();
     if let Some(end) = end_tick {
         input.truncate_timeline(end);
     }
-    let mut output = render_project(&input, patch_base)?;
-    let sample_rate = output.sound.sample_rate;
-    let start_frame = (start_seconds * f64::from(sample_rate)).round() as usize;
-    let end_frame = end_seconds.map(|seconds| (seconds * f64::from(sample_rate)).round() as usize);
+    let mut output = render_project_with_analysis_range(
+        &input,
+        patch_base,
+        Some((start_frame, end_frame.unwrap_or(usize::MAX))),
+    )?;
     if let Some(end_frame) = end_frame
         && end_frame > output.sound.left.len()
     {
@@ -141,12 +160,22 @@ pub fn render_project_range(
 }
 
 pub fn render_project(project: &Project, patch_base: &Path) -> Result<RenderOutput, Error> {
+    render_project_with_analysis_range(project, patch_base, None)
+}
+
+fn render_project_with_analysis_range(
+    project: &Project,
+    patch_base: &Path,
+    analysis_range: Option<(usize, usize)>,
+) -> Result<RenderOutput, Error> {
     let performance = project.to_performance()?;
     if performance.note_count() == 0 {
         return Err(Error::NoNotes);
     }
     let mut rendered = Vec::new();
     let mut stereo_rendered = Vec::new();
+    let mut rendered_track_indices = Vec::new();
+    let mut stereo_track_indices = Vec::new();
     let mut note_count = 0;
     let mut skipped_drum_notes = 0;
     let mut unsupported_controller_events = 0;
@@ -205,6 +234,15 @@ pub fn render_project(project: &Project, patch_base: &Path) -> Result<RenderOutp
                         value: event.value,
                     })
                     .collect();
+                let mixer_automation: Vec<_> = track
+                    .mixer_automation
+                    .iter()
+                    .map(|event| evil_synth::SynthMixerAutomation {
+                        time_seconds: performance.seconds_at(event.tick),
+                        parameter: event.parameter,
+                        value: event.value,
+                    })
+                    .collect();
                 unsupported_controller_events += track
                     .controllers
                     .iter()
@@ -218,6 +256,7 @@ pub fn render_project(project: &Project, patch_base: &Path) -> Result<RenderOutp
                     &controllers,
                     &tempo_changes,
                 )?;
+                rendered_track_indices.push(track.track_index);
                 rendered.push((
                     sound,
                     settings.gain,
@@ -225,6 +264,7 @@ pub fn render_project(project: &Project, patch_base: &Path) -> Result<RenderOutp
                     patch.waveshaper.clone(),
                     patch.delay.clone(),
                     controllers,
+                    mixer_automation,
                     settings.inserts.clone(),
                     settings.send_gains,
                     patch.uses_sync(),
@@ -257,10 +297,21 @@ pub fn render_project(project: &Project, patch_base: &Path) -> Result<RenderOutp
                 note_count += hits.len();
                 unsupported_controller_events += track.controllers.len();
                 let sound = evil_beats::render_kit(&kit, &hits, project.sample_rate)?;
+                let mixer_automation: Vec<_> = track
+                    .mixer_automation
+                    .iter()
+                    .map(|event| evil_synth::SynthMixerAutomation {
+                        time_seconds: performance.seconds_at(event.tick),
+                        parameter: event.parameter,
+                        value: event.value,
+                    })
+                    .collect();
+                stereo_track_indices.push(track.track_index);
                 stereo_rendered.push((
                     sound,
                     settings.gain,
                     settings.pan,
+                    mixer_automation,
                     settings.inserts.clone(),
                     settings.send_gains,
                 ));
@@ -271,7 +322,18 @@ pub fn render_project(project: &Project, patch_base: &Path) -> Result<RenderOutp
     let tracks: Vec<_> = rendered
         .iter()
         .map(
-            |(sound, gain, pan, waveshaper, delay, controllers, inserts, send_gains, dc_block)| {
+            |(
+                sound,
+                gain,
+                pan,
+                waveshaper,
+                delay,
+                controllers,
+                automation,
+                inserts,
+                send_gains,
+                dc_block,
+            )| {
                 MonoTrack {
                     sound,
                     gain: *gain,
@@ -279,6 +341,7 @@ pub fn render_project(project: &Project, patch_base: &Path) -> Result<RenderOutp
                     waveshaper: waveshaper.as_ref(),
                     delay: delay.as_ref(),
                     controllers,
+                    automation,
                     inserts,
                     send_gains: *send_gains,
                     dc_block: *dc_block,
@@ -288,27 +351,39 @@ pub fn render_project(project: &Project, patch_base: &Path) -> Result<RenderOutp
         .collect();
     let stereo_tracks: Vec<_> = stereo_rendered
         .iter()
-        .map(|(sound, gain, pan, inserts, send_gains)| StereoTrack {
-            sound,
-            gain: *gain,
-            pan: *pan,
-            inserts,
-            send_gains: *send_gains,
-        })
+        .map(
+            |(sound, gain, pan, automation, inserts, send_gains)| StereoTrack {
+                sound,
+                gain: *gain,
+                pan: *pan,
+                automation,
+                inserts,
+                send_gains: *send_gains,
+            },
+        )
         .collect();
     let track_count = tracks.len() + stereo_tracks.len();
-    let sound = mix_stereo_with_sends_and_tempo(
+    let mixed = mix_stereo_with_sends_and_tempo_analyzed_range(
         &tracks,
         &stereo_tracks,
         &project.send_buses,
         project.master_gain,
         &tempo_changes,
+        analysis_range,
     )?;
+    let channel_meters = rendered_track_indices
+        .into_iter()
+        .chain(stereo_track_indices)
+        .zip(mixed.channel_meters)
+        .collect();
     Ok(RenderOutput {
-        sound,
+        sound: mixed.sound,
+        mix_analysis: mixed.analysis,
+        channel_meters,
         note_count,
         track_count,
         unsupported_controller_events,
+        unsupported_mixer_automation_events: mixed.unsupported_mixer_automation_events,
         skipped_drum_notes,
     })
 }
@@ -453,6 +528,10 @@ mod tests {
         let section = render_project_range(&project, Path::new("."), 480, Some(960)).unwrap();
         assert_eq!(section.sound.left.len(), 24_000);
         assert_eq!(section.sound.left, full.sound.left[24_000..48_000]);
+        assert!(
+            section.mix_analysis.pre_saturator_peak[0] <= full.mix_analysis.pre_saturator_peak[0]
+        );
+        assert!(section.mix_analysis.clipped_frames <= full.mix_analysis.clipped_frames);
         assert_eq!(section.note_count, 1);
 
         let rest = render_project_range(&project, Path::new("."), 480, None).unwrap();
@@ -589,6 +668,71 @@ mod tests {
         let automated = render_project(&project, directory.path()).unwrap();
         assert_ne!(automated.sound.left, plain.sound.left);
         assert_eq!(automated.unsupported_controller_events, 1);
+    }
+
+    #[test]
+    fn native_typed_mixer_automation_renders_and_reports_stale_insert_targets() {
+        use evil_project::{EffectParameter, MixerAutomationEvent, MixerParameter};
+
+        let mut project = Project::new("Typed mixer automation");
+        project
+            .add_track(Track {
+                notes: vec![Note {
+                    duration_ticks: 1_920,
+                    ..Note::default()
+                }],
+                ..Track::default()
+            })
+            .unwrap();
+        project.instruments[0].inserts = vec![evil_synth::InsertEffect::Reverb(
+            evil_synth::Reverb::default(),
+        )];
+        project.tracks[0].mixer_automation = vec![
+            MixerAutomationEvent {
+                tick: 0,
+                parameter: MixerParameter::Gain,
+                value: 1.0,
+            },
+            MixerAutomationEvent {
+                tick: 0,
+                parameter: MixerParameter::Insert {
+                    slot: 0,
+                    parameter: EffectParameter::ReverbMix,
+                },
+                value: 0.0,
+            },
+            MixerAutomationEvent {
+                tick: 960,
+                parameter: MixerParameter::Gain,
+                value: 0.25,
+            },
+            MixerAutomationEvent {
+                tick: 960,
+                parameter: MixerParameter::Insert {
+                    slot: 0,
+                    parameter: EffectParameter::ReverbMix,
+                },
+                value: 0.75,
+            },
+        ];
+        let plain = render_project(&project, Path::new(".")).unwrap();
+        project.tracks[0].mixer_automation.clear();
+        let static_mix = render_project(&project, Path::new(".")).unwrap();
+        assert_ne!(plain.sound.left, static_mix.sound.left);
+        assert_eq!(plain.unsupported_mixer_automation_events, 0);
+
+        project.tracks[0]
+            .mixer_automation
+            .push(MixerAutomationEvent {
+                tick: 0,
+                parameter: MixerParameter::Insert {
+                    slot: 1,
+                    parameter: EffectParameter::DelayMix,
+                },
+                value: 1.0,
+            });
+        let unsupported = render_project(&project, Path::new(".")).unwrap();
+        assert_eq!(unsupported.unsupported_mixer_automation_events, 1);
     }
 
     #[test]

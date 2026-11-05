@@ -18,6 +18,7 @@ enum Lane {
     ChannelAftertouch,
     PolyAftertouch,
     Controller,
+    Mixer,
 }
 
 impl Lane {
@@ -27,6 +28,7 @@ impl Lane {
             Self::ChannelAftertouch => "Channel aftertouch",
             Self::PolyAftertouch => "Poly aftertouch",
             Self::Controller => "Controller (CC/RPN)",
+            Self::Mixer => "Mixer (native)",
         }
     }
 }
@@ -34,6 +36,7 @@ impl Lane {
 #[derive(Debug)]
 pub struct AutomationState {
     lane: Lane,
+    mixer: crate::mixer_automation::MixerAutomationState,
     controller: u8,
     poly_note: u8,
     ramp_division: u8,
@@ -47,6 +50,7 @@ impl Default for AutomationState {
     fn default() -> Self {
         Self {
             lane: Lane::PitchBend,
+            mixer: crate::mixer_automation::MixerAutomationState::default(),
             controller: 1,
             poly_note: 60,
             ramp_division: 16,
@@ -62,11 +66,13 @@ impl AutomationState {
     pub fn clear_selection(&mut self) {
         self.selected = None;
         self.dragging = false;
+        self.mixer.clear_selection();
     }
 
     fn title(&self) -> String {
         match self.lane {
             Lane::Controller => format!("CC {}", self.controller),
+            Lane::Mixer => self.mixer.title(),
             _ => self.lane.label().to_owned(),
         }
     }
@@ -102,11 +108,24 @@ pub fn show(
     show_lane_controls(ui, state);
     let context = piano_roll::RollContext::new(project);
     let pattern_index = part_index.map(|index| track.parts[index].pattern);
+    let mixer_targets =
+        (state.lane == Lane::Mixer).then(|| crate::mixer_automation::targets(project, track_index));
     let pattern_length = pattern_index.map(|index| project.patterns[index].length_ticks);
     let sequence: &mut dyn EventSequence = match pattern_index {
         Some(index) => &mut project.patterns[index],
         None => &mut project.tracks[track_index],
     };
+    if let Some(targets) = mixer_targets {
+        return crate::mixer_automation::show(
+            ui,
+            sequence,
+            &mut state.mixer,
+            &targets,
+            roll,
+            context,
+            pattern_length,
+        );
+    }
     let unsupported = unsupported_controller_count(sequence);
     if unsupported > 0 {
         ui.colored_label(
@@ -163,6 +182,9 @@ pub fn show(
 }
 
 pub fn edit_status(track: &dyn EventSequence, state: &AutomationState) -> String {
+    if state.lane == Lane::Mixer {
+        return format!("{} automation edited", state.title());
+    }
     let unsupported = unsupported_controller_count(track);
     if unsupported > 0 {
         format!(
@@ -178,6 +200,7 @@ pub fn edit_status(track: &dyn EventSequence, state: &AutomationState) -> String
 pub fn render_status(
     mut status: String,
     unsupported_controller_events: usize,
+    unsupported_mixer_automation_events: usize,
     skipped_drum_notes: usize,
 ) -> String {
     if unsupported_controller_events > 0 {
@@ -185,9 +208,23 @@ pub fn render_status(
             "{status}; {unsupported_controller_events} CC/RPN event(s) preserved for MIDI export but not rendered"
         );
     }
+    if unsupported_mixer_automation_events > 0 {
+        status = format!(
+            "{status}; {unsupported_mixer_automation_events} mixer automation event(s) target missing or different inserts and were not rendered"
+        );
+    }
     if skipped_drum_notes > 0 {
         status = format!(
             "{status}; {skipped_drum_notes} drum note(s) outside the kit mapping or on empty pads"
+        );
+    }
+    status
+}
+
+pub fn midi_export_status(mut status: String, native_only_events: usize) -> String {
+    if native_only_events > 0 {
+        status = format!(
+            "{status}; {native_only_events} typed effect/send automation event(s) remain in the .evil project and are not MIDI events"
         );
     }
     status
@@ -208,6 +245,7 @@ fn show_lane_controls(ui: &mut egui::Ui, state: &mut AutomationState) {
                 );
                 ui.selectable_value(&mut state.lane, Lane::PolyAftertouch, "Poly aftertouch");
                 ui.selectable_value(&mut state.lane, Lane::Controller, "Controller (CC/RPN)");
+                ui.selectable_value(&mut state.lane, Lane::Mixer, "Mixer (native)");
             });
         if state.lane != previous_lane {
             state.clear_selection();
@@ -530,6 +568,7 @@ fn points(track: &dyn EventSequence, state: &AutomationState) -> Vec<Point> {
                 value: i32::from(event.value),
             })
             .collect(),
+        Lane::Mixer => unreachable!("mixer lanes use the native mixer editor"),
     }
 }
 
@@ -582,6 +621,7 @@ fn add_point(
             },
             |event| event.tick,
         ),
+        Lane::Mixer => unreachable!("mixer lanes use the native mixer editor"),
     }
 }
 
@@ -624,6 +664,7 @@ fn update_point(
                 event.value = value as u8;
             },
         ),
+        Lane::Mixer => unreachable!("mixer lanes use the native mixer editor"),
     }
 }
 
@@ -642,18 +683,19 @@ fn remove_selected(track: &mut dyn EventSequence, state: &mut AutomationState) -
         Lane::Controller => {
             track.controllers_mut().remove(index);
         }
+        Lane::Mixer => unreachable!("mixer lanes use the native mixer editor"),
     }
     state.clear_selection();
     true
 }
 
-fn insert_ordered<T>(events: &mut Vec<T>, event: T, tick: fn(&T) -> u64) -> usize {
+pub(crate) fn insert_ordered<T>(events: &mut Vec<T>, event: T, tick: fn(&T) -> u64) -> usize {
     let index = events.partition_point(|existing| tick(existing) <= tick(&event));
     events.insert(index, event);
     index
 }
 
-fn update_ordered<T: Copy>(
+pub(crate) fn update_ordered<T: Copy>(
     events: &mut Vec<T>,
     index: usize,
     tick: fn(&T) -> u64,
@@ -694,7 +736,7 @@ fn point_position(point: Point, rect: Rect, pixels_per_tick: f32, lane: Lane) ->
     )
 }
 
-fn position_to_tick(position: Pos2, rect: Rect, pixels_per_tick: f32, snap: u64) -> u64 {
+pub(crate) fn position_to_tick(position: Pos2, rect: Rect, pixels_per_tick: f32, snap: u64) -> u64 {
     let tick = ((position.x - rect.left()) / pixels_per_tick).max(0.0) as u64;
     piano_roll::snap_tick(tick, snap)
 }
@@ -839,8 +881,8 @@ mod tests {
         let index = add_point(&mut track, &state, 0, 200);
         assert_eq!(track.controllers_mut()[index].value, 127);
         assert_eq!(unsupported_controller_count(&track), 1);
-        assert!(render_status("Preview".to_owned(), 1, 0).contains("not rendered"));
-        assert!(render_status("Preview".to_owned(), 0, 2).contains("outside the kit"));
+        assert!(render_status("Preview".to_owned(), 1, 1, 0).contains("not rendered"));
+        assert!(render_status("Preview".to_owned(), 0, 0, 2).contains("outside the kit"));
     }
 
     #[test]

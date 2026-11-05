@@ -1,4 +1,7 @@
-use crate::{Aftertouch, ControllerEvent, Error, Note, Pattern, PitchBend, Track, invalid};
+use crate::{
+    Aftertouch, ControllerEvent, Error, MixerAutomationEvent, Note, Pattern, PitchBend, Track,
+    invalid,
+};
 
 /// The event storage shared by unique track performances and reusable patterns.
 /// Editors use this interface so both contexts have identical editing behavior.
@@ -11,6 +14,8 @@ pub trait EventSequence {
     fn aftertouch_mut(&mut self) -> &mut Vec<Aftertouch>;
     fn controllers(&self) -> &[ControllerEvent];
     fn controllers_mut(&mut self) -> &mut Vec<ControllerEvent>;
+    fn mixer_automation(&self) -> &[MixerAutomationEvent];
+    fn mixer_automation_mut(&mut self) -> &mut Vec<MixerAutomationEvent>;
 }
 
 macro_rules! impl_event_sequence {
@@ -39,6 +44,12 @@ macro_rules! impl_event_sequence {
             }
             fn controllers_mut(&mut self) -> &mut Vec<ControllerEvent> {
                 &mut self.controllers
+            }
+            fn mixer_automation(&self) -> &[MixerAutomationEvent] {
+                &self.mixer_automation
+            }
+            fn mixer_automation_mut(&mut self) -> &mut Vec<MixerAutomationEvent> {
+                &mut self.mixer_automation
             }
         }
     };

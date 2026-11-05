@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::Error;
+use evil_performance::EffectParameter;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -60,6 +61,18 @@ impl CompressorProcessor {
             settings: settings.clone(),
             reduction_db: 0.0,
         }
+    }
+
+    pub(crate) fn set_parameter(&mut self, parameter: EffectParameter, value: f32) -> bool {
+        let mut effect = crate::InsertEffect::Compressor(self.settings.clone());
+        if !crate::effects::set_effect_parameter(&mut effect, parameter, value) {
+            return false;
+        }
+        let crate::InsertEffect::Compressor(settings) = effect else {
+            unreachable!()
+        };
+        self.settings = settings;
+        true
     }
 
     pub(crate) fn process(&mut self, stereo: &mut [f32; 2], sample_rate: u32) {

@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::Error;
+use evil_performance::EffectParameter;
 
 /// Fixed-band, three-band equalizer with low/high shelves and a mid bell.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -79,6 +80,25 @@ impl EqualizerProcessor {
             settings: settings.clone(),
             states: std::array::from_fn(|_| std::array::from_fn(|_| BandState::default())),
         }
+    }
+
+    pub(crate) fn set_parameter(
+        &mut self,
+        parameter: EffectParameter,
+        value: f32,
+        sample_rate: u32,
+    ) -> bool {
+        let mut effect = crate::InsertEffect::Equalizer(self.settings.clone());
+        if !crate::effects::set_effect_parameter(&mut effect, parameter, value) {
+            return false;
+        }
+        let crate::InsertEffect::Equalizer(settings) = effect else {
+            unreachable!()
+        };
+        let replacement = Self::new(&settings, sample_rate);
+        self.settings = settings;
+        self.coefficients = replacement.coefficients;
+        true
     }
 
     pub(crate) fn process(&mut self, stereo: &mut [f32; 2]) {

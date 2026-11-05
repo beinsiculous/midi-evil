@@ -7,6 +7,7 @@ mod keyboard_page;
 mod recording;
 
 use crate::{
+    mixer::{self, MixerState},
     theme,
     workspace::{self, View},
 };
@@ -46,6 +47,7 @@ pub struct StudioApp {
     show_automation: bool,
     show_about: bool,
     preview: Option<PreviewPlayer>,
+    mixer: MixerState,
     transport: Transport,
     instance: Option<SingleInstance>,
     history: EditorHistory,
@@ -125,6 +127,7 @@ impl StudioApp {
             show_automation: false,
             show_about: true,
             preview: None,
+            mixer: MixerState::default(),
             transport: Transport::new(1_920),
             instance,
             history: EditorHistory::default(),
@@ -226,6 +229,8 @@ impl StudioApp {
 
     fn reset_history(&mut self) {
         self.history.clear();
+        self.mixer.last_analysis = None;
+        self.mixer.last_channel_meters.clear();
         self.resetting_document = true;
     }
 
@@ -750,11 +755,14 @@ impl StudioApp {
                 self.status = format!("Could not save MIDI {}: {error}", midi_path.display());
                 return;
             }
-            self.status = format!(
-                "Saved {} and exported {} notes to {}",
-                path.display(),
-                report.note_count,
-                midi_path.display()
+            self.status = automation::midi_export_status(
+                format!(
+                    "Saved {} and exported {} notes to {}",
+                    path.display(),
+                    report.note_count,
+                    midi_path.display()
+                ),
+                report.native_only_mixer_automation_events,
             );
         } else {
             self.status = format!("Saved {}", path.display());
@@ -793,11 +801,14 @@ impl StudioApp {
         match evil_exports::export_native_project_to_path(&self.project, self.patch_base(), &output)
         {
             Ok(report) => {
-                self.status = format!(
-                    "Exported {} notes from {} tracks to {}",
-                    report.note_count,
-                    report.track_count,
-                    output.display()
+                self.status = automation::midi_export_status(
+                    format!(
+                        "Exported {} notes from {} tracks to {}",
+                        report.note_count,
+                        report.track_count,
+                        output.display()
+                    ),
+                    report.native_only_mixer_automation_events,
                 );
             }
             Err(error) => self.status = format!("Could not export MIDI: {error}"),
@@ -980,6 +991,7 @@ impl StudioApp {
                 let status = automation::render_status(
                     format!("Previewing {} notes", rendered.note_count),
                     rendered.unsupported_controller_events,
+                    rendered.unsupported_mixer_automation_events,
                     rendered.skipped_drum_notes,
                 );
                 self.play_render(rendered, status, repeat);
@@ -1019,6 +1031,7 @@ impl StudioApp {
                                 output.display()
                             ),
                             rendered.unsupported_controller_events,
+                            rendered.unsupported_mixer_automation_events,
                             rendered.skipped_drum_notes,
                         );
                     }
@@ -1039,11 +1052,10 @@ impl StudioApp {
     }
 
     fn play_render(&mut self, rendered: evil_render::RenderOutput, status: String, repeat: bool) {
-        let result = if repeat {
-            PreviewPlayer::play_repeating(rendered.sound)
-        } else {
-            PreviewPlayer::play(rendered.sound)
-        };
+        self.mixer.last_analysis = Some(rendered.mix_analysis.clone());
+        self.mixer.last_channel_meters = rendered.channel_meters.clone();
+        let result =
+            PreviewPlayer::play_with_meters(rendered.sound, rendered.channel_meters, repeat);
         match result {
             Ok(player) => {
                 self.preview = Some(player);
@@ -1233,7 +1245,9 @@ impl eframe::App for StudioApp {
         if !matches!(self.view, View::Synth | View::Keyboard) || self.project.tracks.is_empty() {
             self.stop_keyboard();
         }
-        if matches!(self.view, View::Synth | View::Keyboard | View::Pads) || self.recorder.is_some()
+        if matches!(self.view, View::Synth | View::Keyboard | View::Pads)
+            || self.recorder.is_some()
+            || (self.view == View::Mixer && self.preview.is_some())
         {
             root.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(16));
@@ -1325,7 +1339,22 @@ impl eframe::App for StudioApp {
                     }
                     View::Mixer => {
                         let mut selected = self.roll.selected_track;
-                        workspace::mixer(ui, &mut self.project, &mut selected);
+                        let meter = self.preview.as_ref().map_or(
+                            crate::preview::MeterSnapshot::default(),
+                            PreviewPlayer::meter,
+                        );
+                        let channel_meters = self
+                            .preview
+                            .as_ref()
+                            .map_or_else(Vec::new, PreviewPlayer::channel_meters);
+                        mixer::mixer(
+                            ui,
+                            &mut self.project,
+                            &mut selected,
+                            &mut self.mixer,
+                            meter,
+                            &channel_meters,
+                        );
                         if selected != self.roll.selected_track {
                             self.roll.select_track(selected);
                         }

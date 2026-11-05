@@ -101,6 +101,7 @@ impl ProjectV1 {
                     pitch_bends: track.pitch_bends,
                     aftertouch: track.aftertouch,
                     controllers: track.controllers,
+                    mixer_automation: Vec::new(),
                     parts: Vec::<Part>::new(),
                 }
             })

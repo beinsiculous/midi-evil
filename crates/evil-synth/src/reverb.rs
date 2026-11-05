@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::Error;
+use evil_performance::EffectParameter;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -118,6 +119,27 @@ impl ReverbProcessor {
                 })
             }),
         }
+    }
+
+    pub(crate) fn set_parameter(&mut self, parameter: EffectParameter, value: f32) -> bool {
+        if !value.is_finite() || !parameter.range().contains(&value) {
+            return false;
+        }
+        match parameter {
+            EffectParameter::ReverbRoomSize => {
+                for comb in self.combs.iter_mut().flatten() {
+                    comb.feedback = 0.2 + value * 0.75;
+                }
+            }
+            EffectParameter::ReverbDamping => {
+                for comb in self.combs.iter_mut().flatten() {
+                    comb.damping_alpha = 0.01 + (1.0 - value) * 0.99;
+                }
+            }
+            EffectParameter::ReverbMix => self.mix = value,
+            _ => return false,
+        }
+        true
     }
 
     pub(crate) fn process(&mut self, stereo: &mut [f32; 2]) {

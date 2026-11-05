@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+mod mixer;
+pub use mixer::{EffectParameter, MixerAutomationEvent, MixerParameter};
+
 pub const DEFAULT_TICKS_PER_QUARTER: u16 = 480;
 
 /// Continuous controllers currently mapped to synthesis and instrument-insert parameters.
@@ -32,6 +35,7 @@ pub struct PerformanceTrack {
     pub pitch_bends: Vec<PitchBend>,
     pub aftertouch: Vec<Aftertouch>,
     pub controllers: Vec<ControllerEvent>,
+    pub mixer_automation: Vec<MixerAutomationEvent>,
     pub pitch_bend_range_semitones: f32,
     pub program: Option<u8>,
     pub volume: Option<u8>,

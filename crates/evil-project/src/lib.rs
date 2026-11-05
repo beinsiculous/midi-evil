@@ -2,7 +2,10 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-pub use evil_performance::{Aftertouch, ControllerEvent, PitchBend, controller_is_rendered};
+pub use evil_performance::{
+    Aftertouch, ControllerEvent, EffectParameter, MixerAutomationEvent, MixerParameter, PitchBend,
+    controller_is_rendered,
+};
 use evil_performance::{
     Performance, PerformanceNote, PerformanceTrack, TempoChange as PerformanceTempoChange,
 };
@@ -79,6 +82,7 @@ pub struct Track {
     pub pitch_bends: Vec<PitchBend>,
     pub aftertouch: Vec<Aftertouch>,
     pub controllers: Vec<ControllerEvent>,
+    pub mixer_automation: Vec<MixerAutomationEvent>,
     pub parts: Vec<Part>,
 }
 
@@ -137,6 +141,7 @@ impl Default for Track {
             pitch_bends: Vec::new(),
             aftertouch: Vec::new(),
             controllers: Vec::new(),
+            mixer_automation: Vec::new(),
             parts: Vec::new(),
         }
     }
@@ -199,6 +204,7 @@ impl Project {
                     pitch_bends: track.pitch_bends.clone(),
                     aftertouch: track.aftertouch.clone(),
                     controllers: track.controllers.clone(),
+                    mixer_automation: track.mixer_automation.clone(),
                     ..Track::default()
                 }
             })
@@ -441,6 +447,7 @@ impl Project {
                 let mut pitch_bends = track.pitch_bends.clone();
                 let mut aftertouch = track.aftertouch.clone();
                 let mut controllers = track.controllers.clone();
+                let mut mixer_automation = track.mixer_automation.clone();
                 for part in &track.parts {
                     pattern::expand_part(
                         &self.patterns[part.pattern],
@@ -449,12 +456,14 @@ impl Project {
                         &mut pitch_bends,
                         &mut aftertouch,
                         &mut controllers,
+                        &mut mixer_automation,
                     );
                 }
                 if notes.is_empty()
                     && pitch_bends.is_empty()
                     && aftertouch.is_empty()
                     && controllers.is_empty()
+                    && mixer_automation.is_empty()
                 {
                     return None;
                 }
@@ -462,6 +471,7 @@ impl Project {
                 pitch_bends.sort_by_key(|event| event.tick);
                 aftertouch.sort_by_key(|event| event.tick);
                 controllers.sort_by_key(|event| event.tick);
+                mixer_automation.sort_by_key(|event| event.tick);
                 Some(PerformanceTrack {
                     track_index,
                     name: track.name.clone(),
@@ -477,6 +487,7 @@ impl Project {
                     pitch_bends,
                     aftertouch,
                     controllers,
+                    mixer_automation,
                     pitch_bend_range_semitones: instrument.pitch_bend_range_semitones,
                     skipped_controller_events: 0,
                     program: instrument.midi_program,
@@ -513,6 +524,7 @@ impl Project {
             track.pitch_bends.retain(|event| event.tick < end_tick);
             track.aftertouch.retain(|event| event.tick < end_tick);
             track.controllers.retain(|event| event.tick < end_tick);
+            track.mixer_automation.retain(|event| event.tick < end_tick);
             for part in &mut track.parts {
                 part.length_ticks = part
                     .length_ticks
@@ -675,6 +687,7 @@ fn validate_track(track: &Track) -> Result<(), Error> {
         &track.pitch_bends,
         &track.aftertouch,
         &track.controllers,
+        &track.mixer_automation,
     )
 }
 
@@ -1045,10 +1058,29 @@ mod tests {
             controller: 1,
             value: 96,
         }];
+        project.tracks[0].mixer_automation = vec![
+            MixerAutomationEvent {
+                tick: 0,
+                parameter: MixerParameter::Gain,
+                value: 0.75,
+            },
+            MixerAutomationEvent {
+                tick: 480,
+                parameter: MixerParameter::Insert {
+                    slot: 0,
+                    parameter: EffectParameter::ReverbMix,
+                },
+                value: 0.5,
+            },
+        ];
         let decoded = Project::from_json(&project.to_json_pretty().unwrap()).unwrap();
         assert_eq!(decoded.tracks[0].pitch_bends, project.tracks[0].pitch_bends);
         assert_eq!(decoded.tracks[0].aftertouch, project.tracks[0].aftertouch);
         assert_eq!(decoded.tracks[0].controllers, project.tracks[0].controllers);
+        assert_eq!(
+            decoded.tracks[0].mixer_automation,
+            project.tracks[0].mixer_automation
+        );
         assert_eq!(decoded.instruments[0].pitch_bend_range_semitones, 7.0);
     }
 
@@ -1081,6 +1113,7 @@ mod tests {
                 pitch_bends: Vec::new(),
                 aftertouch: Vec::new(),
                 controllers: Vec::new(),
+                mixer_automation: Vec::new(),
                 pitch_bend_range_semitones: 2.0,
                 skipped_controller_events: 0,
                 program: Some(80),

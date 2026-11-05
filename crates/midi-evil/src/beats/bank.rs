@@ -110,6 +110,26 @@ impl BeatsPage {
                         self.selected + 1
                     );
                 }
+                Action::ApplyEffect => {
+                    let Some(pad) = &mut self.kit.pads[self.selected] else {
+                        return Ok(());
+                    };
+                    let undo = SampleUndo::capture(self.selected, &pad.voice, "effect");
+                    if !pad
+                        .voice
+                        .apply_effect(&self.sample_effect, self.tempo_bpm)
+                        .map_err(|error| error.to_string())?
+                    {
+                        self.message = "The selected effect leaves the sample unchanged".into();
+                        return Ok(());
+                    }
+                    self.sample_undo = Some(undo);
+                    self.dirty = true;
+                    self.message = format!(
+                        "Effect rendered into pad {:02} / one-step undo available",
+                        self.selected + 1
+                    );
+                }
                 Action::UndoSample => {
                     let Some(undo) = self.sample_undo.take() else {
                         self.message = "No sample edit to undo".into();

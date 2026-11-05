@@ -3,12 +3,17 @@ use std::{path::PathBuf, time::Instant};
 
 use eframe::egui::{self, Key, Rect, RichText, TextureHandle, vec2};
 use evil_beats::{DrumFilter, DrumKit, DrumPad, PAD_COUNT, SampleDirection};
+use evil_synth::InsertEffect;
 
 mod bank;
 mod drawing;
 use drawing::{paint_pad, waveform};
 
-use crate::{beats_player::BeatsPlayer, theme};
+use crate::{
+    beats_player::BeatsPlayer,
+    effect_ui::{self, EffectType},
+    theme,
+};
 
 const KEYS: [(Key, &str); PAD_COUNT] = [
     (Key::Z, "Z"),
@@ -45,6 +50,7 @@ enum Action {
     Export,
     Crop,
     Normalize,
+    ApplyEffect,
     UndoSample,
     Clear,
 }
@@ -103,6 +109,8 @@ pub struct BeatsPage {
     badge: TextureHandle,
     peaks: [Vec<f32>; PAD_COUNT],
     sample_undo: Option<SampleUndo>,
+    sample_effect: InsertEffect,
+    tempo_bpm: f32,
 }
 
 impl BeatsPage {
@@ -136,6 +144,8 @@ impl BeatsPage {
             badge: crate::art::load_beats(context),
             peaks,
             sample_undo: None,
+            sample_effect: InsertEffect::Bitcrush(evil_synth::Bitcrush::default()),
+            tempo_bpm: 120.0,
         }
     }
 
@@ -189,6 +199,7 @@ impl BeatsPage {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, tempo: f32) -> Vec<PadHit> {
+        self.tempo_bpm = tempo;
         let mut hits = Vec::new();
         let wall_now = Instant::now();
         let now = ui.input(|i| i.time);
@@ -369,6 +380,22 @@ impl BeatsPage {
                                     action = Some(Action::UndoSample);
                                 }
                             });
+                            theme::label(ui, "SAMPLE EFFECT / DESTRUCTIVE");
+                            egui::ComboBox::from_id_salt("pad-sample-effect")
+                                .selected_text(EffectType::of(&self.sample_effect).label())
+                                .show_ui(ui, |ui| {
+                                    for kind in EffectType::ALL {
+                                        if ui.selectable_label(false, kind.label()).clicked() {
+                                            self.sample_effect = kind.default_effect();
+                                            ui.close();
+                                        }
+                                    }
+                                });
+                            effect_ui::effect_controls(ui, &mut self.sample_effect);
+                            if ui.add_enabled(self.kit.pads[self.selected].is_some(), egui::Button::new("Apply effect to sample")).clicked() {
+                                action = Some(Action::ApplyEffect);
+                            }
+                            ui.label(RichText::new("Effect tails are kept; trim and playback modes are preserved. One-step undo is available.").small().color(theme::MUTED));
                             if ui.add_enabled(self.kit.pads[self.selected].is_some(), egui::Button::new("Clear pad")).clicked() { action = Some(Action::Clear); }
                         }
                     }
@@ -567,6 +594,15 @@ mod tests {
         let undo = SampleUndo::capture(4, &pad, "crop");
         pad.crop_to_playback_range().unwrap();
         pad.normalize().unwrap();
+        pad.apply_effect(
+            &evil_synth::InsertEffect::Bitcrush(evil_synth::Bitcrush {
+                bits: 1,
+                downsample: 2,
+                mix: 1.0,
+            }),
+            120.0,
+        )
+        .unwrap();
         pad.direction = SampleDirection::Reverse;
         pad.gain = 0.25;
 
