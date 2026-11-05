@@ -21,7 +21,7 @@ pub struct Performance {
     pub tracks: Vec<PerformanceTrack>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TempoChange {
     pub tick: u64,
     pub microseconds_per_quarter: u32,

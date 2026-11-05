@@ -21,7 +21,7 @@ use crate::launch::LaunchOptions;
 use crate::patch_lab::{self, PatchLab};
 use crate::piano_roll::{self, RollState};
 use crate::preview::PreviewPlayer;
-use crate::render_job::RenderJob;
+use crate::render_job::{RenderJob, WavExportQueue};
 use crate::transport::Transport;
 
 pub struct StudioApp {
@@ -83,6 +83,15 @@ enum PendingRender {
         end_tick: Option<u64>,
     },
     Wav(PathBuf),
+    RangeWav {
+        output: PathBuf,
+        start_tick: u64,
+        end_tick: Option<u64>,
+    },
+    WavExport {
+        current: evil_render::ExportSpec,
+        queue: WavExportQueue,
+    },
 }
 
 enum PatchLabAction {
@@ -964,18 +973,43 @@ impl StudioApp {
                 *start_tick,
                 *end_tick,
             ),
-            PendingRender::Wav(_) => {
-                RenderJob::start(self.project.clone(), self.patch_base().to_path_buf())
-            }
+            PendingRender::Wav(output) => RenderJob::start_wav(
+                self.project.clone(),
+                self.patch_base().to_path_buf(),
+                output.clone(),
+            ),
+            PendingRender::RangeWav {
+                output,
+                start_tick,
+                end_tick,
+            } => RenderJob::start_range_wav(
+                self.project.clone(),
+                self.patch_base().to_path_buf(),
+                *start_tick,
+                *end_tick,
+                output.clone(),
+            ),
+            PendingRender::WavExport { current, queue } => RenderJob::start_scoped_wav(
+                self.project.clone(),
+                self.patch_base().to_path_buf(),
+                current.scope,
+                queue.output_for(current),
+            ),
         };
         self.render_job = Some(job);
         self.status = match &action {
             PendingRender::Resample { .. } => {
                 "Resampling the section in the background…".to_owned()
             }
-            PendingRender::Preview { .. } | PendingRender::Wav(_) => {
-                "Rendering in the background…".to_owned()
-            }
+            PendingRender::Preview { .. }
+            | PendingRender::Wav(_)
+            | PendingRender::RangeWav { .. } => "Rendering in the background…".to_owned(),
+            PendingRender::WavExport { current, queue } => format!(
+                "Rendering export {} of {}: {}…",
+                queue.completed + 1,
+                queue.total,
+                current.file_name
+            ),
         };
         self.pending_render = Some(action);
     }
@@ -1020,23 +1054,56 @@ impl StudioApp {
                     Err(error) => self.status = format!("Could not embed resampled audio: {error}"),
                 }
             }
-            (Some(PendingRender::Wav(output)), Ok(rendered)) => {
-                match rendered.sound.write_wav(&output) {
-                    Ok(()) => {
-                        self.status = automation::render_status(
-                            format!(
-                                "Rendered {} notes from {} tracks to {}",
-                                rendered.note_count,
-                                rendered.track_count,
-                                output.display()
-                            ),
-                            rendered.unsupported_controller_events,
-                            rendered.unsupported_mixer_automation_events,
-                            rendered.skipped_drum_notes,
-                        );
-                    }
-                    Err(error) => self.status = format!("Could not write audio: {error}"),
+            (
+                Some(PendingRender::Wav(output) | PendingRender::RangeWav { output, .. }),
+                Ok(rendered),
+            ) => {
+                self.status = automation::render_status(
+                    format!(
+                        "Rendered {} notes from {} tracks to {}",
+                        rendered.note_count,
+                        rendered.track_count,
+                        output.display()
+                    ),
+                    rendered.unsupported_controller_events,
+                    rendered.unsupported_mixer_automation_events,
+                    rendered.skipped_drum_notes,
+                );
+            }
+            (
+                Some(PendingRender::WavExport {
+                    current: _,
+                    mut queue,
+                }),
+                Ok(rendered),
+            ) => {
+                queue.complete_current();
+                let warnings = (
+                    rendered.unsupported_controller_events,
+                    rendered.unsupported_mixer_automation_events,
+                    rendered.skipped_drum_notes,
+                );
+                // Release the completed song buffer before starting the next worker.
+                drop(rendered);
+                if let Some(current) = queue.next_spec() {
+                    self.start_render(PendingRender::WavExport { current, queue });
+                } else {
+                    self.status = automation::render_status(
+                        format!(
+                            "Exported {} WAV file(s); skipped {} noteless item(s)",
+                            queue.completed, queue.skipped
+                        ),
+                        warnings.0,
+                        warnings.1,
+                        warnings.2,
+                    );
                 }
+            }
+            (Some(PendingRender::WavExport { current, queue }), Err(error)) => {
+                self.status = format!(
+                    "Could not export {} after completing {} of {} file(s): {error}",
+                    current.file_name, queue.completed, queue.total
+                );
             }
             (_, Err(error)) => {
                 self.status = if self.recorder.is_some() {
@@ -1170,6 +1237,55 @@ impl StudioApp {
             return;
         };
         self.start_render(PendingRender::Wav(output));
+    }
+
+    fn render_section_audio(&mut self) {
+        let Some(output) = self
+            .file_dialog()
+            .add_filter("WAV audio", &["wav"])
+            .set_file_name("Section.wav")
+            .save_file()
+        else {
+            return;
+        };
+        let (start_tick, end_tick) = self.transport.range();
+        self.start_render(PendingRender::RangeWav {
+            output,
+            start_tick,
+            end_tick,
+        });
+    }
+
+    fn render_track_stems(&mut self) {
+        let Some(output_directory) = self.file_dialog().pick_folder() else {
+            return;
+        };
+        match evil_render::stem_export_plan(&self.project, None) {
+            Ok(plan) => self.start_wav_export_plan(output_directory, plan),
+            Err(error) => self.status = format!("Could not plan track stems: {error}"),
+        }
+    }
+
+    fn render_arrangement_parts(&mut self) {
+        let Some(output_directory) = self.file_dialog().pick_folder() else {
+            return;
+        };
+        match evil_render::part_export_plan(&self.project, None, None) {
+            Ok(plan) => self.start_wav_export_plan(output_directory, plan),
+            Err(error) => self.status = format!("Could not plan arrangement parts: {error}"),
+        }
+    }
+
+    fn start_wav_export_plan(&mut self, output_directory: PathBuf, plan: evil_render::ExportPlan) {
+        let mut queue = WavExportQueue::new(output_directory, plan);
+        if queue.is_empty() {
+            self.status = "No note-containing tracks or arrangement parts to export".to_owned();
+            return;
+        }
+        let current = queue
+            .next_spec()
+            .expect("a nonempty export queue has a first item");
+        self.start_render(PendingRender::WavExport { current, queue });
     }
 
     fn automation_panel(&mut self, ui: &mut egui::Ui) {

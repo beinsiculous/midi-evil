@@ -1,4 +1,4 @@
-use crate::delay::{delay_frame_count, maximum_delay_frames, tempo_bpm_at};
+use crate::delay::{allocated_tail_frames, delay_frame_count, maximum_delay_frames, tempo_bpm_at};
 use crate::{Delay, SynthController, SynthTempoChange, Waveshaper};
 
 pub const WAVESHAPER_DRIVE_CC: u8 = 20;
@@ -62,7 +62,10 @@ pub(crate) fn apply_delay_automation(
     let maximum_delay =
         maximum_automated_delay_frames(sample_rate, base, controllers, tempo_changes);
     let original_len = samples.len();
-    samples.resize(original_len + maximum_delay * 8, 0.0);
+    samples.resize(
+        original_len + allocated_tail_frames(sample_rate, maximum_delay, base),
+        0.0,
+    );
     let mut delay_line = vec![0.0; maximum_delay + 1];
     let mut position = 0;
     for (frame, sample) in samples.iter_mut().enumerate() {
@@ -91,8 +94,9 @@ pub(crate) fn apply_stereo_delay_automation_with_tempo(
     let maximum_delay =
         maximum_automated_delay_frames(sample_rate, base, controllers, tempo_changes);
     let original_len = left.len();
-    left.resize(original_len + maximum_delay * 8, 0.0);
-    right.resize(original_len + maximum_delay * 8, 0.0);
+    let tail_frames = allocated_tail_frames(sample_rate, maximum_delay, base);
+    left.resize(original_len + tail_frames, 0.0);
+    right.resize(original_len + tail_frames, 0.0);
     let mut left_line = vec![0.0; maximum_delay + 1];
     let mut right_line = vec![0.0; maximum_delay + 1];
     let mut position = 0;

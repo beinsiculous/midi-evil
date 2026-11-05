@@ -69,6 +69,18 @@ impl StudioApp {
                             ui.close();
                             self.render_audio();
                         }
+                        if ui.button("Render section WAV…").clicked() {
+                            ui.close();
+                            self.render_section_audio();
+                        }
+                        if ui.button("Track stems…").clicked() {
+                            ui.close();
+                            self.render_track_stems();
+                        }
+                        if ui.button("Arrangement parts…").clicked() {
+                            ui.close();
+                            self.render_arrangement_parts();
+                        }
                         ui.separator();
                         if ui.button("About MIDI Evil").clicked() {
                             ui.close();
@@ -338,6 +350,18 @@ impl StudioApp {
                         }
                         if ui.button("Stereo WAV…").clicked() {
                             self.render_audio();
+                            self.show_export = false;
+                        }
+                        if ui.button("Section WAV…").clicked() {
+                            self.render_section_audio();
+                            self.show_export = false;
+                        }
+                        if ui.button("Track stems…").clicked() {
+                            self.render_track_stems();
+                            self.show_export = false;
+                        }
+                        if ui.button("Arrangement parts…").clicked() {
+                            self.render_arrangement_parts();
                             self.show_export = false;
                         }
                     });

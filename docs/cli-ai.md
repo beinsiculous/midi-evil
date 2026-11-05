@@ -25,7 +25,9 @@ Successful commands exit 0. Invalid input and I/O failures print an error to std
 | `oracle midi inspect INPUT.mid --json` | Timing, duration, track, note, and automation counts |
 | `oracle synth list --json` | Built-in preset name array |
 | `oracle synth render PATCH OUT.wav --json` | Mono render report with patch, sample count, and sample rate |
-| `oracle project render SONG.evil OUT.wav --json` | Stereo render report with notes, tracks, frames, unsupported-controller count, and skipped drum-note count |
+| `oracle project render SONG.evil OUT.wav --json` | Stereo full-song or `--start-tick`/`--end-tick` section report with frames and all render-warning counts |
+| `oracle project render-stems SONG.evil OUT_DIR --json` | One report per soloed track WAV, plus noteless-item skip count |
+| `oracle project render-parts SONG.evil OUT_DIR --json` | One report per soloed arrangement-part WAV, plus noteless-item skip count |
 
 Other JSON workflows already available:
 
@@ -57,7 +59,24 @@ oracle project render kit.evil kit.wav --json
 oracle project export-midi kit.evil kit.mid
 ```
 
-Use a relative `.evilkit` path instead of `maxwell` for a saved bank. The default mapping assigns notes 36–51 to the 16 pads. `skipped_drum_notes` reports notes outside that mapping or targeting empty pads; those notes remain preserved in the project and MIDI export.
+Use a relative `.evilkit` path instead of `maxwell` for a saved bank, or select the original `chiptune` recreation with `--kit chiptune`. The default mapping assigns notes 36–51 to the 16 pads. `skipped_drum_notes` reports notes outside that mapping or targeting empty pads; those notes remain preserved in the project and MIDI export.
+
+## Render a section, track stems, or arrangement parts
+
+```bash
+# Exact section: pre-roll preserves sustained notes, modulation and effect state.
+oracle project render song.evil section.wav --start-tick 480 --end-tick 960 --json
+
+# Every note-containing track, or one zero-based original track index.
+oracle project render-stems song.evil exports/stems --json
+oracle project render-stems song.evil exports/lead --track 0 --json
+
+# Every note-containing timeline part, or one part on a selected track.
+oracle project render-parts song.evil exports/parts --json
+oracle project render-parts song.evil exports/verse --track 0 --part 2 --json
+```
+
+Stem and part exports temporarily solo and unmute their selection without changing the project. They retain instrument/master processing and only the selected track's send contribution. Part audio starts at frame zero at the part's timeline start and includes its complete note/release/effect tail. File names use one-based original indices even though CLI selectors are zero-based, so duplicate track/pattern names cannot collide. Batch exports skip noteless items; an explicitly selected empty item or a batch with no exportable items is an error and does not create an output directory. Batches are sequential and non-transactional: earlier files remain if a later render fails. Since master saturation is applied independently to each file, summing stems is not guaranteed to reproduce the full mix sample-for-sample.
 
 ## Agent workflow
 

@@ -43,6 +43,8 @@ pub struct Lfo {
     /// Signed A/B balance modulation in Mix mode; positive favors Osc B.
     pub oscillator_mix_depth: f32,
     pub amplitude_depth: f32,
+    /// Optional band-limited transition duration for amplitude modulation; zero preserves the raw LFO.
+    pub amplitude_transition_seconds: f32,
     /// Zero-based index into the patch's primary/additional LFO lanes.
     pub target_lfo: Option<usize>,
     /// Fractional rate modulation applied to `target_lfo`.
@@ -63,6 +65,7 @@ impl Default for Lfo {
             filter_resonance_depth: 0.5,
             oscillator_mix_depth: 0.5,
             amplitude_depth: 0.5,
+            amplitude_transition_seconds: 0.0,
             target_lfo: None,
             lfo_rate_depth: 0.0,
         }

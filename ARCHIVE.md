@@ -2,6 +2,12 @@
 
 Completed tasks and fixes moved out of `ROADMAP.md`. Keep entries concise and include verification notes where useful; do not keep active work here.
 
+## 2026-11-05
+
+- Completed Phase 6 audio export with shared soloed track/stem and arrangement-part scopes, safe indexed filenames, full routing/tails and JSON reports. Added CLI `render-stems`/`render-parts`, exact `--start-tick`/`--end-tick` section rendering, and queued desktop full/section/stem/part PCM16 WAV exports. Added scoped routing, mute/shared-instrument, cropped-repeat, empty-selection, deterministic artifact and CLI/desktop worker tests.
+- Recalibrated the four favorite sounds with reproducible NumPy/JSON workflows. Max Nasty reduced C2 16–24 kHz excess by 8.91 dB, brought every 120 BPM late-tail RMS within 6% of reference, and used new 60/240 BPM captures to calibrate a beat-synced 0.5-second-capped delay with active durations within 40/36 ms and no 60/120 regression. Evil-303 now matches the measured 0.040-second glide midpoint/duration and closely tracks pitch/velocity/full-tail references. GlockenBlocks uses eight measured modes with pitch-dependent gains/decays and long one-shot tails. Chiptune adds original deterministic synthesis for all 16 measured pads and a 256-hit dense native render without factory audio. Documents state remaining approximation and missing-source-comparison limits rather than claiming sample equivalence.
+- Added `tools/audit-native.sh`, public Bach edit/save/export/reimport and portable 16-pad WAV workflows, built-in Chiptune project coverage, and an explicitly ignored opt-in virtual-microphone test with tracked ALSA-null configuration. Promoted verified parity rows while keeping interactive piano-roll/arranger gestures, physical MIDI/real devices and missing source-side comparisons separate. Native and compatibility tests plus strict Clippy in both workspaces passed.
+
 ## 2026-10-30
 
 - Improved A17.Nasty against the dry and full-bar references with 1.25 base sync, 15.5-cent tuning, a near-open 20 kHz filter, and recalibrated stereo gain. Spectral centroid improved from **3.40 to 4.13 kHz** (reference **4.20**), waveform correlation from **0.0294 to 0.0448**, and 6–7 second tail RMS from **0.000397 to 0.000447** (reference **0.000455**). Added high-note clamping for key-tracked cutoffs. Verified **106 workspace tests**, formatting, and strict Clippy.

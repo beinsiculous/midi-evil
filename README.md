@@ -47,12 +47,15 @@ cargo run --manifest-path compat/Cargo.toml -p oracle -- project add-note song.e
 cargo run --manifest-path compat/Cargo.toml -p oracle -- project add-note song.evil 1 45 0 256 --velocity 120
 cargo run --manifest-path compat/Cargo.toml -p oracle -- project show song.evil
 cargo run --manifest-path compat/Cargo.toml -p oracle -- project render song.evil song.wav
+cargo run --manifest-path compat/Cargo.toml -p oracle -- project render song.evil section.wav --start-tick 480 --end-tick 960
+cargo run --manifest-path compat/Cargo.toml -p oracle -- project render-stems song.evil exports/stems
+cargo run --manifest-path compat/Cargo.toml -p oracle -- project render-parts song.evil exports/parts
 cargo run --manifest-path compat/Cargo.toml -p oracle -- project export-midi song.evil song.mid
 ```
 
-Track indices are returned by `add-track` and shown by `show`. Note arguments are track, MIDI pitch, start tick, and duration. Native projects default to 480 ticks per quarter note; existing files keep their stored timing. Instruments own patch/kit references, gain, pan, program, and bend-range settings; tracks sharing an instrument also share its MIDI channel while retaining separate exact-named MIDI tracks. Synth patch references can be built-in preset names or `.json` paths relative to the `.evil` file. `project render` uses the embedded assignments to produce a stereo PCM16 WAV. `project export-midi` preserves exact track names, meter, tempo changes, gain/pan CCs, program mappings, and atomic output. Muted tracks remain as empty named tracks so engine track indices stay stable. An imported song's `source_midi` is stored in the project so Save can update the original MIDI file even after reopening it. If the MIDI file moves, **Relink MIDI** selects its new location without breaking future save-back.
+Track indices are returned by `add-track` and shown by `show`. Note arguments are track, MIDI pitch, start tick, and duration. Native projects default to 480 ticks per quarter note; existing files keep their stored timing. Instruments own patch/kit references, gain, pan, program, and bend-range settings; tracks sharing an instrument also share its MIDI channel while retaining separate exact-named MIDI tracks. Synth patch references can be built-in preset names or `.json` paths relative to the `.evil` file. `project render` uses the embedded assignments to produce a stereo PCM16 WAV, optionally cropped to an exact tick range with pre-roll. `render-stems` and `render-parts` solo and temporarily unmute each selected track or timeline part, retain its routing/master processing and full tail, and use collision-safe one-based filenames. Their CLI selectors remain zero-based. Noteless batch items are skipped; explicit empty selections fail. Batches are non-transactional, and separately saturated stems need not sum to the full mix. `project export-midi` preserves exact track names, meter, tempo changes, gain/pan CCs, program mappings, and atomic output. Muted tracks remain as empty named tracks so engine track indices stay stable. An imported song's `source_midi` is stored in the project so Save can update the original MIDI file even after reopening it. If the MIDI file moves, **Relink MIDI** selects its new location without breaking future save-back.
 
-Add a drum track with the built-in Maxwell kit or a relative `.evilkit` bank. The default MIDI mapping assigns notes 36–51 to the 16 pads; change it with `--base-note`. Notes outside the mapping or targeting empty pads are reported as skipped during rendering.
+Add a drum track with the built-in Maxwell kit, the original measured Chiptune recreation (`--kit chiptune`), or a relative `.evilkit` bank. The default MIDI mapping assigns notes 36–51 to the 16 pads; change it with `--base-note`. Notes outside the mapping or targeting empty pads are reported as skipped during rendering. The Chiptune kit is deterministic original synthesis informed by per-pad measurements, not embedded factory audio; see `docs/chiptune.md`.
 
 ```bash
 cargo run --manifest-path compat/Cargo.toml -p oracle -- project add-drum-track song.evil Drums --kit maxwell
@@ -103,12 +106,12 @@ and original Aseprite control icons. It has six workspaces:
 - **Keyboard** opens the selected track's instrument in Maxwell's performance lab: three octaves of playable keys, a spring-return pitch wheel, and tone/delay XY pads.
 - **Pads** opens Evil Beats: a 4×4 performance grid with an original Maxwell drumkit, WAV loading, pad editing, stereo output controls, and held-pad repeat at the song tempo.
 
-The **Project** menu contains file/import/save commands; **Export** offers MIDI and WAV.
+The **Project** menu contains file/import/save commands; **Export** offers MIDI, full-song and transport-section WAV, soloed track-stem directories, and arrangement-part directories.
 **Play / Stop** controls the rendered preview and shows elapsed playback time. **REC** starts a repeating take into the selected track or arrangement part; **Stop / TAKE** commits the accumulated notes and controllers as one undoable edit. An independent recording clock captures the first note in an empty song or silent loop even when no audio preview can be rendered. Structural track/arranger edits are locked until the take is committed so its destination cannot change. Recording can use the on-screen keyboard, pads, or a desktop MIDI input selected beside the transport. Held-pad audio repeats are captured as individual hits at their sample-clocked onset times. **Quantize recording to 1/16** is optional. Loop recording overdubs the selected shared pattern and therefore every part linked to it; use **Make unique** first for an independent variation. **Start bar** chooses where playback begins; without repeat, playback continues through the song and release/effect tail. **Loop end** and **Repeat section** repeat an exact bar range for composing. Click a bar in the Song ruler to select it, and use the numeric controls for multi-bar ranges. A green playhead follows the audio clock, wraps at the repeat boundary, and remains correct through tempo changes. Changing the range stops the previous preview. The track rack and inspectors scroll independently in smaller windows.
 
 On **Keyboard**, play with the mouse (including glissando) or use **A W S E D F T G Y H U J K O L P ; '** for computer-keyboard chords. **Z / X** shifts octaves; velocity and sustain controls shape the performance. **Escape / All notes off** silences held notes and delay tails. The tone pad controls filter cutoff/resonance, and the space pad controls delay time/wet mix. XY changes share the current synth draft; use **Edit / save synth patch → Save As** to keep them. Live playing auditions the instrument immediately; arm **REC** to capture the performance into the selected timeline or pattern.
 
-Ctrl/Cmd+N/O/S handles new/open/save, Ctrl/Cmd+Z/Y handles undo/redo, Space toggles preview, and New/Open/Import confirms before discarding unsaved work. Click empty space to add a note, drag notes to move them, drag the right edge to resize, and press Delete to remove the selected note. **Render WAV** uses the same shared `evil-render` engine as the CLI and produces a stereo mix with the project's embedded patches and mix settings. Preview and WAV rendering run on a worker thread; New/Open/Import cancels stale jobs. **Export MIDI** writes an engine-compatible `.mid`, while **Save** also updates the original MIDI file for imported songs.
+Ctrl/Cmd+N/O/S handles new/open/save, Ctrl/Cmd+Z/Y handles undo/redo, Space toggles preview, and New/Open/Import confirms before discarding unsaved work. Click empty space to add a note, drag notes to move them, drag the right edge to resize, and press Delete to remove the selected note. **Render WAV** uses the same shared `evil-render` engine as the CLI and produces a stereo mix with the project's embedded patches and mix settings; **Section WAV** uses the current transport range with exact pre-roll/cropping. **Track stems** and **Arrangement parts** queue soloed PCM16 WAVs in a chosen directory, writing each completed file before starting the next. Preview and WAV rendering run on worker threads; New/Open/Import cancels stale jobs. **Export MIDI** writes an engine-compatible `.mid`, while **Save** also updates the original MIDI file for imported songs.
 
 Launch it directly with a MIDI file and optional engine hints:
 
@@ -267,4 +270,24 @@ Patch names can be built-in presets or `.json` paths relative to the mix file. G
 cargo fmt --all -- --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+cargo test --manifest-path compat/Cargo.toml --workspace
+cargo clippy --manifest-path compat/Cargo.toml --workspace --all-targets -- -D warnings
 ```
+
+Run the tracked, hardware-independent native parity audit from a clean checkout:
+
+```bash
+tools/audit-native.sh
+```
+
+It checks formatting, all native tests, strict Clippy, the focused `native_parity` end-to-end workflows, and a release desktop build. The focused workflows cover public-file MIDI edit/save/export/reimport, portable 16-pad WAV kits and dense hits, Chiptune project rendering, and deterministic full/section/scoped WAV artifacts. Keep these native checks distinct from the private compatibility/Oracle suite. Reference-calibration commands and their remaining approximation limits are documented in `docs/a17-nasty.md`, `docs/nano303.md`, `docs/glocken.md`, and `docs/chiptune.md`.
+
+The virtual-microphone test is ignored by default rather than silently passing. On Linux, run it only with the tracked ALSA null input, which captures silence without touching a physical microphone:
+
+```bash
+ALSA_CONFIG_PATH="$PWD/tools/alsa-null.conf" \
+MIDI_EVIL_VIRTUAL_AUDIO_SMOKE=1 \
+cargo test -p midi-evil virtual_microphone_records_and_embeds_in_osc_a -- --ignored --nocapture
+```
+
+Interactive and physical-device release gates are separate from headless parity results: exercise direct arranger drag and editing during playback; piano-roll add/move/resize/delete and automation gestures in shared and unique contexts; physical MIDI note/velocity, bend, aftertouch, CC, disconnect/reconnect and loop recording; and real audio-output/microphone listening checks. Packaging still requires a clean public-clone build, desktop smoke, and package-content inspection. No physical MIDI device or real microphone is exercised by the automated audit.

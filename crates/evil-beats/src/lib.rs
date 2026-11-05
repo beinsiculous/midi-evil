@@ -15,7 +15,7 @@ mod routing;
 mod voice;
 pub use kit::{DrumKit, KitPad, PAD_COUNT};
 pub use machine::{DrumMachine, PreparedPad};
-pub use presets::maxwell_kit;
+pub use presets::{chiptune_kit, maxwell_kit};
 pub use render::{KitHit, render_kit};
 pub use routing::{BUS_COUNT, DrumBus, DrumFilter};
 pub use voice::VOICE_LIMIT;
@@ -348,7 +348,7 @@ mod tests {
         evil_synth::apply_mono_insert(&mut expected, 8_000, &effect, 120.0).unwrap();
         assert!(pad.apply_effect(&effect, 120.0).unwrap());
         assert_eq!(pad.samples, expected);
-        assert_eq!(pad.samples.len(), 20);
+        assert_eq!(pad.samples.len(), 4 + 16 * 2);
         assert!(pad.samples[2] > 0.99);
         assert_eq!(pad.playback_start_frame, 1);
         assert_eq!(pad.playback_end_frame, Some(4));

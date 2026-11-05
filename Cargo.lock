@@ -789,6 +789,7 @@ dependencies = [
  "hound",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
 ]
 
@@ -1607,6 +1608,7 @@ dependencies = [
  "evil-project",
  "evil-render",
  "evil-synth",
+ "hound",
  "midir",
  "png",
  "rfd",

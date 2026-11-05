@@ -21,4 +21,5 @@ evil-render = { path = "../evil-render", version = "0.1.0" }
 evil-synth = { path = "../evil-synth", version = "0.1.0" }
 
 [dev-dependencies]
+hound = "3"
 tempfile = "3"

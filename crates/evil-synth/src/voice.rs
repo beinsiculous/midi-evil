@@ -42,6 +42,7 @@ pub(crate) struct VoiceState {
     filter: FilterState,
     sync_phases: Vec<f32>,
     modal_phases: Vec<f32>,
+    note_pitch: u8,
 }
 
 impl VoiceState {
@@ -72,10 +73,12 @@ impl VoiceState {
             filter: FilterState::default(),
             sync_phases: vec![0.0; count],
             modal_phases: vec![0.0; patch.modal_partials.len()],
+            note_pitch,
         }
     }
 
     pub fn select_note(&mut self, patch: &Patch, note_pitch: u8) {
+        self.note_pitch = note_pitch;
         for states in &mut self.oscillators {
             for (oscillator, state) in patch.oscillators.iter().zip(states.iter_mut()) {
                 state.select_sample_zone(oscillator, note_pitch);
@@ -92,7 +95,11 @@ impl VoiceState {
     ) -> f32 {
         let sample_rate = patch.sample_rate;
         let sweep_progress = (time / patch.duration_seconds).min(1.0);
-        let amp_envelope = patch.envelope.amplitude(time, gate_seconds);
+        let amp_envelope = if patch.modal_one_shot {
+            1.0
+        } else {
+            patch.envelope.amplitude(time, gate_seconds)
+        };
         let aux = [patch.aux_envelope.as_ref(), patch.aux_envelope_2.as_ref()]
             .into_iter()
             .flatten()
@@ -222,8 +229,11 @@ impl VoiceState {
         for (index, partial) in patch.modal_partials.iter().enumerate() {
             let frequency = fundamental * partial.ratio;
             let phase = self.modal_phases[index];
+            let pitch_gain = 2.0_f32
+                .powf((60.0 - f32::from(self.note_pitch)) / 12.0 * partial.pitch_gain_per_octave);
             sample += (phase * 2.0 * std::f32::consts::PI).sin()
                 * partial.amplitude
+                * pitch_gain
                 * (-time / partial.decay_seconds).exp();
             self.modal_phases[index] = (phase + frequency / sample_rate as f32).fract();
         }

@@ -176,7 +176,12 @@ impl LiveSynth {
             .last()
             .map_or(0.0, |voice| f32::from(voice.pitch) - f32::from(pitch));
         let mut patch = self.patch.clone();
-        patch.gain *= f32::from(velocity) / 127.0;
+        let velocity_gain = f32::from(velocity) / 127.0;
+        patch.gain *= if patch.velocity_exponent == 1.0 {
+            velocity_gain
+        } else {
+            velocity_gain.powf(patch.velocity_exponent)
+        };
         patch.gain = (patch.gain
             * 2.0_f32.powf((60.0 - f32::from(pitch)) / 12.0 * patch.pitch_gain_per_octave))
         .min(1.0);
@@ -196,6 +201,13 @@ impl LiveSynth {
             }
         }
         patch.filter = pitched_filter(patch.filter, pitch, patch.sample_rate);
+        if patch.velocity_filter_octaves != 0.0
+            && let Some(filter) = &mut patch.filter
+        {
+            filter.cutoff_hz = (filter.cutoff_hz
+                * velocity_gain.powf(patch.velocity_filter_octaves))
+            .min(patch.sample_rate as f32 * 0.49);
+        }
         if patch.accent_velocity_threshold > 0
             && velocity >= patch.accent_velocity_threshold
             && let Some(filter) = &mut patch.filter
@@ -939,6 +951,37 @@ mod tests {
         assert_ne!(outputs[0], outputs[1]);
         assert_ne!(outputs[0], outputs[2]);
         assert_ne!(outputs[1], outputs[2]);
+    }
+
+    #[test]
+    fn phase6_velocity_routes_apply_to_live_notes_and_keep_legacy_defaults() {
+        let calibrated = Patch {
+            gain: 0.5,
+            velocity_exponent: 0.0,
+            velocity_filter_octaves: 0.5,
+            filter: Some(Filter::default()),
+            ..Patch::default()
+        };
+        let mut live = LiveSynth::new(calibrated).unwrap();
+        live.note_on(60, 64).unwrap();
+        let voice = &live.voices[0];
+        assert_eq!(voice.patch.gain, 0.5);
+        let expected_cutoff = 4_000.0 * (64.0_f32 / 127.0).powf(0.5);
+        assert!((voice.patch.filter.as_ref().unwrap().cutoff_hz - expected_cutoff).abs() < 0.001);
+
+        let legacy = Patch {
+            gain: 0.5,
+            filter: Some(Filter::default()),
+            ..Patch::default()
+        };
+        let mut legacy_live = LiveSynth::new(legacy).unwrap();
+        legacy_live.note_on(60, 64).unwrap();
+        let legacy_voice = &legacy_live.voices[0];
+        assert_eq!(legacy_voice.patch.gain, 0.5 * 64.0 / 127.0);
+        assert_eq!(
+            legacy_voice.patch.filter.as_ref().unwrap().cutoff_hz,
+            4_000.0
+        );
     }
 
     #[test]

@@ -1331,10 +1331,12 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires a virtual ALSA null input and MIDI_EVIL_VIRTUAL_AUDIO_SMOKE=1"]
     fn virtual_microphone_records_and_embeds_in_osc_a() {
-        if std::env::var_os("MIDI_EVIL_VIRTUAL_AUDIO_SMOKE").is_none() {
-            return;
-        }
+        assert!(
+            std::env::var_os("MIDI_EVIL_VIRTUAL_AUDIO_SMOKE").is_some(),
+            "set MIDI_EVIL_VIRTUAL_AUDIO_SMOKE=1 only with a virtual ALSA null input"
+        );
         let mut lab = PatchLab::new_preset(0);
         lab.start_recording().unwrap();
         std::thread::sleep(std::time::Duration::from_millis(100));

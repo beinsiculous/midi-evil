@@ -9,6 +9,26 @@ use evil_synth::{
 };
 use thiserror::Error;
 
+mod export;
+
+pub use export::{
+    ExportPlan, ExportSpec, part_export_plan, part_file_name, stem_export_plan, stem_file_name,
+};
+
+/// Selects the original project material included in a render.
+/// Track and timeline-part indices are zero-based positions in the original project.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderScope {
+    FullMix,
+    Track {
+        track_index: usize,
+    },
+    TrackPart {
+        track_index: usize,
+        part_index: usize,
+    },
+}
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error(transparent)]
@@ -27,6 +47,10 @@ pub enum Error {
     NoNotes,
     #[error("invalid playback range: {0}")]
     InvalidSection(String),
+    #[error("invalid render selection: {0}")]
+    InvalidSelection(String),
+    #[error("render selection is empty: {0}")]
+    EmptySelection(String),
 }
 
 pub struct RenderOutput {
@@ -57,10 +81,10 @@ pub fn load_patch_file(path: &Path) -> Result<Patch, Error> {
 }
 
 pub fn load_drum_kit(source: &str, base: &Path) -> Result<DrumKit, Error> {
-    if source == "maxwell" {
-        Ok(evil_beats::maxwell_kit()?)
-    } else {
-        Ok(DrumKit::read(base.join(source))?)
+    match source {
+        "maxwell" => Ok(evil_beats::maxwell_kit()?),
+        "chiptune" => Ok(evil_beats::chiptune_kit()?),
+        _ => Ok(DrumKit::read(base.join(source))?),
     }
 }
 
@@ -108,6 +132,38 @@ pub fn render_audition(patch: &Patch) -> Result<RenderOutput, Error> {
     })
 }
 
+/// Render a full mix, one temporarily-unmuted original track, or one original timeline part.
+/// Scoped renders are solo exports: other tracks are excluded, sends contain only the selected
+/// track's contribution, and the input project is never modified. Part renders start at frame zero
+/// at the part start and play through the complete note, release, insert, and send tail.
+/// Master processing is applied independently to every stem, so summing separately saturated stems
+/// is not guaranteed to reproduce the full mix.
+pub fn render_project_scoped(
+    project: &Project,
+    patch_base: &Path,
+    scope: RenderScope,
+) -> Result<RenderOutput, Error> {
+    if let RenderScope::TrackPart {
+        track_index,
+        part_index,
+    } = scope
+    {
+        let part = project
+            .tracks
+            .get(track_index)
+            .and_then(|track| track.parts.get(part_index))
+            .copied()
+            .ok_or_else(|| {
+                Error::InvalidSelection(format!(
+                    "arrangement part index {part_index} does not exist on track index {track_index}"
+                ))
+            })?;
+        return render_project_scoped_range(project, patch_base, scope, part.start_tick, None);
+    }
+    let input = scoped_project(project, scope)?;
+    render_project_with_analysis_range(&input, patch_base, None)
+}
+
 /// Render from a timeline tick, optionally stopping at a loop boundary.
 /// Earlier notes and automation are rendered before cropping so sustained
 /// voices, LFO phase, tempo changes, and effect tails retain their state.
@@ -117,18 +173,36 @@ pub fn render_project_range(
     start_tick: u64,
     end_tick: Option<u64>,
 ) -> Result<RenderOutput, Error> {
+    render_project_scoped_range(
+        project,
+        patch_base,
+        RenderScope::FullMix,
+        start_tick,
+        end_tick,
+    )
+}
+
+/// Exact-range variant of scoped rendering. Unlike a complete part render, an explicit range can
+/// crop a part to arbitrary boundaries; track stems retain the full-mix range semantics.
+pub fn render_project_scoped_range(
+    project: &Project,
+    patch_base: &Path,
+    scope: RenderScope,
+    start_tick: u64,
+    end_tick: Option<u64>,
+) -> Result<RenderOutput, Error> {
     if end_tick.is_some_and(|end| end <= start_tick) {
         return Err(Error::InvalidSection(
             "end tick must be greater than start tick".to_owned(),
         ));
     }
-    let performance = project.to_performance()?;
+    let mut input = scoped_project(project, scope)?;
+    let performance = input.to_performance()?;
     let start_seconds = performance.seconds_at(start_tick);
     let end_seconds = end_tick.map(|end| performance.seconds_at(end));
     let sample_rate = project.sample_rate;
     let start_frame = (start_seconds * f64::from(sample_rate)).round() as usize;
     let end_frame = end_seconds.map(|seconds| (seconds * f64::from(sample_rate)).round() as usize);
-    let mut input = project.clone();
     if let Some(end) = end_tick {
         input.truncate_timeline(end);
     }
@@ -160,7 +234,63 @@ pub fn render_project_range(
 }
 
 pub fn render_project(project: &Project, patch_base: &Path) -> Result<RenderOutput, Error> {
-    render_project_with_analysis_range(project, patch_base, None)
+    render_project_scoped(project, patch_base, RenderScope::FullMix)
+}
+
+/// Clone and isolate a selection while retaining original track/instrument indices and mix routing.
+fn scoped_project(project: &Project, scope: RenderScope) -> Result<Project, Error> {
+    project.validate()?;
+    let selected_track = match scope {
+        RenderScope::FullMix => return Ok(project.clone()),
+        RenderScope::Track { track_index } | RenderScope::TrackPart { track_index, .. } => {
+            track_index
+        }
+    };
+    export::validate_track(project, selected_track)?;
+    let selected_part = match scope {
+        RenderScope::TrackPart { part_index, .. } => Some(
+            project.tracks[selected_track]
+                .parts
+                .get(part_index)
+                .copied()
+                .ok_or_else(|| {
+                    Error::InvalidSelection(format!(
+                        "arrangement part index {part_index} does not exist on track index {selected_track}"
+                    ))
+                })?,
+        ),
+        _ => None,
+    };
+    if !export::scope_has_notes(project, scope) {
+        let selection = match scope {
+            RenderScope::Track { track_index } => {
+                format!("track index {track_index} has no notes to render")
+            }
+            RenderScope::TrackPart {
+                track_index,
+                part_index,
+            } => format!(
+                "arrangement part index {part_index} on track index {track_index} has no notes to render"
+            ),
+            RenderScope::FullMix => unreachable!("full mix returned above"),
+        };
+        return Err(Error::EmptySelection(selection));
+    }
+
+    let mut input = project.clone();
+    for (index, track) in input.tracks.iter_mut().enumerate() {
+        track.muted = index != selected_track;
+    }
+    if let Some(part) = selected_part {
+        let track = &mut input.tracks[selected_track];
+        track.notes.clear();
+        track.pitch_bends.clear();
+        track.aftertouch.clear();
+        track.controllers.clear();
+        track.mixer_automation.clear();
+        track.parts = vec![part];
+    }
+    Ok(input)
 }
 
 fn render_project_with_analysis_range(
@@ -393,6 +523,49 @@ mod tests {
     use evil_project::{Note, Track};
 
     use super::*;
+
+    fn assert_stem_matches_manually_soloed_clone(project: &Project, track_index: usize) {
+        let original = project.clone();
+        let mut solo = project.clone();
+        for (index, track) in solo.tracks.iter_mut().enumerate() {
+            track.muted = index != track_index;
+        }
+        let expected = render_project(&solo, Path::new(".")).unwrap();
+        let stem =
+            render_project_scoped(project, Path::new("."), RenderScope::Track { track_index })
+                .unwrap();
+        assert_eq!(stem.sound.left, expected.sound.left);
+        assert_eq!(stem.sound.right, expected.sound.right);
+        assert_eq!(stem.mix_analysis, expected.mix_analysis);
+        assert_eq!(stem.note_count, expected.note_count);
+        assert_eq!(stem.track_count, 1);
+        assert_eq!(stem.channel_meters[0].0, track_index);
+        assert_eq!(
+            stem.unsupported_controller_events,
+            expected.unsupported_controller_events
+        );
+        assert_eq!(
+            stem.unsupported_mixer_automation_events,
+            expected.unsupported_mixer_automation_events
+        );
+        assert_eq!(stem.skipped_drum_notes, expected.skipped_drum_notes);
+        assert_eq!(
+            project, &original,
+            "scoped rendering must not mutate its input"
+        );
+
+        let expected_range = render_project_range(&solo, Path::new("."), 0, Some(960)).unwrap();
+        let stem_range = render_project_scoped_range(
+            project,
+            Path::new("."),
+            RenderScope::Track { track_index },
+            0,
+            Some(960),
+        )
+        .unwrap();
+        assert_eq!(stem_range.sound.left, expected_range.sound.left);
+        assert_eq!(stem_range.sound.right, expected_range.sound.right);
+    }
 
     #[test]
     fn renders_native_tracks_with_embedded_mix_settings() {
@@ -987,6 +1160,312 @@ mod tests {
         assert_eq!(output.track_count, 1);
         assert!(output.sound.left.iter().any(|sample| sample.abs() > 0.001));
         assert_eq!(output.sound.left.len(), output.sound.right.len());
+    }
+
+    #[test]
+    fn native_parity_chiptune_builtin_renders_a_dense_sixteen_pad_pattern() {
+        let kit = load_drum_kit("chiptune", Path::new(".")).unwrap();
+        assert_eq!(kit.name, "MIDI Evil / Chiptune");
+        assert!(kit.pads.iter().all(Option::is_some));
+        assert_eq!(kit.pads[2].as_ref().unwrap().choke_group, 1);
+        assert_eq!(kit.pads[3].as_ref().unwrap().choke_group, 1);
+
+        let mut project = Project::new("Chiptune audit");
+        let instrument = project
+            .add_instrument(evil_project::Instrument::drum_kit("Chiptune", "chiptune"))
+            .unwrap();
+        project
+            .add_track(Track {
+                instrument,
+                notes: (0..64)
+                    .map(|index| Note {
+                        pitch: 36 + (index % 16) as u8,
+                        start_tick: index * 30,
+                        duration_ticks: 30,
+                        velocity: 40 + ((index * 3) % 88) as u8,
+                    })
+                    .collect(),
+                ..Track::default()
+            })
+            .unwrap();
+        let first = render_project(&project, Path::new(".")).unwrap();
+        let second = render_project(&project, Path::new(".")).unwrap();
+        assert_eq!(first.note_count, 64);
+        assert_eq!(first.skipped_drum_notes, 0);
+        assert_eq!(first.sound.left, second.sound.left);
+        assert_eq!(first.sound.right, second.sound.right);
+        assert!(first.sound.left.iter().any(|sample| sample.abs() > 0.001));
+        assert!(
+            first
+                .sound
+                .left
+                .iter()
+                .chain(&first.sound.right)
+                .all(|sample| sample.is_finite())
+        );
+    }
+
+    #[test]
+    fn stems_match_soloed_clones_for_shared_instruments_and_originally_muted_tracks() {
+        let mut project = Project::new("Solo stems");
+        let shared = project
+            .add_instrument(evil_project::Instrument::synth("Shared", "lead"))
+            .unwrap();
+        project
+            .add_track(Track {
+                name: "Lead".to_owned(),
+                instrument: shared,
+                notes: vec![Note::default()],
+                ..Track::default()
+            })
+            .unwrap();
+        project
+            .add_track(Track {
+                name: "Muted harmony".to_owned(),
+                instrument: shared,
+                muted: true,
+                notes: vec![Note {
+                    pitch: 67,
+                    start_tick: 480,
+                    ..Note::default()
+                }],
+                ..Track::default()
+            })
+            .unwrap();
+        assert_stem_matches_manually_soloed_clone(&project, 0);
+        assert_stem_matches_manually_soloed_clone(&project, 1);
+    }
+
+    #[test]
+    fn synth_and_drum_stems_keep_their_original_routing_and_warning_counts() {
+        let mut project = Project::new("Synth and drums");
+        project
+            .add_track(Track {
+                name: "Synth".to_owned(),
+                notes: vec![Note::default()],
+                controllers: vec![evil_project::ControllerEvent {
+                    tick: 0,
+                    controller: 2,
+                    value: 1,
+                }],
+                ..Track::default()
+            })
+            .unwrap();
+        let drums = project
+            .add_instrument(evil_project::Instrument::drum_kit("Kit", "maxwell"))
+            .unwrap();
+        project
+            .add_track(Track {
+                name: "Drums".to_owned(),
+                instrument: drums,
+                notes: vec![
+                    Note {
+                        pitch: 36,
+                        ..Note::default()
+                    },
+                    Note {
+                        pitch: 127,
+                        ..Note::default()
+                    },
+                ],
+                ..Track::default()
+            })
+            .unwrap();
+        assert_stem_matches_manually_soloed_clone(&project, 0);
+        assert_stem_matches_manually_soloed_clone(&project, 1);
+        let drum_stem = render_project_scoped(
+            &project,
+            Path::new("."),
+            RenderScope::Track { track_index: 1 },
+        )
+        .unwrap();
+        assert_eq!(drum_stem.note_count, 1);
+        assert_eq!(drum_stem.skipped_drum_notes, 1);
+    }
+
+    #[test]
+    fn stems_include_only_selected_send_contribution_inserts_master_and_complete_tails() {
+        let mut project = Project::new("Stem graph");
+        project.master_gain = 0.65;
+        project
+            .add_track(Track {
+                notes: vec![Note::default()],
+                ..Track::default()
+            })
+            .unwrap();
+        project
+            .add_track(Track {
+                name: "Other".to_owned(),
+                notes: vec![Note {
+                    pitch: 72,
+                    ..Note::default()
+                }],
+                ..Track::default()
+            })
+            .unwrap();
+        project.instruments[0].inserts = vec![evil_synth::InsertEffect::Reverb(
+            evil_synth::Reverb::default(),
+        )];
+        project.instruments[0].send_gains = [0.5, 0.0];
+        project.instruments[1].send_gains = [1.0, 0.0];
+        project.send_buses[0].gain = 0.5;
+        project.send_buses[0].effect = Some(evil_synth::InsertEffect::Reverb(
+            evil_synth::Reverb::default(),
+        ));
+        assert_stem_matches_manually_soloed_clone(&project, 0);
+        let stem = render_project_scoped(
+            &project,
+            Path::new("."),
+            RenderScope::Track { track_index: 0 },
+        )
+        .unwrap();
+        assert!(stem.sound.left.len() > 24_000);
+        assert!(
+            stem.sound.left[24_000..]
+                .iter()
+                .any(|sample| *sample != 0.0)
+        );
+    }
+
+    #[test]
+    fn part_render_isolates_cropped_repetitions_at_frame_zero_with_a_full_tail() {
+        use evil_project::{Part, Pattern};
+
+        let mut project = Project::new("Part stem");
+        project
+            .add_track(Track {
+                name: "Lead".to_owned(),
+                notes: vec![Note {
+                    pitch: 72,
+                    ..Note::default()
+                }],
+                ..Track::default()
+            })
+            .unwrap();
+        let pattern = project
+            .add_pattern(Pattern {
+                name: "Verse".to_owned(),
+                length_ticks: 480,
+                notes: vec![
+                    Note {
+                        start_tick: 0,
+                        duration_ticks: 120,
+                        ..Note::default()
+                    },
+                    Note {
+                        start_tick: 240,
+                        duration_ticks: 60,
+                        ..Note::default()
+                    },
+                ],
+                ..Pattern::default()
+            })
+            .unwrap();
+        let selected = Part {
+            pattern,
+            start_tick: 480,
+            length_ticks: 720,
+        };
+        project.add_part(0, selected).unwrap();
+        project
+            .add_part(
+                0,
+                Part {
+                    pattern,
+                    start_tick: 2_400,
+                    length_ticks: 480,
+                },
+            )
+            .unwrap();
+        project
+            .add_track(Track {
+                name: "Other".to_owned(),
+                notes: vec![Note {
+                    start_tick: 480,
+                    ..Note::default()
+                }],
+                ..Track::default()
+            })
+            .unwrap();
+        project.instruments[0].inserts = vec![evil_synth::InsertEffect::Reverb(
+            evil_synth::Reverb::default(),
+        )];
+
+        let mut isolated = project.clone();
+        isolated.tracks[1].muted = true;
+        isolated.tracks[0].notes.clear();
+        isolated.tracks[0].parts = vec![selected];
+        let expected = render_project_range(&isolated, Path::new("."), 480, None).unwrap();
+        let part = render_project_scoped(
+            &project,
+            Path::new("."),
+            RenderScope::TrackPart {
+                track_index: 0,
+                part_index: 0,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            part.note_count, 3,
+            "two full occurrences and one cropped repeat"
+        );
+        assert_eq!(part.sound.left, expected.sound.left);
+        assert_eq!(part.sound.right, expected.sound.right);
+        assert_eq!(part.sound.left.len(), expected.sound.left.len());
+        let part_end_frame = 60_000;
+        assert!(part.sound.left.len() > part_end_frame);
+        assert!(
+            part.sound.left[part_end_frame..]
+                .iter()
+                .any(|sample| *sample != 0.0),
+            "the export continues beyond the arrangement part boundary"
+        );
+    }
+
+    #[test]
+    fn invalid_and_explicitly_empty_scopes_are_clear_errors() {
+        let mut project = Project::new("Invalid scopes");
+        project.add_track(Track::default()).unwrap();
+        assert!(matches!(
+            render_project_scoped(
+                &project,
+                Path::new("."),
+                RenderScope::Track { track_index: 3 }
+            ),
+            Err(Error::InvalidSelection(_))
+        ));
+        assert!(matches!(
+            render_project_scoped(
+                &project,
+                Path::new("."),
+                RenderScope::Track { track_index: 0 }
+            ),
+            Err(Error::EmptySelection(_))
+        ));
+        assert!(matches!(
+            render_project_scoped(
+                &project,
+                Path::new("."),
+                RenderScope::TrackPart {
+                    track_index: 0,
+                    part_index: 0,
+                }
+            ),
+            Err(Error::InvalidSelection(_))
+        ));
+        assert!(matches!(
+            render_project_scoped_range(
+                &project,
+                Path::new("."),
+                RenderScope::TrackPart {
+                    track_index: 0,
+                    part_index: 0,
+                },
+                0,
+                None,
+            ),
+            Err(Error::InvalidSelection(_))
+        ));
     }
 
     #[test]

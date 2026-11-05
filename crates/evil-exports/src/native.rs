@@ -520,6 +520,111 @@ mod tests {
     }
 
     #[test]
+    fn native_parity_public_midi_fixture_survives_edit_save_export_and_reimport() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/public-domain/bach-invention-02/bach-invention-02.mid");
+        let original = evil_imports::import_midi(&std::fs::read(fixture).unwrap()).unwrap();
+        assert_eq!(original.ticks_per_quarter, 384);
+        assert_eq!(original.note_count(), 634);
+        assert_eq!(original.tracks.len(), 2);
+        assert_eq!(
+            original
+                .tracks
+                .iter()
+                .map(|track| track.name.as_str())
+                .collect::<Vec<_>>(),
+            ["one", "two"]
+        );
+
+        let mut project = evil_project::Project::from_performance("Bach audit", &original).unwrap();
+        project.tracks[0].pitch_bends = vec![
+            PitchBend {
+                tick: 0,
+                value: -8192,
+            },
+            PitchBend {
+                tick: 384,
+                value: 8191,
+            },
+        ];
+        project.tracks[0].aftertouch = vec![
+            Aftertouch {
+                tick: 96,
+                note: None,
+                value: 32,
+            },
+            Aftertouch {
+                tick: 192,
+                note: Some(60),
+                value: 127,
+            },
+        ];
+        project.tracks[0].controllers = vec![
+            ControllerEvent {
+                tick: 48,
+                controller: 1,
+                value: 96,
+            },
+            ControllerEvent {
+                tick: 96,
+                controller: 2,
+                value: 90,
+            },
+        ];
+        project.tracks[0].mixer_automation = vec![evil_project::MixerAutomationEvent {
+            tick: 0,
+            parameter: MixerParameter::SendGain { bus: 0 },
+            value: 0.5,
+        }];
+        project.instruments[0].pitch_bend_range_semitones = 12.5;
+        project.instruments[0].gain = 0.5;
+        project.instruments[0].pan = -0.5;
+
+        let directory = tempfile::tempdir().unwrap();
+        let project_path = directory.path().join("audit.evil");
+        let midi_path = directory.path().join("audit.mid");
+        project.save(&project_path).unwrap();
+        let reloaded = evil_project::Project::load(&project_path).unwrap();
+        assert_eq!(reloaded, project);
+
+        let report =
+            export_native_project_to_path(&reloaded, directory.path(), &midi_path).unwrap();
+        assert_eq!(report.note_count, original.note_count());
+        assert_eq!(report.track_count, original.tracks.len());
+        assert_eq!(report.native_only_mixer_automation_events, 1);
+        let round_trip = evil_imports::import_midi(&std::fs::read(&midi_path).unwrap()).unwrap();
+        assert_eq!(round_trip.ticks_per_quarter, original.ticks_per_quarter);
+        assert_eq!(round_trip.beats_per_bar, original.beats_per_bar);
+        assert_eq!(round_trip.beat_unit, original.beat_unit);
+        assert_eq!(round_trip.tempo_changes, original.tempo_changes);
+        assert_eq!(round_trip.note_count(), original.note_count());
+        for (before, after) in original.tracks.iter().zip(&round_trip.tracks) {
+            assert_eq!(after.name, before.name);
+            assert_eq!(after.notes, before.notes);
+            assert_eq!(after.program, before.program);
+        }
+        assert_eq!(
+            round_trip.tracks[0].pitch_bends,
+            project.tracks[0].pitch_bends
+        );
+        assert_eq!(
+            round_trip.tracks[0].aftertouch,
+            project.tracks[0].aftertouch
+        );
+        assert_eq!(
+            round_trip.tracks[0].controllers,
+            project.tracks[0].controllers
+        );
+        assert_eq!(round_trip.tracks[0].pitch_bend_range_semitones, 12.5);
+        assert_eq!(round_trip.tracks[0].volume, Some(gain_value(0.5)));
+        assert_eq!(round_trip.tracks[0].pan, Some(pan_value(-0.5)));
+        assert_eq!(
+            round_trip.skipped_controller_events(),
+            original.skipped_controller_events() + 1
+        );
+    }
+
+    #[test]
     fn native_export_writes_atomically() {
         let directory = tempfile::tempdir().unwrap();
         let mut project = evil_project::Project::new("Atomic");

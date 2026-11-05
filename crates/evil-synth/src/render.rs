@@ -329,7 +329,12 @@ fn voice_patch(patch: &Patch, note: &SynthNote, index: usize) -> Result<Patch, E
     let sample_rate = patch.sample_rate;
     let mut voice = patch.clone();
     voice.duration_seconds = note.duration_seconds as f32;
-    voice.gain *= f32::from(note.velocity) / 127.0;
+    let velocity = f32::from(note.velocity) / 127.0;
+    voice.gain *= if patch.velocity_exponent == 1.0 {
+        velocity
+    } else {
+        velocity.powf(patch.velocity_exponent)
+    };
     let pitch_gain =
         2.0_f32.powf((60.0 - f32::from(note.pitch)) / 12.0 * patch.pitch_gain_per_octave);
     voice.gain = (voice.gain * pitch_gain).min(1.0);
@@ -348,6 +353,13 @@ fn voice_patch(patch: &Patch, note: &SynthNote, index: usize) -> Result<Patch, E
         && filter.key_tracking
     {
         filter.cutoff_hz = (filter.cutoff_hz * filter_pitch_ratio).min(sample_rate as f32 * 0.49);
+    }
+    if patch.velocity_filter_octaves != 0.0
+        && let Some(filter) = &mut voice.filter
+    {
+        filter.cutoff_hz = (filter.cutoff_hz
+            * (f32::from(note.velocity) / 127.0).powf(patch.velocity_filter_octaves))
+        .min(sample_rate as f32 * 0.49);
     }
     if patch.accent_velocity_threshold > 0 && note.velocity >= patch.accent_velocity_threshold {
         voice.gain = (voice.gain * (1.0 + patch.accent_gain)).min(1.0);
@@ -719,7 +731,22 @@ impl ModulationState {
             }
         }
         for (index, lfo) in patch.lfos().enumerate() {
-            let value = lfo_value(lfo, self.lfo_phases[index]);
+            let base_rate = lfo
+                .beats_per_cycle
+                .map_or(lfo.rate_hz, |beats| quarter_hz / beats);
+            let rate = (base_rate * rate_multipliers[index]).max(0.0);
+            let phase_step = rate / sample_rate as f32;
+            let value = if lfo.destination == LfoDestination::Amplitude
+                && lfo.amplitude_transition_seconds > 0.0
+            {
+                bandlimited_amplitude_lfo_value(
+                    lfo,
+                    self.lfo_phases[index],
+                    phase_step * (lfo.amplitude_transition_seconds * sample_rate as f32),
+                )
+            } else {
+                lfo_value(lfo, self.lfo_phases[index])
+            };
             match lfo.destination {
                 LfoDestination::Pitch => modulation.pitch_cents += lfo.depth_cents * value,
                 LfoDestination::PulseWidth => {
@@ -742,11 +769,7 @@ impl ModulationState {
                 }
                 LfoDestination::LfoRate => {}
             }
-            let base_rate = lfo
-                .beats_per_cycle
-                .map_or(lfo.rate_hz, |beats| quarter_hz / beats);
-            let rate = (base_rate * rate_multipliers[index]).max(0.0);
-            self.lfo_phases[index] = (self.lfo_phases[index] + rate / sample_rate as f32).fract();
+            self.lfo_phases[index] = (self.lfo_phases[index] + phase_step).fract();
         }
         modulation.pitch_cents *= depth;
         modulation.pulse_width *= depth;
@@ -772,6 +795,19 @@ fn lfo_value(lfo: &Lfo, phase: f32) -> f32 {
                 -1.0
             }
         }
+    }
+}
+
+fn bandlimited_amplitude_lfo_value(lfo: &Lfo, phase: f32, phase_step: f32) -> f32 {
+    let value = lfo_value(lfo, phase);
+    match lfo.waveform {
+        LfoWaveform::SawDown => value + crate::oscillator::poly_blep(phase, phase_step),
+        LfoWaveform::SawUp => value - crate::oscillator::poly_blep(phase, phase_step),
+        LfoWaveform::Square => {
+            value + crate::oscillator::poly_blep(phase, phase_step)
+                - crate::oscillator::poly_blep((phase + 0.5).fract(), phase_step)
+        }
+        LfoWaveform::Sine | LfoWaveform::Triangle => value,
     }
 }
 
@@ -889,6 +925,42 @@ mod tests {
             assert!(sound.samples.iter().all(|sample| sample.abs() <= 1.0));
             assert!(sound.samples.iter().any(|sample| sample.abs() > 0.001));
         }
+    }
+
+    #[test]
+    fn amplitude_lfo_transition_is_deterministic_and_opt_in() {
+        let lfo = Lfo {
+            rate_hz: 4.0,
+            destination: LfoDestination::Amplitude,
+            waveform: LfoWaveform::SawDown,
+            amplitude_depth: 0.95,
+            ..Lfo::default()
+        };
+        let mut patch = Patch {
+            lfo: Some(lfo.clone()),
+            ..Patch::default()
+        };
+        let mut raw_state = ModulationState::new(&patch);
+        let raw = raw_state.next(&patch, 48_000, 0.0, 1.0, 1.0, 2.0);
+        assert_eq!(raw.amplitude, 0.95);
+
+        patch.lfo = Some(Lfo {
+            amplitude_transition_seconds: 2.0 / 48_000.0,
+            ..lfo.clone()
+        });
+        let phase_step = lfo.rate_hz / 48_000.0 * 2.0;
+        let corrected = bandlimited_amplitude_lfo_value(&lfo, 0.0, phase_step);
+        assert!(corrected.abs() < 0.000_001);
+        assert_eq!(
+            corrected,
+            bandlimited_amplitude_lfo_value(&lfo, 0.0, phase_step)
+        );
+        let mut smoothed_state = ModulationState::new(&patch);
+        let first = smoothed_state.next(&patch, 48_000, 0.0, 1.0, 1.0, 2.0);
+        let mut repeated_state = ModulationState::new(&patch);
+        let repeated = repeated_state.next(&patch, 48_000, 0.0, 1.0, 1.0, 2.0);
+        assert_eq!(first.amplitude, repeated.amplitude);
+        assert!(first.amplitude.abs() < 0.000_001);
     }
 
     #[test]
@@ -1279,6 +1351,135 @@ mod tests {
     }
 
     #[test]
+    fn velocity_exponent_is_deterministic_and_defaults_to_legacy_linear_gain() {
+        let linear = Patch {
+            gain: 0.5,
+            ..Patch::default()
+        };
+        let explicit_linear = Patch {
+            velocity_exponent: 1.0,
+            ..linear.clone()
+        };
+        let soft_note = SynthNote {
+            velocity: 64,
+            ..note(60)
+        };
+        assert_eq!(
+            render_notes(&linear, &[soft_note]).unwrap().samples,
+            render_notes(&explicit_linear, &[soft_note])
+                .unwrap()
+                .samples
+        );
+        let softened = Patch {
+            velocity_exponent: 0.12,
+            ..linear
+        };
+        let soft = render_notes(&softened, &[soft_note]).unwrap();
+        assert_eq!(
+            soft.samples,
+            render_notes(&softened, &[soft_note]).unwrap().samples
+        );
+        let linear_energy = render_notes(&explicit_linear, &[soft_note])
+            .unwrap()
+            .samples
+            .iter()
+            .map(|sample| sample * sample)
+            .sum::<f32>();
+        let softened_energy = soft
+            .samples
+            .iter()
+            .map(|sample| sample * sample)
+            .sum::<f32>();
+        assert!(softened_energy > linear_energy);
+    }
+
+    #[test]
+    fn velocity_filter_route_is_opt_in_and_deterministic() {
+        let legacy = Patch {
+            filter: Some(Filter::default()),
+            ..Patch::default()
+        };
+        let explicit_legacy = Patch {
+            velocity_filter_octaves: 0.0,
+            ..legacy.clone()
+        };
+        let soft = SynthNote {
+            velocity: 64,
+            ..note(60)
+        };
+        assert_eq!(
+            render_notes(&legacy, &[soft]).unwrap().samples,
+            render_notes(&explicit_legacy, &[soft]).unwrap().samples
+        );
+        let routed = Patch {
+            velocity_filter_octaves: 0.5,
+            ..legacy
+        };
+        let first = render_notes(&routed, &[soft]).unwrap().samples;
+        assert_eq!(first, render_notes(&routed, &[soft]).unwrap().samples);
+        assert_ne!(
+            first,
+            render_notes(&explicit_legacy, &[soft]).unwrap().samples
+        );
+    }
+
+    #[test]
+    fn modal_one_shot_and_pitch_gain_are_opt_in_and_deterministic() {
+        let legacy = Patch {
+            duration_seconds: 0.1,
+            gain: 0.5,
+            oscillators: vec![Oscillator {
+                amplitude: 0.0,
+                ..Oscillator::default()
+            }],
+            envelope: Envelope {
+                attack_seconds: 0.0,
+                decay_seconds: 0.0,
+                sustain_level: 1.0,
+                release_seconds: 0.05,
+            },
+            modal_partials: vec![ModalPartial {
+                amplitude: 0.05,
+                decay_seconds: 4.0,
+                ..ModalPartial::default()
+            }],
+            ..Patch::default()
+        };
+        let explicit_legacy = Patch {
+            modal_one_shot: false,
+            ..legacy.clone()
+        };
+        assert_eq!(
+            render(&legacy).unwrap().samples,
+            render(&explicit_legacy).unwrap().samples
+        );
+        let one_shot = Patch {
+            modal_one_shot: true,
+            ..legacy
+        };
+        let held = render(&one_shot).unwrap().samples;
+        assert_eq!(held, render(&one_shot).unwrap().samples);
+        assert!(held[6_000..].iter().any(|sample| sample.abs() > 0.001));
+
+        let pitched = Patch {
+            modal_partials: vec![ModalPartial {
+                pitch_gain_per_octave: 1.0,
+                ..one_shot.modal_partials[0]
+            }],
+            ..one_shot
+        };
+        let low = render_notes(&pitched, &[note(48)]).unwrap().samples;
+        let high = render_notes(&pitched, &[note(72)]).unwrap().samples;
+        let energy = |samples: &[f32]| samples.iter().map(|sample| sample * sample).sum::<f32>();
+        let ratio = energy(&low) / energy(&high);
+        assert!(
+            (ratio - 16.0).abs() < 0.1,
+            "unexpected modal pitch-gain energy ratio: {ratio}"
+        );
+        assert_eq!(low, render_notes(&pitched, &[note(48)]).unwrap().samples);
+    }
+
+    #[test]
     fn glide_changes_only_the_transition_into_later_notes() {
         let gliding = Patch {
             glide_seconds: 0.1,
@@ -1356,11 +1557,13 @@ mod tests {
                     ratio: 1.0,
                     amplitude: 1.0,
                     decay_seconds: 0.05,
+                    ..ModalPartial::default()
                 },
                 ModalPartial {
                     ratio: 2.0,
                     amplitude: 0.5,
                     decay_seconds: 0.2,
+                    ..ModalPartial::default()
                 },
             ],
             ..Patch::default()

@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::delay::{
-    apply_stereo_delay_with_tempo, delay_frame_count, maximum_delay_frames, tempo_bpm_at,
+    allocated_tail_frames, apply_stereo_delay_with_tempo, delay_frame_count, maximum_delay_frames,
+    tempo_bpm_at,
 };
 use crate::dynamics::CompressorProcessor;
 use crate::equalizer::EqualizerProcessor;
@@ -369,7 +370,11 @@ pub(crate) fn insert_tail_frames(
 ) -> usize {
     match effect {
         InsertEffect::Waveshaper(_) | InsertEffect::Compressor(_) => 0,
-        InsertEffect::Delay(effect) => maximum_delay_frames(sample_rate, effect, tempo_changes) * 8,
+        InsertEffect::Delay(effect) => allocated_tail_frames(
+            sample_rate,
+            maximum_delay_frames(sample_rate, effect, tempo_changes),
+            effect,
+        ),
         InsertEffect::Bitcrush(effect) => usize::from(effect.downsample) - 1,
         InsertEffect::Equalizer(_) => sample_rate as usize / 20,
         InsertEffect::Chorus(_) | InsertEffect::Flanger(_) | InsertEffect::Reverb(_) => {
@@ -633,6 +638,8 @@ mod tests {
                 mix: 0.3,
                 mode: DelayMode::StereoCross,
                 beats_per_cycle: None,
+                maximum_time_seconds: None,
+                tail_seconds: 0.0,
             }),
         ];
         let original: Vec<f32> = (0..64)

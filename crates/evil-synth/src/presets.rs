@@ -1,6 +1,7 @@
 use crate::{
     Delay, DelayMode, Envelope, Error, Filter, FilterMode, Lfo, LfoDestination, LfoWaveform,
-    ModalPartial, Oscillator, OscillatorMode, OscillatorSync, Patch, Waveform,
+    ModalPartial, Oscillator, OscillatorMode, OscillatorSync, Patch, VoiceMode, Waveform,
+    Waveshaper,
 };
 
 pub const PRESET_NAMES: &[&str] = &[
@@ -89,12 +90,12 @@ pub fn preset(name: &str) -> Result<Patch, Error> {
             ..Patch::default()
         },
         // A17's sync-square Osc Mix motion maps to a modulated native sync ratio.
-        // The dry reference matches a 1.25 base ratio and an almost-open filter;
-        // tuning, gain, and delay are calibrated against the full-bar render.
+        // Multi-pitch calibration bandlimits the added amplitude articulation,
+        // retains high-frequency oscillator energy, and preserves the full delay tail.
         "nasty" => Patch {
             name: "Max Nasty".to_owned(),
             duration_seconds: 0.35,
-            gain: 0.34,
+            gain: 0.33,
             midi_program: Some(80),
             pitch_gain_per_octave: 0.3,
             oscillators: vec![Oscillator {
@@ -108,11 +109,11 @@ pub fn preset(name: &str) -> Result<Patch, Error> {
                 attack_seconds: 0.0,
                 decay_seconds: 0.18,
                 sustain_level: 0.75,
-                release_seconds: 0.135,
+                release_seconds: 0.04,
             },
             filter: Some(Filter {
                 mode: FilterMode::LowPass,
-                cutoff_hz: 15_000.0,
+                cutoff_hz: 18_000.0,
                 envelope_amount: 0.0,
                 resonance: 0.0,
                 stages: 4,
@@ -156,82 +157,107 @@ pub fn preset(name: &str) -> Result<Patch, Error> {
                     destination: LfoDestination::Amplitude,
                     waveform: LfoWaveform::SawDown,
                     amplitude_depth: 0.95,
+                    amplitude_transition_seconds: 2.0 / 48_000.0,
                     ..Lfo::default()
                 },
             ],
             delay: Some(Delay {
                 time_seconds: 0.5,
-                feedback: 0.55,
+                beats_per_cycle: Some(1.0),
+                maximum_time_seconds: Some(0.5),
+                feedback: 0.56,
+                mix: 0.25,
                 mode: DelayMode::StereoCross,
                 ..Delay::default()
             }),
             ..Patch::default()
         },
-        // Original 303-style architecture; reference captures will drive calibration.
+        // B14 multi-pitch calibration: independent filter envelope, low velocity
+        // sensitivity, resonant drive, and a tempo-synced full feedback tail.
         "nano-303" => Patch {
             name: "Evil-303".to_owned(),
             duration_seconds: 0.4,
-            gain: 0.45,
+            gain: 0.16,
             midi_program: Some(38),
-            glide_seconds: 0.06,
-            accent_velocity_threshold: 110,
-            accent_filter_octaves: 1.0,
-            accent_gain: 0.15,
-            oscillators: vec![oscillator(Waveform::Saw, 440.0, 440.0, 1.0)],
+            pitch_gain_per_octave: 0.37,
+            velocity_exponent: 0.0,
+            velocity_filter_octaves: 0.1,
+            glide_seconds: 0.05,
+            voice_mode: VoiceMode::Mono,
+            accent_velocity_threshold: 127,
+            accent_filter_octaves: 0.0,
+            accent_gain: 0.08,
+            oscillators: vec![Oscillator {
+                waveform: Waveform::Saw,
+                detune_cents: 11.0,
+                ..Oscillator::default()
+            }],
             envelope: Envelope {
                 attack_seconds: 0.002,
-                decay_seconds: 0.22,
-                sustain_level: 0.3,
-                release_seconds: 0.1,
+                decay_seconds: 0.5,
+                sustain_level: 0.6,
+                release_seconds: 0.04,
             },
             filter: Some(Filter {
                 mode: FilterMode::LowPass,
-                cutoff_hz: 700.0,
-                envelope_amount: 2.2,
+                cutoff_hz: 2_200.0,
+                envelope_amount: 0.5,
                 resonance: 0.65,
                 stages: 4,
                 key_tracking: true,
             }),
+            filter_envelope: Some(Envelope {
+                attack_seconds: 0.1,
+                decay_seconds: 0.4,
+                sustain_level: 0.6,
+                release_seconds: 0.05,
+            }),
+            waveshaper: Some(Waveshaper {
+                drive: 2.0,
+                contour: 0.0,
+                level: 0.52,
+            }),
+            delay: Some(Delay {
+                time_seconds: 0.125,
+                beats_per_cycle: Some(0.25),
+                maximum_time_seconds: None,
+                feedback: 0.86,
+                mix: 0.04,
+                mode: DelayMode::StereoCross,
+                tail_seconds: 6.0,
+            }),
             ..Patch::default()
         },
+        // A09's measured near-harmonic modes use independent levels, decays, and
+        // pitch response; one-shot decay continues naturally after note-off.
         "glocken" => Patch {
             name: "GlockenBlocks".to_owned(),
             duration_seconds: 1.2,
-            gain: 0.45,
+            gain: 1.0,
             midi_program: Some(14),
-            oscillators: vec![oscillator(Waveform::Sine, 440.0, 440.0, 0.25)],
+            velocity_exponent: 0.0,
+            modal_one_shot: true,
+            oscillators: vec![Oscillator {
+                waveform: Waveform::Sine,
+                amplitude: 0.0,
+                detune_cents: -11.0,
+                ..Oscillator::default()
+            }],
             envelope: Envelope {
-                attack_seconds: 0.001,
-                decay_seconds: 0.2,
-                sustain_level: 0.8,
-                release_seconds: 4.0,
+                attack_seconds: 0.0,
+                decay_seconds: 0.0,
+                sustain_level: 1.0,
+                release_seconds: 7.0,
             },
             modal_partials: vec![
-                ModalPartial {
-                    ratio: 1.0,
-                    amplitude: 0.7,
-                    decay_seconds: 4.0,
-                },
-                ModalPartial {
-                    ratio: 2.76,
-                    amplitude: 0.45,
-                    decay_seconds: 3.0,
-                },
-                ModalPartial {
-                    ratio: 5.4,
-                    amplitude: 0.28,
-                    decay_seconds: 2.2,
-                },
-                ModalPartial {
-                    ratio: 8.93,
-                    amplitude: 0.16,
-                    decay_seconds: 1.4,
-                },
-                ModalPartial {
-                    ratio: 13.34,
-                    amplitude: 0.1,
-                    decay_seconds: 0.8,
-                },
+                modal(1.0, 0.269_771_22, 1.1, 0.220_36),
+                modal(1.99, 0.047_897_984, 1.2, 0.913_97),
+                modal(2.995, 0.016_796_285, 1.5, 0.374_51),
+                modal(3.99, 0.010_662_528, 1.7, -0.349_74),
+                modal(5.0, 0.005_248_956_6, 2.5, -0.277_98),
+                modal(6.0, 0.018_430_915, 1.5, -0.556_46),
+                modal(8.0, 0.002_121_320_4, 2.5, -0.5),
+                modal(9.095, 0.004_613_572_5, 2.0, -0.505_68),
             ],
             ..Patch::default()
         },
@@ -328,6 +354,20 @@ pub fn preset(name: &str) -> Result<Patch, Error> {
     Ok(patch)
 }
 
+fn modal(
+    ratio: f32,
+    amplitude: f32,
+    decay_seconds: f32,
+    pitch_gain_per_octave: f32,
+) -> ModalPartial {
+    ModalPartial {
+        ratio,
+        amplitude,
+        decay_seconds,
+        pitch_gain_per_octave,
+    }
+}
+
 fn oscillator(waveform: Waveform, start: f32, end: f32, amplitude: f32) -> Oscillator {
     Oscillator {
         waveform,
@@ -349,5 +389,41 @@ fn filter(mode: FilterMode, cutoff_hz: f32) -> Filter {
         resonance: 0.0,
         stages: 1,
         key_tracking: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn phase6_presets_use_opt_in_controls() {
+        let nano = preset("nano-303").unwrap();
+        assert_eq!(nano.voice_mode, VoiceMode::Mono);
+        assert_eq!(nano.velocity_exponent, 0.0);
+        assert_eq!(nano.velocity_filter_octaves, 0.1);
+        assert_eq!(nano.delay.unwrap().tail_seconds, 6.0);
+
+        let glocken = preset("glocken").unwrap();
+        assert!(glocken.modal_one_shot);
+        assert_eq!(glocken.modal_partials.len(), 8);
+        assert!(
+            glocken
+                .modal_partials
+                .iter()
+                .any(|partial| partial.pitch_gain_per_octave != 0.0)
+        );
+
+        let nasty = preset("nasty").unwrap();
+        let nasty_delay = nasty.delay.unwrap();
+        assert_eq!(nasty_delay.tail_seconds, 0.0);
+        assert_eq!(nasty_delay.beats_per_cycle, Some(1.0));
+        assert_eq!(nasty_delay.maximum_time_seconds, Some(0.5));
+        assert!(
+            nasty
+                .modulation
+                .iter()
+                .any(|lfo| lfo.amplitude_transition_seconds > 0.0)
+        );
     }
 }

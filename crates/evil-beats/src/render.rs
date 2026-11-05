@@ -125,6 +125,87 @@ mod tests {
     use crate::{DrumPad, KitPad};
 
     #[test]
+    fn native_parity_sixteen_pad_portable_wav_workflow() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut kit = DrumKit::empty("Portable audit");
+        kit.gain = 0.5;
+        let mut source_paths = Vec::new();
+        for index in 0..PAD_COUNT {
+            let path = directory.path().join(format!("pad-{index}.wav"));
+            let stereo = index % 2 == 1;
+            let mut writer = hound::WavWriter::create(
+                &path,
+                hound::WavSpec {
+                    channels: if stereo { 2 } else { 1 },
+                    sample_rate: 48_000,
+                    bits_per_sample: 16,
+                    sample_format: hound::SampleFormat::Int,
+                },
+            )
+            .unwrap();
+            for frame in 0..96 {
+                let left = (((frame * (index as i32 + 1) * 37) % 12_000) - 6_000) as i16;
+                if stereo {
+                    writer.write_sample(left).unwrap();
+                    writer.write_sample(-left / 2).unwrap();
+                } else {
+                    writer.write_sample(left).unwrap();
+                }
+            }
+            writer.finalize().unwrap();
+            source_paths.push(path.clone());
+
+            let mut voice = DrumPad::read_wav(&path).unwrap();
+            assert_eq!(voice.samples.len(), 96);
+            voice.tuning_semitones = index as f32 - 7.5;
+            voice.gain = 0.15;
+            voice.envelope.attack_seconds = 0.001;
+            voice.envelope.decay_seconds = 0.01;
+            voice.envelope.sustain_level = 0.6;
+            voice.envelope.release_seconds = 0.01;
+            let mut pad = KitPad::new(voice);
+            pad.pan = -1.0 + index as f32 * 2.0 / (PAD_COUNT - 1) as f32;
+            pad.gate_seconds = Some(0.04);
+            kit.pads[index] = Some(pad);
+        }
+
+        let kit_path = directory.path().join("portable.evilkit");
+        std::fs::write(&kit_path, kit.to_json().unwrap()).unwrap();
+        for path in source_paths {
+            std::fs::remove_file(path).unwrap();
+        }
+        let moved_path = directory.path().join("moved.evilkit");
+        std::fs::rename(&kit_path, &moved_path).unwrap();
+        let reloaded = DrumKit::read(&moved_path).unwrap();
+        assert_eq!(reloaded, kit);
+        assert!(reloaded.pads.iter().all(Option::is_some));
+
+        let hits: Vec<_> = (0..64)
+            .map(|index| KitHit {
+                pad_index: index % PAD_COUNT,
+                start_seconds: index as f64 * 0.001,
+                duration_seconds: Some(0.025),
+                velocity: 40 + ((index * 3) % 88) as u8,
+            })
+            .collect();
+        let direct = render_kit(&kit, &hits, 48_000).unwrap();
+        let portable = render_kit(&reloaded, &hits, 48_000).unwrap();
+        assert_eq!(portable.sample_rate, direct.sample_rate);
+        assert_eq!(portable.left, direct.left);
+        assert_eq!(portable.right, direct.right);
+        assert!(portable.left.len() > 4_000);
+        assert!(portable.left.iter().any(|sample| *sample != 0.0));
+        assert!(portable.left != portable.right);
+        assert!(
+            portable
+                .left
+                .iter()
+                .chain(&portable.right)
+                .all(|sample| sample.is_finite())
+        );
+    }
+
+    #[test]
     fn kit_render_maps_hits_to_stereo_pads_and_resamples() {
         let mut kit = DrumKit::empty("Render");
         let mut left_pad = KitPad::new(DrumPad::new(vec![0.5; 480], 48_000));

@@ -2,6 +2,24 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Error, Patch, SynthTempoChange};
 
+const DELAY_TAIL_TAPS: usize = 16;
+
+pub(crate) fn delay_tail_frames(maximum_delay_frames: usize) -> usize {
+    maximum_delay_frames * DELAY_TAIL_TAPS
+}
+
+pub(crate) fn allocated_tail_frames(
+    sample_rate: u32,
+    maximum_delay_frames: usize,
+    delay: &Delay,
+) -> usize {
+    if delay.tail_seconds > 0.0 {
+        (delay.tail_seconds * sample_rate as f32).round() as usize
+    } else {
+        delay_tail_frames(maximum_delay_frames)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DelayMode {
@@ -19,6 +37,10 @@ pub struct Delay {
     pub mode: DelayMode,
     /// Optional musical delay length. CC 23 automation overrides it with seconds.
     pub beats_per_cycle: Option<f32>,
+    /// Optional upper bound for fixed or beat-synced delay time; `None` preserves legacy behavior.
+    pub maximum_time_seconds: Option<f32>,
+    /// Additional rendered tail in seconds; zero retains the default 16-tap allocation.
+    pub tail_seconds: f32,
 }
 
 impl Default for Delay {
@@ -29,6 +51,8 @@ impl Default for Delay {
             mix: 0.2,
             mode: DelayMode::Mono,
             beats_per_cycle: None,
+            maximum_time_seconds: None,
+            tail_seconds: 0.0,
         }
     }
 }
@@ -45,9 +69,14 @@ impl Delay {
             || self
                 .beats_per_cycle
                 .is_some_and(|beats| !beats.is_finite() || !(0.001..=64.0).contains(&beats))
+            || self
+                .maximum_time_seconds
+                .is_some_and(|seconds| !seconds.is_finite() || !(0.001..=2.0).contains(&seconds))
+            || !self.tail_seconds.is_finite()
+            || !(0.0..=60.0).contains(&self.tail_seconds)
         {
             return Err(Error::InvalidPatch(
-                "delay requires time in (0, 2], feedback in 0..=0.95, mix in 0..=1, and optional beats in 0.001..=64"
+                "delay requires time in (0, 2], optional maximum in 0.001..=2, feedback in 0..=0.95, mix in 0..=1, optional beats in 0.001..=64, and tail seconds in 0..=60"
                     .to_owned(),
             ));
         }
@@ -81,8 +110,9 @@ pub(crate) fn apply_stereo_delay_with_tempo(
 
     let maximum_delay = maximum_delay_frames(sample_rate, delay, tempo_changes);
     let original_len = left.len();
-    left.resize(original_len + maximum_delay * 8, 0.0);
-    right.resize(original_len + maximum_delay * 8, 0.0);
+    let tail_frames = allocated_tail_frames(sample_rate, maximum_delay, delay);
+    left.resize(original_len + tail_frames, 0.0);
+    right.resize(original_len + tail_frames, 0.0);
     let mut left_line = vec![0.0; maximum_delay + 1];
     let mut right_line = vec![0.0; maximum_delay + 1];
     let mut position = 0;
@@ -110,7 +140,10 @@ fn apply_mono_delay(
 ) {
     let maximum_delay = maximum_delay_frames(sample_rate, delay, tempo_changes);
     let original_len = samples.len();
-    samples.resize(original_len + maximum_delay * 8, 0.0);
+    samples.resize(
+        original_len + allocated_tail_frames(sample_rate, maximum_delay, delay),
+        0.0,
+    );
     let mut delay_line = vec![0.0; maximum_delay + 1];
     let mut position = 0;
     for (frame, sample) in samples.iter_mut().enumerate() {
@@ -129,6 +162,9 @@ pub(crate) fn delay_frame_count(sample_rate: u32, delay: &Delay, tempo_bpm: f32)
     let seconds = delay.beats_per_cycle.map_or(delay.time_seconds, |beats| {
         (beats * 60.0 / tempo_bpm).clamp(0.001, 2.0)
     });
+    let seconds = delay
+        .maximum_time_seconds
+        .map_or(seconds, |maximum| seconds.min(maximum));
     ((seconds * sample_rate as f32).round() as usize).max(1)
 }
 
@@ -173,11 +209,18 @@ mod tests {
         };
         let sound = render(&patch).unwrap();
         let dry_frames = (0.01 * 48_000.0) as usize;
+        let delay_frames = (0.02 * 48_000.0) as usize;
+        assert_eq!(sound.samples.len(), dry_frames + 16 * delay_frames);
         assert!(sound.samples.len() > dry_frames + 480);
         assert!(
             sound.samples[dry_frames..]
                 .iter()
                 .any(|sample| sample.abs() > 0.001)
+        );
+        assert!(
+            sound.samples[dry_frames + 8 * delay_frames..dry_frames + 9 * delay_frames]
+                .iter()
+                .any(|sample| sample.abs() > 0.000_001)
         );
 
         let dry = render_notes_dry(
@@ -192,6 +235,29 @@ mod tests {
         .unwrap();
         assert_eq!(dry.samples.len(), dry_frames);
         assert!(sound.samples.len() > dry.samples.len());
+    }
+
+    #[test]
+    fn explicit_tail_seconds_extends_allocation_without_changing_the_legacy_default() {
+        let legacy = Delay {
+            time_seconds: 0.02,
+            feedback: 0.88,
+            ..Delay::default()
+        };
+        let extended = Delay {
+            tail_seconds: 1.0,
+            ..legacy.clone()
+        };
+        assert_eq!(allocated_tail_frames(48_000, 960, &legacy), 16 * 960);
+        assert_eq!(allocated_tail_frames(48_000, 960, &extended), 48_000);
+        assert!(
+            Delay {
+                tail_seconds: -0.01,
+                ..legacy
+            }
+            .validate()
+            .is_err()
+        );
     }
 
     #[test]
@@ -233,5 +299,82 @@ mod tests {
             .validate()
             .is_err()
         );
+    }
+
+    #[test]
+    fn maximum_time_caps_fixed_and_beat_synced_delay_audio() {
+        let capped = Delay {
+            time_seconds: 1.0,
+            beats_per_cycle: Some(1.0),
+            maximum_time_seconds: Some(0.5),
+            ..Delay::default()
+        };
+        assert_eq!(delay_frame_count(1_000, &capped, 60.0), 500);
+        assert_eq!(delay_frame_count(1_000, &capped, 120.0), 500);
+        assert_eq!(delay_frame_count(1_000, &capped, 240.0), 250);
+        let fixed = Delay {
+            beats_per_cycle: None,
+            ..capped.clone()
+        };
+        assert_eq!(delay_frame_count(1_000, &fixed, 240.0), 500);
+        let uncapped_short = Delay {
+            time_seconds: 0.00025,
+            ..Delay::default()
+        };
+        assert_eq!(delay_frame_count(8_000, &uncapped_short, 120.0), 2);
+
+        let mut left = vec![1.0];
+        let mut right = vec![1.0];
+        apply_stereo_delay_with_tempo(
+            &mut left,
+            &mut right,
+            1_000,
+            &capped,
+            &[SynthTempoChange {
+                time_seconds: 0.0,
+                bpm: 60.0,
+            }],
+        );
+        assert_eq!(left[250], 0.0);
+        assert_eq!(left[500], 0.2);
+        assert_eq!(right[500], 0.2);
+
+        let mut fast_left = vec![1.0];
+        let mut fast_right = vec![1.0];
+        apply_stereo_delay_with_tempo(
+            &mut fast_left,
+            &mut fast_right,
+            1_000,
+            &capped,
+            &[SynthTempoChange {
+                time_seconds: 0.0,
+                bpm: 240.0,
+            }],
+        );
+        assert_eq!(fast_left[250], 0.2);
+        assert_eq!(fast_right[250], 0.2);
+
+        let json = serde_json::to_string(&capped).unwrap();
+        assert_eq!(serde_json::from_str::<Delay>(&json).unwrap(), capped);
+        for maximum in [0.001, 2.0] {
+            assert!(
+                Delay {
+                    maximum_time_seconds: Some(maximum),
+                    ..Delay::default()
+                }
+                .validate()
+                .is_ok()
+            );
+        }
+        for maximum in [0.0, 0.000_9, 2.001, f32::NAN] {
+            assert!(
+                Delay {
+                    maximum_time_seconds: Some(maximum),
+                    ..Delay::default()
+                }
+                .validate()
+                .is_err()
+            );
+        }
     }
 }

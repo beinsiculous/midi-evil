@@ -807,6 +807,8 @@ mod tests {
             mix: 1.0,
             mode: crate::DelayMode::StereoCross,
             beats_per_cycle: None,
+            maximum_time_seconds: None,
+            tail_seconds: 0.0,
         };
         let stereo = mix_stereo(
             &[MonoTrack {
@@ -850,6 +852,8 @@ mod tests {
             mix: 1.0,
             mode: crate::DelayMode::StereoCross,
             beats_per_cycle: None,
+            maximum_time_seconds: None,
+            tail_seconds: 0.0,
         };
         let controllers = (20..=25)
             .map(|controller| SynthController {
@@ -969,6 +973,8 @@ mod tests {
                     mix: 1.0,
                     mode: crate::DelayMode::Mono,
                     beats_per_cycle: None,
+                    maximum_time_seconds: None,
+                    tail_seconds: 0.0,
                 })),
                 gain: 1.0,
             },
@@ -991,7 +997,7 @@ mod tests {
             1.0,
         )
         .unwrap();
-        assert_eq!(mixed.left.len(), 20);
+        assert_eq!(mixed.left.len(), 36);
         assert!((mixed.left[0] - 0.75_f32.tanh()).abs() < 1e-6);
         assert!((mixed.left[2] - 0.875_f32.tanh()).abs() < 1e-6);
         assert!(mixed.right.iter().all(|sample| *sample == 0.0));

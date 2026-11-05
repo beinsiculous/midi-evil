@@ -346,7 +346,7 @@ impl Oscillator {
     }
 }
 
-fn poly_blep(phase: f32, phase_step: f32) -> f32 {
+pub(crate) fn poly_blep(phase: f32, phase_step: f32) -> f32 {
     if phase < phase_step {
         let position = phase / phase_step;
         position + position - position * position - 1.0

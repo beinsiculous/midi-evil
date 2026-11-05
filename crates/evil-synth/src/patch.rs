@@ -21,8 +21,12 @@ pub struct Patch {
     /// Additional gain change per octave away from middle C; positive favors low notes.
     pub pitch_gain_per_octave: f32,
     pub pitch_bend_range_semitones: f32,
+    /// Velocity response exponent; one preserves the legacy linear mapping.
+    pub velocity_exponent: f32,
     /// Seconds to slide from the previous note's pitch; zero disables glide.
     pub glide_seconds: f32,
+    /// Velocity-to-filter cutoff exponent in octaves; zero disables the route.
+    pub velocity_filter_octaves: f32,
     /// Velocity at which accent is enabled; zero disables accent.
     pub accent_velocity_threshold: u8,
     pub accent_filter_octaves: f32,
@@ -33,6 +37,8 @@ pub struct Patch {
     pub oscillator_mode: OscillatorMode,
     /// Independently decaying inharmonic partials for modal instruments.
     pub modal_partials: Vec<ModalPartial>,
+    /// Let modal voices decay after note-off instead of applying the amplitude ADSR.
+    pub modal_one_shot: bool,
     /// Sync ratio and compatibility with patches that enabled sync with this field alone.
     pub sync: Option<OscillatorSync>,
     pub voice_mode: VoiceMode,
@@ -66,6 +72,8 @@ impl Default for Patch {
             pitch_tracking: true,
             pitch_gain_per_octave: 0.0,
             pitch_bend_range_semitones: 2.0,
+            velocity_exponent: 1.0,
+            velocity_filter_octaves: 0.0,
             glide_seconds: 0.0,
             accent_velocity_threshold: 0,
             accent_filter_octaves: 0.0,
@@ -74,6 +82,7 @@ impl Default for Patch {
             oscillators: vec![Oscillator::default()],
             oscillator_mode: OscillatorMode::Mix,
             modal_partials: Vec::new(),
+            modal_one_shot: false,
             sync: None,
             voice_mode: VoiceMode::Poly,
             unison: None,
@@ -220,10 +229,18 @@ impl Patch {
                 "pitch bend range must be between 0 and 24 semitones",
             ));
         }
+        if !self.velocity_exponent.is_finite() || !(0.0..=4.0).contains(&self.velocity_exponent) {
+            return Err(invalid("velocity_exponent must be between 0 and 4"));
+        }
         if !self.glide_seconds.is_finite()
             || !(0.0..=MAX_DURATION_SECONDS).contains(&self.glide_seconds)
         {
             return Err(invalid("glide_seconds must be between 0 and 60"));
+        }
+        if !self.velocity_filter_octaves.is_finite()
+            || !(-4.0..=4.0).contains(&self.velocity_filter_octaves)
+        {
+            return Err(invalid("velocity_filter_octaves must be between -4 and 4"));
         }
         if self.accent_velocity_threshold > 127
             || !self.accent_filter_octaves.is_finite()
@@ -384,6 +401,8 @@ impl Patch {
                 || !(-1.0..=1.0).contains(&lfo.oscillator_mix_depth)
                 || !lfo.amplitude_depth.is_finite()
                 || !(-1.0..=1.0).contains(&lfo.amplitude_depth)
+                || !lfo.amplitude_transition_seconds.is_finite()
+                || !(0.0..=0.1).contains(&lfo.amplitude_transition_seconds)
                 || !lfo.lfo_rate_depth.is_finite()
                 || !(-4.0..=4.0).contains(&lfo.lfo_rate_depth)
                 || (lfo.destination == LfoDestination::LfoRate
@@ -1074,6 +1093,96 @@ mod tests {
             let patch = Patch {
                 lfo: Some(Lfo {
                     oscillator_mix_depth: depth,
+                    ..Lfo::default()
+                }),
+                ..Patch::default()
+            };
+            assert!(patch.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn validation_bounds_phase6_velocity_and_modal_pitch_controls() {
+        for exponent in [0.0, 1.0, 4.0] {
+            Patch {
+                velocity_exponent: exponent,
+                ..Patch::default()
+            }
+            .validate()
+            .unwrap();
+        }
+        for exponent in [-0.01, 4.01, f32::NAN] {
+            assert!(
+                Patch {
+                    velocity_exponent: exponent,
+                    ..Patch::default()
+                }
+                .validate()
+                .is_err()
+            );
+        }
+        for octaves in [-4.0, 0.0, 4.0] {
+            Patch {
+                velocity_filter_octaves: octaves,
+                ..Patch::default()
+            }
+            .validate()
+            .unwrap();
+        }
+        for octaves in [-4.01, 4.01, f32::NAN] {
+            assert!(
+                Patch {
+                    velocity_filter_octaves: octaves,
+                    ..Patch::default()
+                }
+                .validate()
+                .is_err()
+            );
+        }
+        for gain in [-2.0, 0.0, 2.0] {
+            Patch {
+                modal_partials: vec![ModalPartial {
+                    pitch_gain_per_octave: gain,
+                    ..ModalPartial::default()
+                }],
+                ..Patch::default()
+            }
+            .validate()
+            .unwrap();
+        }
+        for gain in [-2.01, 2.01, f32::NAN] {
+            assert!(
+                Patch {
+                    modal_partials: vec![ModalPartial {
+                        pitch_gain_per_octave: gain,
+                        ..ModalPartial::default()
+                    }],
+                    ..Patch::default()
+                }
+                .validate()
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn validation_bounds_amplitude_lfo_transition_duration() {
+        for transition in [0.0, 0.001, 0.1] {
+            let patch = Patch {
+                lfo: Some(Lfo {
+                    destination: LfoDestination::Amplitude,
+                    amplitude_transition_seconds: transition,
+                    ..Lfo::default()
+                }),
+                ..Patch::default()
+            };
+            assert!(patch.validate().is_ok());
+        }
+        for transition in [-0.001, 0.101, f32::NAN] {
+            let patch = Patch {
+                lfo: Some(Lfo {
+                    destination: LfoDestination::Amplitude,
+                    amplitude_transition_seconds: transition,
                     ..Lfo::default()
                 }),
                 ..Patch::default()
