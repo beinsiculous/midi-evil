@@ -14,13 +14,15 @@ Status: **engineering verification, not release certification**. No crate has be
 | `tools/audit-native.sh` | Passed, including focused parity workflows and the release desktop build |
 | README virtual ALSA null-input microphone command | 1 passed; no physical microphone used |
 | `tools/audit-public-packages.sh --allow-dirty` | All eight native package lists and content scans passed |
-| `cargo package -p evil-performance --allow-dirty` | Archive created and verified; this crate has no native registry dependency |
+| Clean public clone of implementation revision `41b5b22` | Native audit, release build, all eight clean package audits, and install/launch smoke passed; no compat/Oracle/evil-porting sources present |
+| `cargo package -p evil-performance` | Archive created and verified in both the working tree and clean clone; this crate has no native registry dependency |
+| `cargo install --path crates/midi-evil --locked` | Installed the release executable into an isolated smoke root; installed `--help` passed |
 | Release binary launch arguments | `--help` passed; an unknown option exited 1 with one stderr line |
-| Release desktop launch | Remained running for the five-second timeout with no stderr; no interactive gestures claimed |
+| Release desktop launch | Working-tree and clean-clone binaries each remained running for a five-second timeout with no stderr; no interactive gestures claimed |
 
 The focused desktop tests exercise full-song and exact-section PCM16 WAV output, `.evil` save/reload, MIDI export/reimport, queued track-stem and arrangement-part WAV workers, and preview-source/meter consumption without an audio device. These are hardware-independent workflow checks, not a substitute for operating the GUI.
 
-A clean public-clone build and package audit are pending at this stage of the audit. This section must be updated with the actual result before release approval.
+The clean clone was created from the committed implementation revision with `--no-local`, contained only tracked public files, and had no compat workspace or Oracle/evil-porting directories. Its `tools/audit-native.sh` run passed all 290 native tests plus focused workflows, strict Clippy, and the release build. `tools/audit-public-packages.sh` passed without `--allow-dirty`. The desktop was also installed into an isolated root and launched from the clean release build. Later documentation-only commits do not change that verified implementation.
 
 ## Package inventory and publish order
 
