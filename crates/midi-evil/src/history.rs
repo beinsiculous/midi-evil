@@ -9,6 +9,12 @@ pub struct EditorHistory {
 }
 
 impl EditorHistory {
+    pub fn rebase_instruments(&mut self, old_base: &std::path::Path, new_base: &std::path::Path) {
+        for project in self.undo.iter_mut().chain(&mut self.redo) {
+            crate::instruments::rebase_project_sources(project, old_base, new_base);
+        }
+    }
+
     pub fn clear(&mut self) {
         self.undo.clear();
         self.redo.clear();
@@ -31,6 +37,14 @@ impl EditorHistory {
 
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
+    }
+
+    pub fn undo_target(&self) -> Option<&Project> {
+        self.undo.last()
+    }
+
+    pub fn redo_target(&self) -> Option<&Project> {
+        self.redo.last()
     }
 
     pub fn undo(&mut self, current: &Project) -> Option<Project> {

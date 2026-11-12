@@ -6,12 +6,12 @@ impl StudioApp {
         egui::Panel::top("transport")
             .frame(theme::panel().inner_margin(egui::Margin::symmetric(14, 10)))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if ui
                         .add(
                             egui::Button::image(egui::Image::new((
                                 self.mascot.id(),
-                                egui::vec2(48.0, 48.0),
+                                egui::vec2(36.0, 36.0),
                             )))
                             .frame(false),
                         )
@@ -29,7 +29,7 @@ impl StudioApp {
                         );
                         ui.label(
                             RichText::new("DR. MAXWELL'S STUDIO")
-                                .size(9.0)
+                                .size(11.0)
                                 .color(theme::MUTED),
                         );
                     });
@@ -46,6 +46,12 @@ impl StudioApp {
                         if ui.button("Import MIDI…").clicked() {
                             ui.close();
                             self.import_midi();
+                        }
+                        if ui.button("Recover rhythm from WAV…").clicked() {
+                            ui.close();
+                            self.stop_keyboard();
+                            self.beats.stop();
+                            self.recovery.open = true;
                         }
                         ui.separator();
                         if ui.button("Save                Ctrl+S").clicked() {
@@ -124,9 +130,9 @@ impl StudioApp {
                         .add_sized(
                             [88.0, 40.0],
                             egui::Button::new(if self.recorder.is_some() {
-                                "■ TAKE"
+                                "Stop take"
                             } else {
-                                "● REC"
+                                "Record"
                             })
                             .selected(self.recorder.is_some()),
                         )
@@ -153,7 +159,7 @@ impl StudioApp {
                                         } else {
                                             "READY"
                                         })
-                                        .size(9.0)
+                                        .size(11.0)
                                         .color(if active { theme::GREEN } else { theme::MUTED }),
                                     );
                                     ui.label(
@@ -162,7 +168,7 @@ impl StudioApp {
                                         } else {
                                             "• SAVED"
                                         })
-                                        .size(9.0)
+                                        .size(11.0)
                                         .color(theme::MUTED),
                                     );
                                 });
@@ -209,7 +215,7 @@ impl StudioApp {
                             self.dirty = true;
                         }
                     });
-                    if ui.available_width() > 150.0 {
+                    if ui.ctx().content_rect().width() >= 1_160.0 {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.vertical(|ui| {
                                 let position = self
@@ -283,7 +289,7 @@ impl StudioApp {
         egui::Panel::top("workspace-tabs")
             .frame(theme::panel().inner_margin(egui::Margin::symmetric(14, 6)))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     let tab_width = if ui.available_width() < 1100.0 {
                         88.0
                     } else {
@@ -342,7 +348,7 @@ impl StudioApp {
                     });
                 });
                 if self.show_export {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         theme::label(ui, "EXPORT SONG");
                         if ui.button("Standard MIDI…").clicked() {
                             self.export_midi();
@@ -408,10 +414,11 @@ impl StudioApp {
                         for index in 0..self.project.tracks.len() {
                             let track = &self.project.tracks[index];
                             let instrument = &self.project.instruments[track.instrument];
-                            let source = match &instrument.source {
-                                InstrumentSource::Synth { patch } => patch,
-                                InstrumentSource::DrumKit { kit, .. } => kit,
-                            };
+                            let source = crate::instruments::Sound::from_source(
+                                &instrument.source,
+                                self.patch_base(),
+                            )
+                            .name;
                             let selected = self.roll.selected_track == index;
                             let response =
                                 ui.add_sized(
@@ -436,16 +443,16 @@ impl StudioApp {
                                     )),
                                 );
                             if response.clicked() {
-                                self.roll.select_track(index);
+                                self.select_sound_track(index);
                             }
                             if response.double_clicked() {
-                                self.roll.select_track(index);
+                                self.select_sound_track(index);
                                 self.view = View::Notes;
                             }
                             response.on_hover_text(format!(
                                 "{} · {} notes",
                                 source,
-                                track.notes.len()
+                                self.project.tracks[index].notes.len()
                             ));
                         }
                     });
@@ -478,6 +485,7 @@ impl StudioApp {
                 ui.separator();
                 let mut open_patch = false;
                 let mut open_pads = false;
+                let mut synth_page = None;
                 egui::ScrollArea::vertical()
                     .id_salt("track-settings")
                     .auto_shrink([false, false])
@@ -491,36 +499,52 @@ impl StudioApp {
                             );
                             ui.add_space(4.0);
                             theme::label(ui, "INSTRUMENT");
-                            match &mut instrument.source {
-                                InstrumentSource::Synth { patch } => {
-                                    ui.add(
-                                        egui::TextEdit::singleline(patch)
-                                            .desired_width(f32::INFINITY),
-                                    )
-                                    .on_hover_text(
-                                        "Synth preset name or a JSON patch path relative to this project",
-                                    );
-                                }
-                                InstrumentSource::DrumKit { kit, .. } => {
-                                    ui.add(
-                                        egui::TextEdit::singleline(kit)
-                                            .desired_width(f32::INFINITY),
-                                    )
-                                    .on_hover_text(
-                                        "Drum-kit path relative to this project, or the maxwell kit",
-                                    );
-                                }
+                            if ui
+                                .add_sized(
+                                    [ui.available_width(), 32.0],
+                                    egui::Button::new("Browse sounds…"),
+                                )
+                                .clicked()
+                            {
+                                self.sounds.open = true;
                             }
-                            open_pads = matches!(instrument.source, InstrumentSource::DrumKit { .. });
+                            open_pads =
+                                matches!(instrument.source, InstrumentSource::DrumKit { .. });
                             open_patch = ui
                                 .add_sized(
                                     [ui.available_width(), 32.0],
                                     egui::Button::image_and_text(
                                         art::control(&self.controls, 3),
-                                        if open_pads { "Open Pads" } else { "Open Evil Synth" },
+                                        if open_pads {
+                                            "Open Pads"
+                                        } else {
+                                            "Open Evil Synth"
+                                        },
                                     ),
                                 )
                                 .clicked();
+                            ui.add_space(6.0);
+                            if !open_pads {
+                                ui.horizontal_wrapped(|ui| {
+                                    for (title, page) in [
+                                        ("Samples", patch_lab::PatchPage::Samples),
+                                        ("Modulation", patch_lab::PatchPage::Modulation),
+                                    ] {
+                                        if ui.button(title).clicked() {
+                                            synth_page = Some(page);
+                                        }
+                                    }
+                                });
+                            }
+                            ui.horizontal_wrapped(|ui| {
+                                if ui.button("Mixer & FX").clicked() {
+                                    self.view = View::Mixer;
+                                }
+                                if ui.button("Automation").clicked() {
+                                    self.view = View::Notes;
+                                    self.show_automation = true;
+                                }
+                            });
                             ui.add_space(8.0);
                             theme::label(ui, "CHANNEL");
                             ui.add(egui::Slider::new(&mut instrument.gain, 0.0..=1.0).text("Gain"));
@@ -534,8 +558,8 @@ impl StudioApp {
                                         egui::DragValue::new(
                                             &mut instrument.pitch_bend_range_semitones,
                                         )
-                                            .range(0.01..=24.0)
-                                            .suffix(" st"),
+                                        .range(0.01..=24.0)
+                                        .suffix(" st"),
                                     );
                                 });
                                 ui.label(format!(
@@ -552,11 +576,31 @@ impl StudioApp {
                             );
                         }
                     });
+                if let Some(page) = synth_page {
+                    self.view = View::Synth;
+                    if self
+                        .patch_lab
+                        .as_ref()
+                        .is_none_or(|lab| lab.track_index != self.roll.selected_track)
+                    {
+                        self.open_patch_lab();
+                    }
+                    if let Some(lab) = &mut self.patch_lab {
+                        lab.page = page;
+                    }
+                }
                 if open_patch {
                     if open_pads {
                         self.view = View::Pads;
                     } else {
-                        self.open_patch_lab();
+                        self.view = View::Synth;
+                        if self
+                            .patch_lab
+                            .as_ref()
+                            .is_none_or(|lab| lab.track_index != self.roll.selected_track)
+                        {
+                            self.open_patch_lab();
+                        }
                     }
                 }
             });

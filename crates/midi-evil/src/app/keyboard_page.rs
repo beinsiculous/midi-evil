@@ -36,7 +36,7 @@ impl StudioApp {
             let source_changed = self
                 .keyboard_binding
                 .as_ref()
-                .is_some_and(|old| old != &binding);
+                .is_some_and(|old| old.1 != binding.1);
             self.keyboard_player = None;
             self.keyboard.reset();
             let retrying = self.keyboard_error.take().is_some();

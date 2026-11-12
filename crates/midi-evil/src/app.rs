@@ -3,8 +3,10 @@ use std::path::{Path, PathBuf};
 use eframe::egui::{self, RichText, TextureHandle};
 
 mod chrome;
+mod drafts;
 mod keyboard_page;
 mod recording;
+mod sounds;
 
 use crate::{
     mixer::{self, MixerState},
@@ -17,6 +19,7 @@ use crate::art;
 use crate::automation::{self, AutomationState};
 use crate::history::EditorHistory;
 use crate::instance::SingleInstance;
+use crate::instruments::{portable_file_reference, rebase_project_sources};
 use crate::launch::LaunchOptions;
 use crate::patch_lab::{self, PatchLab};
 use crate::piano_roll::{self, RollState};
@@ -53,6 +56,7 @@ pub struct StudioApp {
     history: EditorHistory,
     resetting_document: bool,
     restoring_history: bool,
+    saved_this_frame: Option<Project>,
     render_job: Option<RenderJob>,
     pending_render: Option<PendingRender>,
     patch_lab: Option<PatchLab>,
@@ -69,6 +73,9 @@ pub struct StudioApp {
     record_quantize: bool,
     midi_input: crate::midi_input::MidiInput,
     pending_midi_notes: Vec<crate::keyboard::NoteEvent>,
+    sounds: crate::instruments::SoundBrowser,
+    recovery: crate::recovery::RecoveryWindow,
+    drafts: drafts::SoundDrafts,
 }
 
 enum PendingRender {
@@ -102,22 +109,22 @@ enum PatchLabAction {
     SaveAs,
 }
 
-fn portable_file_reference(path: &Path, base: &Path) -> String {
-    let absolute_base = std::path::absolute(base).unwrap_or_else(|_| base.to_path_buf());
-    path.strip_prefix(&absolute_base)
-        .or_else(|_| path.strip_prefix(base))
-        .unwrap_or(path)
-        .to_string_lossy()
-        .into_owned()
-}
-
 impl StudioApp {
     pub fn new(
         context: &eframe::CreationContext<'_>,
         options: LaunchOptions,
         instance: Option<SingleInstance>,
     ) -> Self {
-        theme::install(&context.egui_ctx);
+        Self::create(&context.egui_ctx, context.storage, options, instance)
+    }
+
+    fn create(
+        context: &egui::Context,
+        storage: Option<&dyn eframe::Storage>,
+        options: LaunchOptions,
+        instance: Option<SingleInstance>,
+    ) -> Self {
+        theme::install(context);
         let mut app = Self {
             project: Project::new("Untitled"),
             project_path: None,
@@ -128,9 +135,9 @@ impl StudioApp {
             automation: AutomationState::default(),
             dirty: false,
             status: "Welcome to MIDI Evil".to_owned(),
-            mascot: art::load_mascot(&context.egui_ctx),
-            splash: art::load_splash(&context.egui_ctx),
-            controls: art::load_controls(&context.egui_ctx),
+            mascot: art::load_mascot(context),
+            splash: art::load_splash(context),
+            controls: art::load_controls(context),
             view: View::default(),
             show_export: false,
             show_automation: false,
@@ -142,15 +149,16 @@ impl StudioApp {
             history: EditorHistory::default(),
             resetting_document: false,
             restoring_history: false,
+            saved_this_frame: None,
             render_job: None,
             pending_render: None,
             patch_lab: None,
             keyboard: crate::keyboard::KeyboardState::default(),
             keyboard_player: None,
-            keyboard_badge: art::load_keyboard(&context.egui_ctx),
+            keyboard_badge: art::load_keyboard(context),
             keyboard_binding: None,
             keyboard_error: None,
-            beats: crate::beats::BeatsPage::new(&context.egui_ctx),
+            beats: crate::beats::BeatsPage::new(context),
             beats_binding: None,
             recorder: None,
             recording_started_at: None,
@@ -158,6 +166,9 @@ impl StudioApp {
             record_quantize: true,
             midi_input: crate::midi_input::MidiInput::default(),
             pending_midi_notes: Vec::new(),
+            sounds: crate::instruments::SoundBrowser::restore(storage),
+            recovery: crate::recovery::RecoveryWindow::default(),
+            drafts: drafts::SoundDrafts::default(),
         };
         app.add_track();
         app.dirty = false;
@@ -237,13 +248,27 @@ impl StudioApp {
     }
 
     fn reset_history(&mut self) {
+        self.beats.discard_draft();
         self.history.clear();
         self.mixer.last_analysis = None;
         self.mixer.last_channel_meters.clear();
         self.resetting_document = true;
+        self.saved_this_frame = None;
     }
 
     fn undo(&mut self) {
+        let target = if self.recorder.is_some() {
+            self.recording_snapshot.as_ref()
+        } else {
+            self.history.undo_target()
+        };
+        let preserve_drafts = self.history_preserves_sound_drafts(target);
+        if (self.history.can_undo() || self.recorder.is_some())
+            && !preserve_drafts
+            && !self.confirm_history_change()
+        {
+            return;
+        }
         let recording_snapshot = self.recording_snapshot.clone();
         if self.recorder.is_some() {
             self.stop_preview();
@@ -252,9 +277,16 @@ impl StudioApp {
             }
         }
         if let Some(project) = self.history.undo(&self.project) {
+            if preserve_drafts {
+                self.stop_keyboard();
+                self.beats.stop();
+            } else {
+                self.clear_all_sound_drafts();
+            }
             self.project = project;
             self.invalidate_beats_link();
             self.roll.clamp(&self.project);
+            self.sync_sound_drafts();
             self.restoring_history = true;
             self.dirty = true;
             self.status = "Undo".to_owned();
@@ -266,10 +298,21 @@ impl StudioApp {
             self.stop_preview();
             return;
         }
+        let preserve_drafts = self.history_preserves_sound_drafts(self.history.redo_target());
+        if self.history.can_redo() && !preserve_drafts && !self.confirm_history_change() {
+            return;
+        }
         if let Some(project) = self.history.redo(&self.project) {
+            if preserve_drafts {
+                self.stop_keyboard();
+                self.beats.stop();
+            } else {
+                self.clear_all_sound_drafts();
+            }
             self.project = project;
             self.invalidate_beats_link();
             self.roll.clamp(&self.project);
+            self.sync_sound_drafts();
             self.restoring_history = true;
             self.dirty = true;
             self.status = "Redo".to_owned();
@@ -277,7 +320,7 @@ impl StudioApp {
     }
 
     fn remove_selected_track(&mut self) {
-        if !self.structural_edit_allowed() {
+        if !self.can_replace_sound() {
             return;
         }
         let index = self.roll.selected_track;
@@ -289,6 +332,7 @@ impl StudioApp {
             } else {
                 index.min(self.project.tracks.len() - 1)
             };
+            self.discard_sound_drafts();
             self.roll.select_track(new_index);
             self.dirty = true;
             self.status = format!("Deleted track {index}");
@@ -301,8 +345,8 @@ impl StudioApp {
         }
         match self.project.duplicate_track(self.roll.selected_track) {
             Ok(index) => {
-                self.invalidate_beats_link();
                 self.roll.select_track(index);
+                self.sync_sound_drafts();
                 self.dirty = true;
                 self.status = format!("Duplicated track {index}");
             }
@@ -320,14 +364,14 @@ impl StudioApp {
             return;
         }
         if self.project.move_track(index, new_index as usize).is_ok() {
-            self.invalidate_beats_link();
             self.roll.select_track(new_index as usize);
+            self.sync_sound_drafts();
             self.dirty = true;
         }
     }
 
     fn can_discard_changes(&mut self) -> bool {
-        let unsaved = self.dirty || self.recorder.is_some();
+        let unsaved = self.dirty || self.recorder.is_some() || self.has_sound_drafts();
         if unsaved {
             self.stop_keyboard();
             self.beats.stop();
@@ -358,7 +402,7 @@ impl StudioApp {
                 self.save_project();
             }
         }
-        if command(egui::Key::Z) {
+        if command(egui::Key::Z) && !context.input(|input| input.modifiers.shift) {
             self.undo();
         }
         if command(egui::Key::Y) {
@@ -368,6 +412,18 @@ impl StudioApp {
             input.modifiers.command && input.modifiers.shift && input.key_pressed(egui::Key::Z)
         }) {
             self.redo();
+        }
+        if !context.egui_wants_keyboard_input() && !self.show_about {
+            if context
+                .input_mut(|input| input.consume_key(egui::Modifiers::ALT, egui::Key::ArrowLeft))
+            {
+                self.cycle_sound(true);
+            }
+            if context
+                .input_mut(|input| input.consume_key(egui::Modifiers::ALT, egui::Key::ArrowRight))
+            {
+                self.cycle_sound(false);
+            }
         }
         if !context.egui_wants_keyboard_input()
             && context.input(|input| input.key_pressed(egui::Key::Space))
@@ -399,7 +455,11 @@ impl StudioApp {
         match result {
             Ok(index) => {
                 self.roll.select_track(index);
+                self.sync_sound_drafts();
                 self.dirty = true;
+                if self.view == View::Pads {
+                    self.view = View::Synth;
+                }
                 self.status = "Track added".to_owned();
             }
             Err(error) => self.status = format!("Could not add track: {error}"),
@@ -425,6 +485,7 @@ impl StudioApp {
         match result {
             Ok(index) => {
                 self.roll.select_track(index);
+                self.sync_sound_drafts();
                 self.view = View::Pads;
                 self.dirty = true;
                 self.status = "Drum track added with the Maxwell kit".to_owned();
@@ -438,7 +499,7 @@ impl StudioApp {
             return;
         }
         self.stop_preview();
-        self.patch_lab = None;
+        self.clear_all_sound_drafts();
         self.project = Project::new("Untitled");
         self.imported_track_indices = None;
         self.show_about = false;
@@ -466,7 +527,7 @@ impl StudioApp {
         };
         match evil_render::load_patch(&source, self.patch_base()) {
             Ok(patch) => {
-                let file_name = if source.ends_with(".json") {
+                let file_name = if source.to_ascii_lowercase().ends_with(".json") {
                     source
                 } else {
                     format!("{source}-custom.json")
@@ -482,27 +543,6 @@ impl StudioApp {
         }
     }
 
-    fn open_patch_preset(&mut self, lab: &mut PatchLab) {
-        let Some(path) = self
-            .file_dialog()
-            .add_filter("Synth patch", &["json"])
-            .pick_file()
-        else {
-            return;
-        };
-        match evil_render::load_patch_file(&path) {
-            Ok(patch) => {
-                let file_name = path
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "untitled.json".to_owned());
-                *lab = PatchLab::new(patch, file_name, lab.track_index);
-                self.status = format!("Opened synth patch {}", path.display());
-            }
-            Err(error) => self.status = format!("Could not open synth patch: {error}"),
-        }
-    }
-
     fn save_patch_lab(&mut self, lab: &mut PatchLab) {
         if lab.track_index >= self.project.tracks.len() {
             self.status = "The patch's original track no longer exists".to_owned();
@@ -511,7 +551,7 @@ impl StudioApp {
         let Some(output) = self
             .file_dialog()
             .add_filter("Synth patch", &["json"])
-            .set_file_name(lab.file_name.as_str())
+            .set_file_name(lab.save_file_name())
             .save_file()
         else {
             return;
@@ -541,6 +581,10 @@ impl StudioApp {
         };
         instrument.midi_program = lab.patch.midi_program;
         self.keyboard_binding = Some((lab.track_index, reference.clone()));
+        self.sounds.remember(crate::instruments::Sound {
+            name: lab.patch.name.clone(),
+            ..crate::instruments::Sound::file(&output, crate::instruments::SoundKind::Synth)
+        });
         lab.mark_saved(reference);
         self.dirty = true;
         self.status = format!("Saved synth patch to {}", output.display());
@@ -590,7 +634,7 @@ impl StudioApp {
                 if ui.button("New").clicked() {
                     action = Some(PatchLabAction::New);
                 }
-                if ui.button("Open").clicked() {
+                if ui.button("Load patch…").clicked() {
                     action = Some(PatchLabAction::Open);
                 }
                 if ui.button("Duplicate").clicked() {
@@ -599,10 +643,18 @@ impl StudioApp {
                 if ui.button("Reset").clicked() {
                     action = Some(PatchLabAction::Reset);
                 }
-                if ui.button("Save As").clicked() {
+                if ui.button("Save & assign…").clicked() {
                     action = Some(PatchLabAction::SaveAs);
                 }
             });
+            if lab.has_unsaved_changes() {
+                ui.label(
+                    RichText::new(
+                        "Unsaved sound draft · Play it below; Save & assign updates song playback.",
+                    )
+                    .color(theme::IVORY),
+                );
+            }
             ui.separator();
             patch_lab::tabs(ui, &mut lab);
             let message = egui::ScrollArea::vertical()
@@ -620,25 +672,29 @@ impl StudioApp {
                 self.status = message;
             }
         });
+        let load_patch = matches!(action, Some(PatchLabAction::Open));
         match action {
-            Some(PatchLabAction::New) => {
+            Some(PatchLabAction::New) if self.confirm_sound_discard(lab.has_unsaved_changes()) => {
                 lab = PatchLab::new_preset(lab.track_index);
-                self.status = "New synth patch; use Save As to assign it".to_owned();
+                self.status = "New synth patch; use Save & assign to assign it".to_owned();
             }
-            Some(PatchLabAction::Open) => self.open_patch_preset(&mut lab),
+            Some(PatchLabAction::Open) => {}
             Some(PatchLabAction::Duplicate) => {
                 lab.duplicate();
-                self.status = "Duplicated synth patch; use Save As to assign it".to_owned();
+                self.status = "Duplicated synth patch; use Save & assign to assign it".to_owned();
             }
             Some(PatchLabAction::Reset) => {
                 lab.reset();
                 self.status = "Restored the last opened, duplicated, or saved patch".to_owned();
             }
             Some(PatchLabAction::SaveAs) => self.save_patch_lab(&mut lab),
-            None => {}
+            Some(PatchLabAction::New) | None => {}
         }
         self.play_keyboard_events(ui, &lab.patch, events);
         self.patch_lab = Some(lab);
+        if load_patch {
+            self.load_patch_draft();
+        }
     }
 
     fn sample_capture_controls(&mut self, ui: &mut egui::Ui, lab: &mut PatchLab) {
@@ -698,7 +754,7 @@ impl StudioApp {
         self.stop_preview();
         match Project::load(path) {
             Ok(project) => {
-                self.patch_lab = None;
+                self.clear_all_sound_drafts();
                 self.project = project;
                 self.imported_track_indices = None;
                 self.show_about = false;
@@ -755,7 +811,14 @@ impl StudioApp {
             .source_midi
             .as_ref()
             .map(|path| path.to_string_lossy().into_owned());
-        if let Err(error) = self.project.save(&path) {
+        let old_base = self.patch_base().to_path_buf();
+        let new_base = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let mut saved_project = self.project.clone();
+        rebase_project_sources(&mut saved_project, &old_base, new_base);
+        if let Err(error) = saved_project.save(&path) {
             self.status = format!("Could not save project: {error}");
             return;
         }
@@ -776,8 +839,35 @@ impl StudioApp {
         } else {
             self.status = format!("Saved {}", path.display());
         }
+        self.history.rebase_instruments(&old_base, new_base);
+        self.project = saved_project;
+        self.saved_this_frame = Some(self.project.clone());
+        self.stop_keyboard();
+        self.beats_binding = None;
         self.project_path = Some(path);
         self.dirty = false;
+    }
+
+    fn finish_project_frame(&mut self, mut previous_project: Project, previous_base: &Path) {
+        let saved = self.saved_this_frame.take();
+        if self.resetting_document {
+            self.resetting_document = false;
+        } else {
+            if saved.is_some() {
+                // Save As changes the reference base, not the musical edit history.
+                rebase_project_sources(&mut previous_project, previous_base, self.patch_base());
+            }
+            if previous_project != self.project {
+                if !self.restoring_history {
+                    self.history.record(previous_project);
+                }
+                self.dirty = true;
+            }
+            if let Some(saved) = saved {
+                self.dirty = self.project != saved;
+            }
+        }
+        self.restoring_history = false;
     }
 
     fn relink_midi(&mut self) {
@@ -863,7 +953,7 @@ impl StudioApp {
         match result {
             Ok((project, file_indices, skipped, bends, pressure, controllers)) => {
                 self.stop_preview();
-                self.patch_lab = None;
+                self.clear_all_sound_drafts();
                 self.project = project;
                 self.imported_track_indices = Some(file_indices);
                 self.show_about = false;
@@ -1044,7 +1134,8 @@ impl StudioApp {
                             oscillator.sample_zones.clear();
                             oscillator.waveform = evil_synth::Waveform::Sample;
                             self.status =
-                                "Resampled section into Osc A; use Save As to keep it".to_owned();
+                                "Resampled section into Osc A; use Save & assign to keep it"
+                                    .to_owned();
                         } else {
                             self.status =
                                 "Resampling finished, but the original Patch Lab is no longer open"
@@ -1173,7 +1264,8 @@ impl StudioApp {
         let base = self.patch_base().to_path_buf();
         match evil_render::load_drum_kit(&source, &base) {
             Ok(kit) => {
-                let path = (source != "maxwell").then(|| base.join(&source));
+                let path = (!matches!(source.as_str(), "maxwell" | "chiptune"))
+                    .then(|| base.join(&source));
                 self.beats.load_instrument(kit, path, track_index);
                 self.status = format!("Pads linked to song track {:02}", track_index + 1);
             }
@@ -1203,6 +1295,10 @@ impl StudioApp {
         match result {
             Ok(()) => {
                 self.beats_binding = Some((track_index, reference));
+                self.sounds.remember(crate::instruments::Sound::file(
+                    &path,
+                    crate::instruments::SoundKind::Kit,
+                ));
                 self.dirty = true;
                 self.status = format!(
                     "Saved {} and linked song track {:02}",
@@ -1335,8 +1431,13 @@ impl StudioApp {
 }
 
 impl eframe::App for StudioApp {
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.sounds.save(storage);
+    }
+
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let previous_project = self.project.clone();
+        let previous_base = self.patch_base().to_path_buf();
         // Poll background renders, audio completion and incoming launch requests while idle.
         root.ctx()
             .request_repaint_after(std::time::Duration::from_millis(100));
@@ -1344,6 +1445,7 @@ impl eframe::App for StudioApp {
         self.poll_render();
         self.poll_instance(root.ctx());
         self.poll_midi_input();
+        self.sync_sound_drafts();
         self.shortcuts(root.ctx());
         if self
             .preview
@@ -1353,6 +1455,7 @@ impl eframe::App for StudioApp {
             self.preview = None;
         }
         self.toolbar(root);
+        self.sound_bar(root);
         self.status_bar(root);
         if self.view != View::Pads {
             self.track_panel(root);
@@ -1472,7 +1575,7 @@ impl eframe::App for StudioApp {
                             &channel_meters,
                         );
                         if selected != self.roll.selected_track {
-                            self.roll.select_track(selected);
+                            self.select_sound_track(selected);
                         }
                     }
                     View::Synth => self.patch_lab_panel(ui),
@@ -1485,16 +1588,13 @@ impl eframe::App for StudioApp {
                     }
                 }
             });
+        self.sync_sound_drafts();
         self.about_window(root.ctx());
-        if self.resetting_document {
-            self.resetting_document = false;
-        } else if previous_project != self.project {
-            if !self.restoring_history {
-                self.history.record(previous_project);
-            }
-            self.dirty = true;
+        self.sound_browser(root.ctx());
+        if let Some(path) = self.recovery.show(root.ctx()) {
+            self.open_project_path(&path);
         }
-        self.restoring_history = false;
+        self.finish_project_frame(previous_project, &previous_base);
     }
 }
 
@@ -1514,6 +1614,108 @@ fn track_position(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_shift_z_redoes_without_first_undoing_another_edit() {
+        let context = egui::Context::default();
+        let mut app = StudioApp::create(&context, None, LaunchOptions::default(), None);
+        app.history.record(app.project.clone());
+        app.project.name = "First edit".into();
+        app.history.record(app.project.clone());
+        app.project.name = "Second edit".into();
+        app.undo();
+        assert_eq!(app.project.name, "First edit");
+        let modifiers = egui::Modifiers {
+            command: true,
+            ctrl: true,
+            shift: true,
+            ..Default::default()
+        };
+        let _ = context.run_ui(
+            egui::RawInput {
+                modifiers,
+                events: vec![egui::Event::Key {
+                    key: egui::Key::Z,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                }],
+                ..Default::default()
+            },
+            |ui| app.shortcuts(ui.ctx()),
+        );
+        assert_eq!(app.project.name, "Second edit");
+    }
+
+    #[test]
+    fn save_as_stays_clean_and_preserves_the_musical_undo_history() {
+        let directory = tempfile::tempdir().unwrap();
+        let old_base = directory.path().join("old");
+        let new_base = directory.path().join("new");
+        std::fs::create_dir(&old_base).unwrap();
+        std::fs::create_dir(&new_base).unwrap();
+        std::fs::write(
+            old_base.join("lead.json"),
+            evil_synth::Patch::default().to_json_pretty().unwrap(),
+        )
+        .unwrap();
+        let context = egui::Context::default();
+        let mut app = StudioApp::create(&context, None, LaunchOptions::default(), None);
+        app.project_path = Some(old_base.join("song.evil"));
+        app.project.instruments[0].source = InstrumentSource::Synth {
+            patch: "lead.json".into(),
+        };
+        app.history.record(app.project.clone());
+        app.project.tracks[0]
+            .notes
+            .push(evil_project::Note::default());
+        let previous = app.project.clone();
+        let output = new_base.join("song.evil");
+        app.save_to(output.clone());
+        app.finish_project_frame(previous, &old_base);
+        assert!(!app.dirty);
+        assert_eq!(app.project, Project::load(&output).unwrap());
+        app.undo();
+        assert!(app.project.tracks[0].notes.is_empty());
+        assert!(!app.history.can_undo(), "Save As must not add an undo step");
+        assert!(
+            evil_render::load_patch(app.project.instruments[0].patch().unwrap(), &new_base).is_ok()
+        );
+        app.redo();
+        assert_eq!(app.project.tracks[0].notes.len(), 1);
+        assert!(
+            evil_render::load_patch(app.project.instruments[0].patch().unwrap(), &new_base).is_ok()
+        );
+    }
+
+    #[test]
+    fn edits_in_the_save_frame_remain_undoable_and_post_save_edits_stay_dirty() {
+        let directory = tempfile::tempdir().unwrap();
+        let context = egui::Context::default();
+        let mut app = StudioApp::create(&context, None, LaunchOptions::default(), None);
+        let previous = app.project.clone();
+        let base = app.patch_base().to_path_buf();
+        app.project.name = "Before save".into();
+        let path = directory.path().join("song.evil");
+        app.save_to(path.clone());
+        app.finish_project_frame(previous, &base);
+        assert!(!app.dirty);
+        app.undo();
+        assert_eq!(app.project.name, "Untitled");
+        app.redo();
+        let previous = app.project.clone();
+        app.finish_project_frame(previous, directory.path());
+
+        let previous = app.project.clone();
+        app.save_to(path.clone());
+        app.project.name = "After save".into();
+        app.finish_project_frame(previous, directory.path());
+        assert!(app.dirty);
+        assert_eq!(Project::load(&path).unwrap().name, "Before save");
+        app.undo();
+        assert_eq!(app.project.name, "Before save");
+    }
 
     #[test]
     fn a_file_track_index_finds_the_project_track_past_the_tracks_the_import_dropped() {

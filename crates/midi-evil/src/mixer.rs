@@ -160,18 +160,24 @@ fn mixer_content(
         .filter(|track| track.instrument == instrument_index)
         .count();
     ui.add_space(14.0);
-    ui.columns(2, |columns| {
-        columns[0].set_min_width(360.0);
-        columns[1].set_min_width(320.0);
-        insert_editor(
-            &mut columns[0],
-            project,
-            track_index,
-            instrument_index,
-            shared_tracks,
-        );
-        send_editor(&mut columns[1], project);
-    });
+    if ui.available_width() < 760.0 {
+        insert_editor(ui, project, track_index, instrument_index, shared_tracks);
+        ui.add_space(14.0);
+        send_editor(ui, project);
+    } else {
+        ui.columns(2, |columns| {
+            columns[0].set_min_width(360.0);
+            columns[1].set_min_width(320.0);
+            insert_editor(
+                &mut columns[0],
+                project,
+                track_index,
+                instrument_index,
+                shared_tracks,
+            );
+            send_editor(&mut columns[1], project);
+        });
+    }
 }
 
 fn insert_editor(

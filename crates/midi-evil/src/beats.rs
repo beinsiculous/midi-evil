@@ -113,6 +113,13 @@ pub struct BeatsPage {
     tempo_bpm: f32,
 }
 
+pub struct BeatsDraft {
+    kit: DrumKit,
+    path: Option<PathBuf>,
+    selected: usize,
+    sample_undo: Option<SampleUndo>,
+}
+
 impl BeatsPage {
     pub fn new(context: &egui::Context) -> Self {
         let (kit, message) = match evil_beats::maxwell_kit() {
@@ -158,6 +165,36 @@ impl BeatsPage {
 
     pub fn has_unsaved_changes(&self) -> bool {
         self.dirty
+    }
+
+    pub fn discard_draft(&mut self) {
+        self.stop();
+        self.dirty = false;
+    }
+
+    pub fn take_draft(&mut self) -> Option<BeatsDraft> {
+        self.stop();
+        if !self.dirty {
+            return None;
+        }
+        self.dirty = false;
+        Some(BeatsDraft {
+            kit: std::mem::replace(&mut self.kit, DrumKit::empty("Untitled Kit")),
+            path: self.path.take(),
+            selected: self.selected,
+            sample_undo: self.sample_undo.take(),
+        })
+    }
+
+    pub fn restore_draft(&mut self, draft: BeatsDraft, track_index: usize) {
+        self.load_instrument(draft.kit, draft.path, track_index);
+        self.selected = draft.selected;
+        self.sample_undo = draft.sample_undo;
+        self.dirty = true;
+    }
+
+    pub fn relink_track(&mut self, track_index: usize) {
+        self.track_index = Some(track_index);
     }
 
     pub fn load_instrument(&mut self, kit: DrumKit, path: Option<PathBuf>, track_index: usize) {
@@ -583,6 +620,22 @@ fn kit_peaks(kit: &DrumKit) -> [Vec<f32>; PAD_COUNT] {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parked_kit_preserves_edits_and_relinks_to_a_moved_track() {
+        let context = eframe::egui::Context::default();
+        let mut page = super::BeatsPage::new(&context);
+        page.kit.name = "Custom kit".into();
+        page.kit.gain = 0.37;
+        page.dirty = true;
+        let draft = page.take_draft().unwrap();
+        assert!(!page.has_unsaved_changes());
+        page.restore_draft(draft, 4);
+        assert_eq!(page.track_index, Some(4));
+        assert_eq!(page.kit.name, "Custom kit");
+        assert_eq!(page.kit.gain, 0.37);
+        assert!(page.has_unsaved_changes());
+    }
+
     use super::*;
 
     #[test]

@@ -13,6 +13,7 @@ pub struct PatchLab {
     pub file_name: String,
     pub track_index: usize,
     original_patch: Patch,
+    unassigned: bool,
     pub page: PatchPage,
     slicing: SliceControls,
     recording: Option<SampleRecorder>,
@@ -47,6 +48,7 @@ impl PatchLab {
     pub fn new(patch: Patch, file_name: String, track_index: usize) -> Self {
         Self {
             original_patch: patch.clone(),
+            unassigned: false,
             patch,
             file_name,
             track_index,
@@ -56,11 +58,18 @@ impl PatchLab {
         }
     }
 
+    pub fn draft(patch: Patch, file_name: String, track_index: usize) -> Self {
+        let mut lab = Self::new(patch, file_name, track_index);
+        lab.unassigned = true;
+        lab
+    }
+
     pub fn new_preset(track_index: usize) -> Self {
-        Self::new(Patch::default(), "untitled.json".to_owned(), track_index)
+        Self::draft(Patch::default(), "untitled.json".to_owned(), track_index)
     }
 
     pub fn duplicate(&mut self) {
+        self.unassigned = true;
         self.file_name = duplicate_file_name(&self.file_name);
         self.original_patch = self.patch.clone();
     }
@@ -70,12 +79,24 @@ impl PatchLab {
     }
 
     pub fn mark_saved(&mut self, file_name: String) {
+        self.unassigned = false;
         self.file_name = file_name;
         self.original_patch = self.patch.clone();
     }
 
+    pub fn save_file_name(&self) -> &str {
+        Path::new(&self.file_name)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("untitled.json")
+    }
+
     pub fn recording_active(&self) -> bool {
         self.recording.is_some()
+    }
+
+    pub fn has_unsaved_changes(&self) -> bool {
+        self.unassigned || self.patch != self.original_patch || self.recording_active()
     }
 
     pub fn start_recording(&mut self) -> Result<String, String> {
@@ -96,7 +117,7 @@ impl PatchLab {
         oscillator.sample = Some(sample);
         oscillator.sample_zones.clear();
         oscillator.waveform = Waveform::Sample;
-        Ok("Embedded microphone recording in Osc A; use Save As to keep it".to_owned())
+        Ok("Embedded microphone recording in Osc A; use Save & assign to keep it".to_owned())
     }
 }
 
@@ -211,7 +232,7 @@ fn show_output(ui: &mut Ui, patch: &mut Patch) {
     });
     ui.label(
         egui::RichText::new(
-            "Voice edits sound on the next note · Save As assigns this draft to the track",
+            "Voice edits sound on the next note · Save & assign updates this draft to the track",
         )
         .small()
         .color(theme::MUTED),
@@ -220,6 +241,12 @@ fn show_output(ui: &mut Ui, patch: &mut Patch) {
 
 fn show_performance(ui: &mut Ui, patch: &mut Patch) {
     ui.heading("Glide & accent");
+    ui.add(egui::Slider::new(&mut patch.velocity_exponent, 0.0..=4.0).text("Velocity response"))
+        .on_hover_text("1 is linear; higher values make soft notes quieter");
+    ui.add(
+        egui::Slider::new(&mut patch.velocity_filter_octaves, -4.0..=4.0).text("Velocity → cutoff"),
+    )
+    .on_hover_text("Filter response to note velocity, in octaves");
     ui.add(
         DragValue::new(&mut patch.glide_seconds)
             .range(0.0..=60.0)
@@ -246,6 +273,10 @@ fn show_modal_partials(ui: &mut Ui, patch: &mut Patch) {
     egui::CollapsingHeader::new(format!("Modal partials ({})", patch.modal_partials.len()))
         .id_salt("modal-partials")
         .show(ui, |ui| {
+            ui.checkbox(
+                &mut patch.modal_one_shot,
+                "Let partials ring after note release",
+            );
             ui.label(
                 "Inharmonic, decaying tones for bells and mallets. Ratios follow the note pitch.",
             );
@@ -272,6 +303,12 @@ fn show_modal_partials(ui: &mut Ui, patch: &mut Patch) {
                                 .speed(0.01)
                                 .prefix("Decay ")
                                 .suffix(" s"),
+                        );
+                        ui.add(
+                            DragValue::new(&mut partial.pitch_gain_per_octave)
+                                .range(-2.0..=2.0)
+                                .speed(0.01)
+                                .prefix("Gain / octave "),
                         );
                         if ui.button("Remove").clicked() {
                             remove = Some(index);
@@ -442,7 +479,9 @@ fn show_voice(ui: &mut Ui, patch: &mut Patch) {
 fn show_samples(ui: &mut Ui, patch: &mut Patch, slicing: &mut SliceControls) -> Option<String> {
     let mut message = None;
     ui.label("Load WAV / AIFF, record the microphone, or resample the song section into Osc A.");
-    ui.label("One sample oscillator per patch · Save As keeps embedded audio with the patch.");
+    ui.label(
+        "One sample oscillator per patch · Save & assign keeps embedded audio with the patch.",
+    );
     let sample_oscillator = patch
         .oscillators
         .iter()
@@ -1275,6 +1314,14 @@ fn show_lfo(ui: &mut Ui, lfo: &mut Lfo, index: usize, lfo_count: usize) {
                 ui.add(
                     egui::Slider::new(&mut lfo.amplitude_depth, -1.0..=1.0).text("Amplitude depth"),
                 );
+                ui.add(
+                    DragValue::new(&mut lfo.amplitude_transition_seconds)
+                        .range(0.0..=0.1)
+                        .speed(0.001)
+                        .prefix("Smoothing ")
+                        .suffix(" s"),
+                )
+                .on_hover_text("Smooth amplitude transitions; zero keeps the original LFO shape");
             }
             LfoDestination::LfoRate => {
                 ui.add(
@@ -1302,6 +1349,19 @@ fn show_lfo(ui: &mut Ui, lfo: &mut Lfo, index: usize, lfo_count: usize) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn resetting_an_unassigned_draft_does_not_claim_it_is_saved() {
+        let mut lab = super::PatchLab::new_preset(0);
+        lab.patch.gain = 0.123;
+        lab.reset();
+        assert!(lab.has_unsaved_changes());
+        lab.mark_saved("saved.json".into());
+        assert!(!lab.has_unsaved_changes());
+        lab.duplicate();
+        lab.reset();
+        assert!(lab.has_unsaved_changes());
+    }
+
     use super::*;
 
     #[test]
@@ -1317,6 +1377,7 @@ mod tests {
         let duplicated = lab.patch.clone();
 
         assert_eq!(lab.file_name, "patches/lead-copy.json");
+        assert_eq!(lab.save_file_name(), "lead-copy.json");
         assert_eq!(lab.patch.name, "Preserved name");
         assert_eq!(lab.patch.midi_program, Some(42));
         assert_eq!(lab.track_index, 2);

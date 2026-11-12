@@ -65,7 +65,7 @@ pub struct RenderOutput {
 }
 
 pub fn load_patch(source: &str, base: &Path) -> Result<Patch, Error> {
-    if source.ends_with(".json") {
+    if source.to_ascii_lowercase().ends_with(".json") {
         load_patch_file(&base.join(source))
     } else {
         Ok(evil_synth::preset(source)?)
