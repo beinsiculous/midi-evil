@@ -559,13 +559,34 @@ pub fn chiptune_kit() -> Result<DrumKit, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+
+    use sha2::{Digest, Sha256};
+
+    const TICKS_PER_SECOND: f64 = 512.0;
+
+    fn dense_start_tick(index: usize) -> u32 {
+        (index as f64 * 1.536).round() as u32
+    }
+
     fn dense_chiptune_hits() -> Vec<crate::KitHit> {
         (0..256)
             .map(|index| crate::KitHit {
                 pad_index: (index * 7 + index / 16) % 16,
-                start_seconds: index as f64 * 0.003,
+                start_seconds: f64::from(dense_start_tick(index)) / TICKS_PER_SECOND,
                 duration_seconds: None,
                 velocity: 72 + (index % 56) as u8,
+            })
+            .collect()
+    }
+
+    fn below_limit_chiptune_hits() -> Vec<crate::KitHit> {
+        dense_chiptune_hits()
+            .into_iter()
+            .enumerate()
+            .map(|(index, mut hit)| {
+                hit.start_seconds = index as f64 * 64.0 / TICKS_PER_SECOND;
+                hit
             })
             .collect()
     }
@@ -634,10 +655,103 @@ mod tests {
     }
 
     #[test]
+    fn chiptune_dense_variants_share_ticks_and_below_limit_stays_below_eight_voices() {
+        let stress = dense_chiptune_hits();
+        let below_limit = below_limit_chiptune_hits();
+        assert_eq!(stress.len(), 256);
+        assert_eq!(below_limit.len(), 256);
+        let expected_ticks = [0, 2, 3, 5, 6, 8];
+        for (index, expected) in expected_ticks.into_iter().enumerate() {
+            assert_eq!(dense_start_tick(index), expected);
+        }
+        for (index, (stress_hit, below_hit)) in stress.iter().zip(&below_limit).enumerate() {
+            assert_eq!(stress_hit.pad_index, below_hit.pad_index);
+            assert_eq!(stress_hit.velocity, below_hit.velocity);
+            assert_eq!(stress_hit.duration_seconds, None);
+            assert_eq!(below_hit.duration_seconds, None);
+            assert_eq!(
+                stress_hit.start_seconds * TICKS_PER_SECOND,
+                dense_start_tick(index) as f64
+            );
+            assert_eq!(
+                below_hit.start_seconds * TICKS_PER_SECOND,
+                index as f64 * 64.0
+            );
+        }
+        let maximum_active = below_limit
+            .iter()
+            .enumerate()
+            .map(|(index, hit)| {
+                below_limit[..index]
+                    .iter()
+                    .filter(|previous| {
+                        previous.start_seconds
+                            + CHIP_SPECS[previous.pad_index].frames as f64
+                                / f64::from(CHIP_SAMPLE_RATE)
+                            > hit.start_seconds
+                    })
+                    .count()
+                    + 1
+            })
+            .max()
+            .unwrap();
+        assert!(maximum_active < 8);
+    }
+
+    fn write_dense_artifact(
+        root: &Path,
+        kit: &DrumKit,
+        variant: &str,
+        render_name: &str,
+        report_name: &str,
+        hits: &[crate::KitHit],
+    ) {
+        let mut sound = crate::render_kit(kit, hits, CHIP_SAMPLE_RATE).unwrap();
+        let peak = sound
+            .left
+            .iter()
+            .chain(&sound.right)
+            .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+        let scale = (0.99 / peak).min(1.0);
+        for sample in sound.left.iter_mut().chain(&mut sound.right) {
+            *sample *= scale;
+        }
+        let render_path = root.join(render_name);
+        sound.write_wav(&render_path).unwrap();
+        let render_hash = format!("{:x}", Sha256::digest(std::fs::read(&render_path).unwrap()));
+        let report = serde_json::json!({
+            "schema": "midi-evil-chiptune-dense-native-v2",
+            "variant": variant,
+            "kit": "chiptune.evilkit",
+            "native_render": render_name,
+            "native_render_sha256": render_hash,
+            "sample_rate_hz": CHIP_SAMPLE_RATE,
+            "tempo_bpm": 120.0,
+            "swing": 0.5,
+            "ticks_per_quarter_note": 256,
+            "pattern_length_ticks": if variant == "stress" { 1024 } else { 16384 },
+            "unclipped_mix_peak": peak,
+            "wav_normalization_scale": scale,
+            "hits": hits.iter().map(|hit| serde_json::json!({
+                "pad_index": hit.pad_index,
+                "note": 48 + hit.pad_index,
+                "start_tick": (hit.start_seconds * TICKS_PER_SECOND).round() as u32,
+                "duration_ticks": 1,
+                "start_seconds": hit.start_seconds,
+                "duration_seconds": hit.duration_seconds,
+                "velocity": hit.velocity,
+            })).collect::<Vec<_>>(),
+        });
+        std::fs::write(
+            root.join(report_name),
+            serde_json::to_vec_pretty(&report).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
     #[ignore = "writes reproducible local Chiptune calibration artifacts"]
     fn write_chiptune_comparison_artifacts() {
-        use std::path::Path;
-
         use evil_synth::RenderedSound;
 
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/chiptune");
@@ -656,39 +770,22 @@ mod tests {
             .write_wav(pads_directory.join(format!("pad-{index:02}.wav")))
             .unwrap();
         }
-        let hits = dense_chiptune_hits();
-        let mut dense = crate::render_kit(&portable_kit, &hits, CHIP_SAMPLE_RATE).unwrap();
-        let dense_peak = dense
-            .left
-            .iter()
-            .chain(&dense.right)
-            .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
-        let dense_scale = (0.99 / dense_peak).min(1.0);
-        for sample in dense.left.iter_mut().chain(&mut dense.right) {
-            *sample *= dense_scale;
-        }
-        dense.write_wav(root.join("dense-native.wav")).unwrap();
-        let report = serde_json::json!({
-            "schema": "midi-evil-chiptune-dense-native-v1",
-            "kit": "chiptune.evilkit",
-            "native_render": "dense-native.wav",
-            "sample_rate_hz": CHIP_SAMPLE_RATE,
-            "unclipped_mix_peak": dense_peak,
-            "wav_normalization_scale": dense_scale,
-            "reference_dense_mixdown": null,
-            "residual_capture_need": "Capture a matching user-owned reference dense-pattern mixdown before making comparative dense-mix claims.",
-            "hits": hits.iter().map(|hit| serde_json::json!({
-                "pad_index": hit.pad_index,
-                "start_seconds": hit.start_seconds,
-                "duration_seconds": hit.duration_seconds,
-                "velocity": hit.velocity,
-            })).collect::<Vec<_>>(),
-        });
-        std::fs::write(
-            root.join("dense-pattern.json"),
-            serde_json::to_vec_pretty(&report).unwrap(),
-        )
-        .unwrap();
+        write_dense_artifact(
+            &root,
+            &portable_kit,
+            "stress",
+            "dense-native.wav",
+            "dense-pattern.json",
+            &dense_chiptune_hits(),
+        );
+        write_dense_artifact(
+            &root,
+            &portable_kit,
+            "below_limit",
+            "below-limit-native.wav",
+            "below-limit-pattern.json",
+            &below_limit_chiptune_hits(),
+        );
     }
 
     #[test]

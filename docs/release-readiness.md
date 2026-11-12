@@ -20,6 +20,13 @@ Status: **engineering verification, not release certification**. No crate has be
 | Release binary launch arguments | `--help` passed; an unknown option exited 1 with one stderr line |
 | Release desktop launch | Working-tree and clean-clone binaries each remained running for a five-second timeout with no stderr; no interactive gestures claimed |
 
+## Chiptune follow-up verified on 2026-11-11
+
+- Native formatting, build, 291 tests and strict Clippy passed.
+- Compatibility formatting, 326 tests and strict Clippy passed, including all three local-only dense-fixture example tests run by the standard workspace command. Their ignored source is backed up under `compat/reference/chiptune/tooling/`; it is not part of a public clone.
+- `tools/audit-public-packages.sh --allow-dirty` passed again after the native test/dev-dependency change; the older clean-clone result above does not certify this follow-up.
+- NanoStudio 1.42 accepted, saved and reopened clean Chiptune probe/dense fixtures. Stress and below-limit source renders were each captured twice with no clipping, fully verified against native v2 JSON, and compared with archived source-repeat and complete-tail 10 ms envelope metrics. See `docs/chiptune.md` and the read-only manifests under `compat/reference/chiptune/`.
+
 The focused desktop tests exercise full-song and exact-section PCM16 WAV output, `.evil` save/reload, MIDI export/reimport, queued track-stem and arrangement-part WAV workers, and preview-source/meter consumption without an audio device. These are hardware-independent workflow checks, not a substitute for operating the GUI.
 
 The clean clone was created from the committed implementation revision with `--no-local`, contained only tracked public files, and had no compat workspace or Oracle/evil-porting directories. Its `tools/audit-native.sh` run passed all 290 native tests plus focused workflows, strict Clippy, and the release build. `tools/audit-public-packages.sh` passed without `--allow-dirty`. The desktop was also installed into an isolated root and launched from the clean release build. Later documentation-only commits do not change that verified implementation.
@@ -49,7 +56,7 @@ Cargo cannot archive/verify packages whose native path dependencies are not yet 
 - The source policy permits these AI-generated assets in free releases. Paid distribution remains gated on a documented human hand-cleanup pass or replacement artwork.
 - No NanoStudio artwork, proprietary bank/project fixture, reference WAV, Oracle/evil-porting source, or private compatibility workspace is included in any native package list.
 - The public-domain Bach MIDI and source notice remain repository fixtures; they are not duplicated into native crate packages.
-- The Chiptune kit is original deterministic synthesis. Its source-side dense-pattern comparison remains **Partial** and unverified, as recorded in `docs/nanostudio1-parity.md` and `docs/chiptune.md`.
+- The Chiptune kit is original deterministic synthesis. Clean source fixtures and both 256-hit source/native comparisons are now measured and archived, including source-repeat and 10 ms envelope metrics. The result remains **Partial**, not sample equivalence: direct waveform alignment is invalid, source allocation/choke behavior is not fully explained, and per-pad approximation limits remain. See `docs/nanostudio1-parity.md` and `docs/chiptune.md`.
 
 ## Remaining manual release gates
 

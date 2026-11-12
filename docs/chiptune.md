@@ -125,7 +125,7 @@ The exhaustive native checksums, formats, onset/attack, band energies, rolloffs,
 
 The remaining differences are deliberate approximation limits, especially transient peak shape, low-level residual decays, the very bright closed-hat spectrum, and tom/clave harmonic balance. No sample-match claim is made.
 
-## Local artifacts and dense pattern
+## Local artifacts and dense patterns
 
 Generate the native-only artifacts without changing the public crate root:
 
@@ -137,12 +137,75 @@ The ignored test uses the kit serializer, public stereo WAV writer, and `render_
 
 - `target/chiptune/chiptune.evilkit`: portable native kit containing only original synthesized audio.
 - `target/chiptune/pads/pad-00.wav` through `pad-15.wav`: mono PCM16 native pad measurements.
-- `target/chiptune/dense-native.wav`: 256-hit, 44.1 kHz stereo native render with deterministic overlapping hits.
-- `target/chiptune/dense-pattern.json`: exact hit list, unclipped floating-point mix peak, WAV normalization scale, and provenance note.
-- `target/chiptune/source-measurements.json` and `comparison.json`: reproducible source-only and source/native-separate reports.
+- `target/chiptune/dense-native.wav` and `dense-pattern.json`: the 256-hit allocator-stress render and its versioned tick schedule.
+- `target/chiptune/below-limit-native.wav` and `below-limit-pattern.json`: the same 256 hits at 64-tick spacing, with fewer than eight concurrent full-length pads.
+- `target/chiptune/source-measurements.json` and `comparison.json`: reproducible source-only and per-pad source/native-separate reports.
 
-The dense float render peaks at 1.71140099 and is normalized by 0.57847345 only when written to PCM16; the scale is recorded in `dense-pattern.json`. **No matching NanoStudio dense-pattern mixdown exists. `dense-native.wav` is not a comparative mixdown.** A residual capture need is a user-owned reference render of the exact 256-hit pattern in `dense-pattern.json`; only after that capture should dense source/native comparisons be claimed.
+Both dense schemas are `midi-evil-chiptune-dense-native-v2`, with 120 BPM, straight swing, 256 ticks/quarter, explicit notes/start ticks/durations/velocities, and native WAV SHA-256. Notes are `48 + pad_index`; the original `36 + pad_index` fixture mapping was wrong. All source hits use one-tick notes in `Trigger` mode, which the probes confirmed plays each complete sample, so native hits use `duration_seconds: None`.
+
+Stress starts are exactly `round(index * 1.536)` ticks, not unquantized 3 ms times. Its unclipped float peak is 1.59571767 and its WAV normalization scale is 0.62041050. The below-limit peak is 0.52538705 and needs no normalization. Native stress SHA-256 is `6d285fd4a1ac00387b2ebf3154fd91ec19421f81f7885dcc9b0b20e32a0d700a`; below-limit is `d94d442a02fafc703baeb29279662265188516b01d47266b7a6d85208e97b8c6`.
+
+## Source-behavior probes
+
+The private Oracle example `crates/oracle/examples/build_chiptune_dense.rs` builds one-bar patterns/parts while preserving NanoStudio-written `Package.prj` bytes and changing only `Package.sng`. It validates every pad attribute, envelope field and resolved sample hash against `Package.trg`, checks mixer/TRG mutes and effects, verifies complete saved sequences, syncs assets, and publishes with no-replace rename. Oracle and this builder are **local-only, git-ignored compatibility tooling**, not versioned public source and not included in native packages. The builder, manifest and comparison script are backed up with hashes under `compat/reference/chiptune/tooling/` and the second external reference archive; restore them into their original paths before running.
+
+NanoStudio 1.42 accepted, saved and reopened the clean Chiptune base and all probe/dense fixtures. Canonical projects, resolved samples, specs, renders, manifests and comparisons are archived read-only under ignored `compat/reference/chiptune/`, with a second archive outside the working tree. These are user-owned private captures, not release assets.
+
+Measured source behavior:
+
+- **Mapping:** all 16 isolated pads match `48 + pad_index`; minimum source-sample correlation is 0.99999084.
+- **Gate:** one-tick and 256-tick notes at equal velocity have identical RMS. `Trigger` is a full one-shot, not a one-tick gate.
+- **Velocity:** pads 0, 2 and 10 are approximately linear at velocities 1, 32, 64, 96 and 127. The velocity-110/64 ratio is 1.71875.
+- **Timing:** isolated off-grid hits are stable between renders, but playback-start errors relative to ideal tick samples are 41.87, 117.60, 53.13, 0.87 and 3.13 samples at ticks 1, 3, 127, 129 and 383. Direct dense waveform alignment is therefore not reliable; 10 ms envelopes are primary.
+- **Overlap:** the 8/16/32/64-hit captures do not fit simple oldest-first or same-pad-mono models closely enough to establish source voice count or stealing order. Allocation remains inconclusive.
+- **Choke:** closed-then-open-hat differs between two renders (pattern correlation 0.8933), while open-then-closed is byte-identical. Do not infer a deterministic source rule from these captures.
+- **Capture noise:** the isolated velocity renders are byte-identical; other sections vary. Source-repeat correlations are recorded with every comparison instead of claiming universal determinism.
+
+Probe commands:
+
+```bash
+cargo run --manifest-path compat/Cargo.toml --example build_chiptune_dense -- \
+  probe-spec gate target/reverse-engineering/probe-gate-full.json
+cargo run --manifest-path compat/Cargo.toml --example build_chiptune_dense -- \
+  build BASE_PROJECT.prj CHIPTUNE_BANK.trg \
+  target/reverse-engineering/probe-gate-full.json OUTPUT_PROJECT.prj
+cargo run --manifest-path compat/Cargo.toml --example build_chiptune_dense -- \
+  verify BASE_PROJECT.prj CHIPTUNE_BANK.trg \
+  target/reverse-engineering/probe-gate-full.json OUTPUT_PROJECT.prj
+```
+
+## Dense source/native comparison
+
+Build and verify either dense variant with:
+
+```bash
+cargo run --manifest-path compat/Cargo.toml --example build_chiptune_dense -- \
+  dense BASE_PROJECT.prj CHIPTUNE_BANK.trg \
+  target/chiptune/dense-pattern.json OUTPUT_PROJECT.prj
+cargo run --manifest-path compat/Cargo.toml --example build_chiptune_dense -- \
+  verify-dense BASE_PROJECT.prj CHIPTUNE_BANK.trg \
+  target/chiptune/dense-pattern.json OUTPUT_PROJECT.prj
+python3 -I tools/compare_chiptune_dense.py \
+  compat/reference/chiptune/dense-stress-v2/spec.json \
+  compat/reference/chiptune/dense-stress-v2/native.wav \
+  compat/reference/chiptune/dense-stress-v2/render1.wav \
+  target/chiptune/dense-comparison.json \
+  --repeat compat/reference/chiptune/dense-stress-v2/render2.wav
+```
+
+Substitute `below-limit-pattern.json`, `dense-below-limit-v2`, and `below-limit-comparison.json` for the below-limit workflow. The comparison requires schema v2 and the recorded native checksum, validates stereo PCM16 at 44.1 kHz, bounds lag to ±512 samples, checks onset/cross-correlation agreement, applies least-squares gain, and reports raw and aligned metrics separately. Complete tails are zero-padded rather than truncated, with outside-overlap energy reported. Clipping invalidates corrected metrics. A mismatch between onset and cross-correlation lag also leaves direct waveform fields null; envelope lag edge cases and zero-variance inputs are handled explicitly.
+
+Measured results:
+
+| Variant | Source frames | Source peak | Unscaled native gain | Envelope correlation | Envelope RMSE | Outside-overlap energy | Source repeat: waveform / 10 ms envelope |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Stress | 120,192 | 0.654419 | -8.120 dB | 0.977668 | 0.013853 | 0 | invalid / 0.992747 |
+| Below limit | 1,478,656 | 0.268677 | -8.736 dB | 0.850291 | 0.010482 | 0 | 0.999302 / 0.999195 |
+
+Neither source capture clips. Direct waveform alignment is invalid for both, so aligned waveform gain, RMSE and correlation are null. Stress is an allocator-stress diagnostic. Below-limit is a candidate synthesis comparison: matching source/native sample lengths bound simultaneous source material to fewer than eight voices, but the source allocator and its actual limit remain unproven. These are measured original-synthesis approximations, not sample equivalence. Chiptune remains **Partial** because allocator behavior and off-grid timing are not fully explained and the per-pad approximation limits above remain. Follow-up is tracked in `beinsiculous/midi-evil#1`.
+
+Canonical stress render hashes are `f22145d0c4d8d66aefcc2fd74af8cef7e5ca4e9d5843e273b0b914781a295f9b` and `cbd998fce92201278de8ef6dca29ddf82ef299848626b5b52b0abc70813143ef`. Canonical below-limit hashes are `096ec8374b2f7cd8d0a0184357bbb00bcb19cf7a575430ffd105c25f938fb935` and `0dbae7ea26c0190a483352a3e0017e652ecf34b570100df84168ea2d7ac2a9e3`. The manifests contain all spec/project/sample hashes and repeatability measurements.
 
 ## Automated coverage
 
-The preset tests cover all 16 non-empty pads, exact identities and playback settings, kit validation, centered pan/zero tuning, hat choke group 1, disabled filters/sends, finite bounded samples, full-kit and dense-render reproducibility, source-path independence, and 256 dense overlapping hits through `render_kit`. The artifact writer is explicitly ignored during normal tests so normal test runs do not write repository artifacts.
+The preset tests cover all 16 non-empty pads, exact identities and playback settings, kit validation, centered pan/zero tuning, hat choke group 1, disabled filters/sends, finite bounded samples, full-kit and dense-render reproducibility, source-path independence, exact stress ticks, all 256 hit conversions, deterministic output, and below-limit maximum concurrency. The artifact writer is explicitly ignored during normal tests so normal test runs do not write repository artifacts. The local-only Oracle example tests cover one-bar probe layouts and exact stress/below-limit JSON conversion; their source is backed up under `compat/reference/chiptune/tooling/` rather than included in a public clone.
