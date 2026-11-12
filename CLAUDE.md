@@ -133,3 +133,38 @@ Useful real-data checks beyond unit tests:
 - Additional MIDI files from the Insiculous project have been useful for different track counts, meters, and tempo maps. Do not assume their licenses or redistribute them as public-domain assets.
 
 Keep NanoStudio compatibility checks distinct from native `.evil` and Standard MIDI tests so an oracle failure does not get mistaken for a native-engine failure.
+
+## The working set
+
+This repository is cloned inside `~/projects/insiculous`, the Be Insiculous working set, at `midi-evil/`, beside `insiculous_2d`, which leverages it across the `.mid` crossing (`docs/insiculous-crossing.md`). MIDI Evil is the fourth part of Be Insiculous — its own thing, not a Games tool.
+
+Branches are `main`, `dev`, and one per machine owner: `jesse` (Iroh and bob-ross) and `m` (Danny; created when M first works the repo). Commit to the branch matching the machine you are on, and confirm with `hostname` when unsure. Jesse merges `jesse → dev → main`.
+
+`AGENTS.md` is a symlink to this file and is what Kimi, Codex and agy read.
+
+`cargo fmt` is this repository's own rule and stays. The never-fmt rule in `insiculous_2d` is the engine's, not this repository's.
+
+## Work tracking
+
+Open work lives on the **Studio Board** (https://github.com/orgs/beinsiculous/projects/1) as issues in this repo. **Always pass `-R beinsiculous/midi-evil`** — a bare `gh` command resolves against the session's working directory, which is often the working-set root, so it lists and files against the wrong repository.
+
+```bash
+gh issue list -R beinsiculous/midi-evil
+gh api repos/beinsiculous/midi-evil/milestones --jq '.[] | "\(.title): \(.description)"'
+```
+
+Issues are grouped into **sprint milestones**; each description records the batch's internal order and its gates. Take the next unblocked issue in a sprint, not an arbitrary one. Claim by assigning yourself; close with `fixes beinsiculous/midi-evil#N` in the commit.
+
+**Unfinished work becomes an issue.** Anything you don't finish — work you deferred, debt you created, a follow-up you spotted — is filed before you report done. Never buried in a doc, never left as a bare `TODO:`, never dropped. The `file-issue` skill carries the shape; `sprint-planning` groups issues into shippable batches.
+
+The board workflow is not installed here until its secret exists, so every new issue is added to the Studio Board by hand — the `file-issue` skill's list of repositories that add automatically does not hold for this one:
+
+```bash
+gh project item-add 1 --owner beinsiculous --url <issue-url>
+```
+
+## Review workflow
+
+The adversarial-review skills live in `.claude/skills/`, `.kimi-code/skills/` and `.agents/skills/`, and `.claude/settings.json` registers the two hooks that route into them (`scripts/plan-review-hook.sh` and `scripts/commit-review-hook.sh`). `review/` is shared by every session at once, so each review conversation claims its own `review/<subject>/` with a plain `mkdir review/<subject>` — no `-p`: a directory that already exists belongs to another session, and another subject's directory is never touched. Approved plans go to `review/<subject>/plan.md` and are reviewed with `scripts/request-review.sh plan review/<subject>/plan.md --reviewer=kimi` before implementation. A `git commit` with 100 or more pending changed lines is denied by `scripts/commit-review-hook.sh` until the diff has been through a code-mode review; the `ADV_REVIEWED=1` prefix is used only after that review is adjudicated with the user. Skipping review is the user's explicit call, written by the user as the `Adversarial-Review-Skipped:` and `Skip-Signed-Off-By:` trailers at the end of the commit message — an agent never writes the skip trailers. `review/` is gitignored transients.
+
+The scripts, prompts and skills are **copies**: the canonical ones live in the working-set root, not here. Never edit a copy — fix the root's and re-copy — and `scripts/check-skill-parity.sh` there reports any repo that drifted.

@@ -39,3 +39,14 @@ Package.sng
 
 oracle
 evil-porting
+
+# Adversarial-review transient artifacts (see .claude/skills/adversarial-review/)
+review/*
+!review/.gitkeep
+
+# Local-only Claude Code settings
+.claude/settings.local.json
+
+# Workbooks hold personal data. M's ruling (2026-10-19): every workbook is ignored in every
+# repo of the working set, so personal data stays on the machines that hold it.
+*.xlsx

@@ -51,7 +51,7 @@ for name in expected:
     package = packages[name]
     assert package["license"] == "MIT", f"{name}: missing MIT license"
     assert package["description"], f"{name}: missing description"
-    assert package["repository"] == "https://github.com/magicjedi90/midi-evil"
+    assert package["repository"] == "https://github.com/beinsiculous/midi-evil"
     assert package["homepage"] == package["repository"]
     assert package["authors"], f"{name}: missing authors"
     assert package["readme"], f"{name}: missing README"
