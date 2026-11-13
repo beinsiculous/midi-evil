@@ -26,6 +26,29 @@ pub enum DelayMode {
     #[default]
     Mono,
     StereoCross,
+    PingPong,
+}
+
+pub(crate) fn stereo_delay_input(
+    mode: DelayMode,
+    dry: [f32; 2],
+    delayed: [f32; 2],
+    feedback: f32,
+) -> [f32; 2] {
+    match mode {
+        DelayMode::Mono => [
+            dry[0] + delayed[0] * feedback,
+            dry[1] + delayed[1] * feedback,
+        ],
+        DelayMode::StereoCross => [
+            dry[1] + delayed[1] * feedback,
+            dry[0] + delayed[0] * feedback,
+        ],
+        DelayMode::PingPong => [
+            delayed[1] * feedback,
+            (dry[0] + dry[1]) * 0.5 + delayed[0] * feedback,
+        ],
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -124,8 +147,14 @@ pub(crate) fn apply_stereo_delay_with_tempo(
         let dry_right = right[frame];
         let delayed_left = left_line[read];
         let delayed_right = right_line[read];
-        left_line[position] = dry_right + delayed_right * delay.feedback;
-        right_line[position] = dry_left + delayed_left * delay.feedback;
+        let input = stereo_delay_input(
+            delay.mode,
+            [dry_left, dry_right],
+            [delayed_left, delayed_right],
+            delay.feedback,
+        );
+        left_line[position] = input[0];
+        right_line[position] = input[1];
         left[frame] = dry_left + delayed_left * delay.mix;
         right[frame] = dry_right + delayed_right * delay.mix;
         position = (position + 1) % left_line.len();
@@ -376,5 +405,28 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn ping_pong_delay_alternates_centered_echoes() {
+        let delay = Delay {
+            time_seconds: 0.05,
+            feedback: 0.5,
+            mix: 1.0,
+            mode: DelayMode::PingPong,
+            ..Delay::default()
+        };
+        let mut left = vec![1.0];
+        let mut right = vec![1.0];
+        apply_stereo_delay_with_tempo(&mut left, &mut right, 1_000, &delay, &[]);
+
+        assert_eq!(left[50], 0.0);
+        assert_eq!(right[50], 1.0);
+        assert_eq!(left[100], 0.5);
+        assert_eq!(right[100], 0.0);
+        assert_eq!(left[150], 0.0);
+        assert_eq!(right[150], 0.25);
+        assert_eq!(left[200], 0.125);
+        assert_eq!(right[200], 0.0);
     }
 }

@@ -90,12 +90,12 @@ pub fn preset(name: &str) -> Result<Patch, Error> {
             ..Patch::default()
         },
         // A17's sync-square Osc Mix motion maps to a modulated native sync ratio.
-        // Multi-pitch calibration bandlimits the added amplitude articulation,
-        // retains high-frequency oscillator energy, and preserves the full delay tail.
+        // Matched-melody calibration shapes the amplitude articulation and ping-pong
+        // tail while bandlimiting resets and retaining high-frequency oscillator energy.
         "nasty" => Patch {
             name: "Max Nasty".to_owned(),
             duration_seconds: 0.35,
-            gain: 0.33,
+            gain: 1.0,
             midi_program: Some(80),
             pitch_gain_per_octave: 0.3,
             oscillators: vec![Oscillator {
@@ -106,7 +106,7 @@ pub fn preset(name: &str) -> Result<Patch, Error> {
             oscillator_mode: OscillatorMode::Sync,
             sync: Some(OscillatorSync { ratio: 1.25 }),
             envelope: Envelope {
-                attack_seconds: 0.0,
+                attack_seconds: 0.003,
                 decay_seconds: 0.18,
                 sustain_level: 0.75,
                 release_seconds: 0.04,
@@ -140,7 +140,7 @@ pub fn preset(name: &str) -> Result<Patch, Error> {
                     beats_per_cycle: Some(0.25),
                     destination: LfoDestination::SyncRatio,
                     waveform: LfoWaveform::SawDown,
-                    sync_ratio_depth: 0.2,
+                    sync_ratio_depth: 0.1,
                     ..Lfo::default()
                 },
                 Lfo {
@@ -152,23 +152,23 @@ pub fn preset(name: &str) -> Result<Patch, Error> {
                     ..Lfo::default()
                 },
                 Lfo {
-                    rate_hz: 4.0,
-                    beats_per_cycle: Some(0.5),
+                    rate_hz: 8.0,
+                    beats_per_cycle: Some(0.25),
                     destination: LfoDestination::Amplitude,
                     waveform: LfoWaveform::SawDown,
-                    amplitude_depth: 0.95,
+                    amplitude_depth: 1.0,
                     amplitude_transition_seconds: 2.0 / 48_000.0,
                     ..Lfo::default()
                 },
             ],
             delay: Some(Delay {
-                time_seconds: 0.5,
-                beats_per_cycle: Some(1.0),
-                maximum_time_seconds: Some(0.5),
-                feedback: 0.56,
-                mix: 0.25,
-                mode: DelayMode::StereoCross,
-                ..Delay::default()
+                time_seconds: 0.375,
+                beats_per_cycle: Some(0.75),
+                maximum_time_seconds: Some(0.375),
+                feedback: 0.65,
+                mix: 0.5,
+                mode: DelayMode::PingPong,
+                tail_seconds: 8.0,
             }),
             ..Patch::default()
         },
@@ -416,9 +416,10 @@ mod tests {
 
         let nasty = preset("nasty").unwrap();
         let nasty_delay = nasty.delay.unwrap();
-        assert_eq!(nasty_delay.tail_seconds, 0.0);
-        assert_eq!(nasty_delay.beats_per_cycle, Some(1.0));
-        assert_eq!(nasty_delay.maximum_time_seconds, Some(0.5));
+        assert_eq!(nasty_delay.tail_seconds, 8.0);
+        assert_eq!(nasty_delay.beats_per_cycle, Some(0.75));
+        assert_eq!(nasty_delay.maximum_time_seconds, Some(0.375));
+        assert_eq!(nasty_delay.mode, DelayMode::PingPong);
         assert!(
             nasty
                 .modulation

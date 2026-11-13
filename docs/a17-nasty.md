@@ -9,14 +9,67 @@ Local compatibility research only. NanoStudio-derived banks and reference WAVs s
 - **Entire Song** mixdown with **Render tail** enabled.
 - Clean comparison: channel/master gain 1 and master compressor, EQ, reverb, and delay disabled so the render isolates A17 and its insert delay.
 - Reference: `target/nasty/a17-wholebar-clean-nanostudio.wav`, stereo PCM16 at 44,100 Hz, 8.705 seconds, SHA-256 `7db8817fde630832c8b730d87d147842ff3ecaa3a4043deb30a89c0aba6b5359`.
-- Phase 6 native: `target/nasty/phase6-after/c4.wav`, stereo PCM16 at 48,000 Hz, 10.040 seconds of allocated delay tail, SHA-256 `7f4ac6675cd8c7c6beec00f43fb07631defd3fd6a22997fde99c2b834c99a30f`. Its measured active duration is 7.325 seconds; the older `beatsync-*.wav` files are stale.
+- Current native: `target/nasty/melody-final/c4.wav`, stereo PCM16 at 48,000 Hz, 10.040 seconds of allocated delay tail, SHA-256 `00cec2785a388090607f80bae17945d00870ef6d5ba07467def5682ec12c4854`. Its measured active duration is 7.571 seconds; the older `echo-final` and `beatsync-*` files are historical.
 - Reproduce the native side with `docs/cli-ai.md`'s full-bar workflow, using gain 1 for both track and master. Resample before comparing numeric metrics.
+
+## Matched-melody follow-up, measured on 2026-11-13
+
+The held-note calibration hid structural behavior that only appears in a performance. A new two-bar fixture plays the same twelve syncopated C2–C5 notes with identical gates and velocities 96–120 in both engines, at 120 BPM with track/master gain 1, disabled master/send effects, and a rendered tail. The NanoStudio-saved project and comparison reports are under `target/nasty/melody-comparison/`; the built-in render is `target/nasty/melody-final/melody.wav`.
+
+- Reference: `target/nasty/melody-comparison/a17-melody-nanostudio.wav`, stereo PCM16 at 44,100 Hz, 11.468 seconds, SHA-256 `21f6fc328ec772a105769881ff7f3dec0d1999c6fa42cda52a3e277248c17436`.
+- Native: `target/nasty/melody-final/melody.wav`, stereo PCM16 at 48,000 Hz, 12.040 seconds, SHA-256 `a0bb69bca50071691bc71424ae264e1a1525b27b052b7d74f5051dd7b919929b`.
+
+| Metric | Native | NanoStudio |
+| --- | ---: | ---: |
+| Performance RMS, 0–4 s | 0.340951 | 0.375701 |
+| Complete RMS | 0.198590 | 0.225771 |
+| Performance 10 ms envelope correlation | 0.6775 | 1.0 |
+| Complete 10 ms envelope correlation | 0.9257 | 1.0 |
+| Post-performance 10 ms envelope correlation | 0.9456 | 1.0 |
+| Complete stereo-side RMS | 0.056696 | 0.075519 |
+| Active duration | 9.181 s | 8.915 s |
+
+The reference is exactly dual-mono until frame 16,665 at 44,100 Hz (0.377891 seconds), then becomes stereo. This is the approximately 2.891 ms source onset plus a **375 ms dotted-eighth delay**, not the previously inferred 500 ms mono-compatible delay. At 60/120/240 BPM the first stereo frame confirms a 0.75-beat delay capped at 0.375 seconds. The first isolated echo is right-channel-only, with 0.9977 waveform correlation to the dry note and 0.4985 fitted gain. `DelayMode::PingPong` now models this centered-input alternating routing in shared offline, automated, typed-insert, and live paths; existing `StereoCross` behavior is unchanged.
+
+The melody calibration sets gain 1.0, attack 3 ms, wet mix 0.5, feedback 0.65, and an 8-second allocated tail. Every gate is now within +0.26/-2.06 dB of its matched reference, versus -6.94/-9.68 dB before this follow-up. Feedback 0.65 gives the best combined tail/duration result; 0.7 overextends it. Envelope-decay/sustain, sync-ratio-depth, and fixed/key-tracked-filter sweeps did not produce a better combined result, so they were not adopted. Reports and rejected-candidate measurements are under `target/nasty/melody-comparison/`.
+
+This is a better performance match, not a uniform improvement. Performance-window envelope correlation is only 0.6775, C2's gate remains 2.06 dB quiet, native peaks remain slightly lower, and dry trough/spectral shapes still differ. Older held-note RMS matches are **not preserved**: C2/C3/C4/C5 held RMS is 0.324588/0.320050/0.392097/0.335896 against 0.224185/0.179252/0.147276/0.129100. Their full-tail correlations remain 0.9086–0.9128. At 60/240 BPM, held RMS is 0.410598/0.294189 against 0.146528/0.166470, full-tail correlations are 0.9379/0.9435, and active durations are 9.628/3.631 seconds against 9.126/3.626. Current multi-pitch reports are `target/nasty/melody-final/pitches.json`, `60.json`, and `240.json`. The sections below retain the earlier held-note calibrations as history, not current level claims.
+
+## Echo and audition follow-up, measured on 2026-11-13
+
+A multi-pitch/tempo delay sweep changed wet mix from 0.25 to 0.27 and feedback from 0.56 to 0.555. This strengthens every early tail while retaining the late-tail calibration. Reports are `target/nasty/echo-final.json` and `target/nasty/echo-final-{60,240}.json`; built-in WAVs are in `target/nasty/echo-final/`. The modulation and Phase 6 sections below retain their historical baselines.
+
+| Pitch | Early RMS before → after (reference) | Late RMS after (reference) | Active seconds before → after (reference) |
+| --- | ---: | ---: | ---: |
+| C2 | 0.022707 → 0.023893 (0.027439) | 0.000699 (0.000739) | 7.433 → 7.432 (7.253) |
+| C3 | 0.018849 → 0.019833 (0.023048) | 0.000580 (0.000585) | 7.429 → 7.315 (7.254) |
+| C4 | 0.015482 → 0.016291 (0.016845) | 0.000476 (0.000455) | 7.427 → 7.302 (7.254) |
+| C5 | 0.012608 → 0.013267 (0.014082) | 0.000389 (0.000381) | 7.314 → 7.303 (7.253) |
+
+At 60/240 BPM, early RMS improves from 0.005186/0.003945 to 0.005345/0.004074 against references 0.005598/0.004846. Full-tail envelope correlations remain close at 0.9028/0.9360, although held-note RMS and envelope correlation regress slightly. The 60 BPM held RMS is now 10.4% high and active duration is 237 ms long.
+
+Sync-ratio/filter, pulse-width, resonance, and true sync-mix prototypes did not improve the combined sharpness/dry/wet measurements, so none was adopted. For listening beyond the held-note fixtures, `target/nasty/max-nasty-audition.evil` and `.wav` contain twelve syncopated notes across C2–C5 with velocity accents. This is an original audition pattern, not a NanoStudio reference comparison.
+
+## Modulation follow-up, measured on 2026-11-13
+
+A dry/no-delay and delayed C4 sweep, followed by multi-pitch and tempo validation, changed the added amplitude saw to 8 Hz at full depth and reduced LFO3's sync-ratio depth to 0.1. LFO4's 20 Hz rate modulation remains at 0.25. Reports are `target/nasty/modulation-final.json` and `target/nasty/modulation-final-{60,240}.json`; built-in WAVs are in `target/nasty/modulation-final/` and are byte-identical to the selected sweep candidate. The Phase 6 sections below retain their historical baseline.
+
+| Pitch | Held RMS (reference) | Centroid Hz (reference) | Held envelope before → after | Full-tail envelope before → after |
+| --- | ---: | ---: | ---: | ---: |
+| C2 | 0.215067 (0.224185) | 1,226 (1,233) | 0.3943 → 0.4767 | 0.8873 → 0.9056 |
+| C3 | 0.179585 (0.179252) | 2,179 (2,437) | 0.3023 → 0.4226 | 0.8830 → 0.9059 |
+| C4 | 0.148095 (0.147276) | 4,484 (4,198) | 0.4722 → 0.4837 | 0.9006 → 0.9058 |
+| C5 | 0.120654 (0.129100) | 5,915 (5,576) | 0.5442 → 0.4640 | 0.9177 → 0.9093 |
+
+C2–C4 improve, but C5's held/full-tail envelope correlations and centroid get worse. At 60 BPM, held/full-tail envelope correlations improve from 0.3629/0.8780 to 0.5429/0.9038; at 240 BPM they improve from 0.4043/0.9193 to 0.4912/0.9367. The 60 BPM active duration increases from 9.166 to 9.378 seconds against the 9.126-second reference, so the tempo improvement is not uniform. The all-modulation/no-delay C4 envelope correlation improves from 0.3985 to 0.5864, while strict-dry audio is unchanged. Reports for those controls are in `target/nasty/modulation-final-controls.json`.
+
+A 3 ms attack candidate was rejected: the 1 ms-block onset metric still reported zero and full-tail envelope correlation decreased at every pitch. Delay-mix and dry-level experiments did not produce an adopted change. Dry spectrum/level, early tails, C5, and direct waveform matching remain open.
 
 ## Phase 6 calibration, measured on 2026-11-05
 
 Fresh pre-change C2/C3/C4/C5 renders and post-change built-in-preset renders use the same 120 BPM, velocity-110, two-second-note projects. Reports are `target/nasty/phase6-before.json` and `target/nasty/phase6-after.json`; audio is in the corresponding directories. The final preset WAVs are byte-identical to the selected `phase6-gain33` candidate.
 
-Reproduce the current renders and report from the repository root:
+Reproduce a report from the repository root with the following commands. Substitute `echo-final` for `phase6-after` in all three output paths for the current preset; the shown paths belong to the historical Phase 6 calibration:
 
 ```bash
 cargo build --manifest-path compat/Cargo.toml -p oracle
@@ -106,9 +159,9 @@ python3 -I tools/calibrate_nasty.py \
 - A cutoff sweep alone could not fix C2: even very low cutoffs left a roughly 25 dB 16–24 kHz floor. Removing only the amplitude saw dropped that band to 0.15 dB, identifying post-filter amplitude-reset aliasing as the dominant source. Master/voice limiter bypass experiments did not remove the floor.
 - One-pole amplitude smoothing near 400–800 Hz could approach the high-band target but destroyed legitimate 8–16 kHz energy and dropped C2 centroid near 800 Hz. Wider PolyBLEP transitions had the same problem. Two frames were selected as the measured balance; they do not claim exact source-filter equivalence.
 
-### Current dry/all-modulation controls
+### Phase 6 dry/all-modulation controls
 
-`target/nasty/phase6-controls.json` compares fresh current-code controls with `a17-strict-dry-nanostudio.wav` and `a17-all-nanostudio.wav`; patches and WAVs are under `target/nasty/phase6-controls/`. Delay wet mix is zero in both native controls, and strict-dry also removes all LFO lanes.
+`target/nasty/phase6-controls.json` compares Phase 6 controls with `a17-strict-dry-nanostudio.wav` and `a17-all-nanostudio.wav`; patches and WAVs are under `target/nasty/phase6-controls/`. Delay wet mix is zero in both native controls, and strict-dry also removes all LFO lanes. See the modulation follow-up above for current controls.
 
 | Control | Native RMS | Reference RMS | Native centroid | Reference centroid | 10 ms envelope correlation |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -165,7 +218,7 @@ Earlier captures under `target/nasty/isolation/` left LFO4 active and must not b
 
 ## Historical multi-pitch fixtures
 
-The table and `beatsync-{c2,c3,c4,c5}.wav` outputs below are retained only as the 2026-10-30 baseline history; they are stale. Use the Phase 6 reports above for current code.
+The table and `beatsync-{c2,c3,c4,c5}.wav` outputs below are retained only as the 2026-10-30 baseline history; they are stale. Use the echo follow-up above for current code.
 
 C2, C3, and C5 references use the same NanoStudio-saved whole-bar project as the clean C4 control, changing only the single note through the binary pattern editor. Each capture includes the release/effect tail. The corrected C2 capture has a verified 66 Hz fundamental; an earlier archive-import attempt that still rendered C4 was discarded.
 
@@ -182,12 +235,12 @@ C2's 0–200 Hz energy is now effectively matched, but its 16–24 kHz band rema
 
 ## Rhythmic modulation
 
-The source UI and preset record confirm that LFO3 has **Beat Sync** enabled with sync mode **6**. At the 120 BPM reference tempo this maps to sixteenth notes, or 8 Hz; LFO2 and LFO4 remain free-running. The built-in preset now uses that LFO3 rate, phase-continuous LFO-rate modulation, and a calibrated 4 Hz amplitude-articulation lane. Both lanes use `beats_per_cycle` and follow the project's complete tempo map.
+The source UI and preset record confirm that LFO3 has **Beat Sync** enabled with sync mode **6**. At the 120 BPM reference tempo this maps to sixteenth notes, or 8 Hz; LFO2 and LFO4 remain free-running. The built-in preset now uses that LFO3 rate, phase-continuous LFO-rate modulation, and a calibrated 8 Hz amplitude-articulation lane. Both lanes use `beats_per_cycle: 0.25` and follow the project's complete tempo map.
 
 ## Remaining differences
 
-This is a closer original-synthesis recreation, **not a 1:1, sample-equivalent, or sample-identical instrument**. Direct held-note waveform correlation remains low after Phase 6 (C2 0.0006, C3 0.0363, C4 0.0525, C5 -0.0807). C2's 16–24 kHz band remains 12.40 dB too strong, early delay tails remain quieter, C5 RMS remains 5.7% low, and dry/no-delay controls retain large level, spectrum, and duration gaps. The 2–3 ms reference onset offset, exact LFO phase/depth behavior, envelope curves, and feedback mapping remain unresolved. Matching RMS, centroid, envelope correlation, or individual tail windows must not be treated as audio equivalence.
+This is a closer original-synthesis recreation, **not a 1:1, sample-equivalent, or sample-identical instrument**. Current direct held-note waveform correlation remains low (C2 -0.0072, C3 0.0575, C4 0.0534, C5 -0.1130). C2's 16–24 kHz band remains 13.10 dB too strong, early delay tails remain 3.3–14.0% quieter, C5 RMS remains 5.1% low, and dry/no-delay controls retain large level, spectrum, and duration gaps. The 2–3 ms reference onset offset, exact LFO phase/depth behavior, envelope curves, and feedback mapping remain unresolved. Matching RMS, centroid, envelope correlation, or individual tail windows must not be treated as audio equivalence.
 
-Static 60/120/240 BPM whole-bar references have now been measured, but this is not blanket multi-tempo or sample parity. At 60 BPM, native held RMS remains 8.9% high and release/late-tail differences remain; at 240 BPM, held RMS remains 7.5% low, early tail RMS is 18.9% low, and full-tail envelope correlation decreases slightly after the cap. No mid-song tempo-change reference or accepted isolated individual-LFO capture is available. The strict-dry and all-modulation controls do not fill those gaps.
+Static 60/120/240 BPM whole-bar references have now been measured, but this is not blanket multi-tempo or sample parity. At 60 BPM, native held RMS remains 10.4% high, active duration is 237 ms long, and release/late-tail differences remain; at 240 BPM, held RMS remains 6.7% low and early tail RMS is 15.9% low, although held/full-tail envelope correlations remain above their Phase 6 values. No mid-song tempo-change reference or accepted isolated individual-LFO capture is available. The strict-dry and all-modulation controls do not fill those gaps.
 
 The blank `oracle song create` template also failed NanoStudio 1.42's project-open acceptance check. The reference fixture therefore uses the official Minimal project structure with its sequence replaced, which reopened successfully with the full-bar part.

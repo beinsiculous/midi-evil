@@ -187,10 +187,12 @@ pub fn delay_controls(ui: &mut Ui, effect: &mut Delay) {
         .selected_text(match effect.mode {
             DelayMode::Mono => "Mono / dual mono",
             DelayMode::StereoCross => "Stereo cross",
+            DelayMode::PingPong => "Ping-pong",
         })
         .show_ui(ui, |ui| {
             ui.selectable_value(&mut effect.mode, DelayMode::Mono, "Mono / dual mono");
             ui.selectable_value(&mut effect.mode, DelayMode::StereoCross, "Stereo cross");
+            ui.selectable_value(&mut effect.mode, DelayMode::PingPong, "Ping-pong");
         });
 }
 

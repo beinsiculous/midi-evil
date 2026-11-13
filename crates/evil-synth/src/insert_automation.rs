@@ -1,4 +1,7 @@
-use crate::delay::{allocated_tail_frames, delay_frame_count, maximum_delay_frames, tempo_bpm_at};
+use crate::delay::{
+    allocated_tail_frames, delay_frame_count, maximum_delay_frames, stereo_delay_input,
+    tempo_bpm_at,
+};
 use crate::{Delay, SynthController, SynthTempoChange, Waveshaper};
 
 pub const WAVESHAPER_DRIVE_CC: u8 = 20;
@@ -110,16 +113,14 @@ pub(crate) fn apply_stereo_delay_automation_with_tempo(
         let dry_right = right[frame];
         let delayed_left = left_line[read];
         let delayed_right = right_line[read];
-        left_line[position] = if base.mode == crate::DelayMode::StereoCross {
-            dry_right + delayed_right * delay.feedback
-        } else {
-            dry_left + delayed_left * delay.feedback
-        };
-        right_line[position] = if base.mode == crate::DelayMode::StereoCross {
-            dry_left + delayed_left * delay.feedback
-        } else {
-            dry_right + delayed_right * delay.feedback
-        };
+        let input = stereo_delay_input(
+            base.mode,
+            [dry_left, dry_right],
+            [delayed_left, delayed_right],
+            delay.feedback,
+        );
+        left_line[position] = input[0];
+        right_line[position] = input[1];
         left[frame] = dry_left + delayed_left * delay.mix;
         right[frame] = dry_right + delayed_right * delay.mix;
         position = (position + 1) % left_line.len();

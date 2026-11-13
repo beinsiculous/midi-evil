@@ -1,11 +1,10 @@
 //! Bounded, sample-by-sample synthesis for the performance keyboard.
-use crate::delay::delay_frame_count;
+use crate::delay::{delay_frame_count, stereo_delay_input};
 use crate::effects::InsertProcessor;
 use crate::render::{DcBlocker, ModulationState};
 use crate::voice::{VoiceControls, VoiceState};
 use crate::{
-    Delay, DelayMode, Error, Filter, INSERT_LIMIT, InsertEffect, Patch, VoiceMode, Waveform,
-    Waveshaper,
+    Delay, Error, Filter, INSERT_LIMIT, InsertEffect, Patch, VoiceMode, Waveform, Waveshaper,
 };
 
 const MAX_VOICES: usize = 32;
@@ -329,17 +328,8 @@ impl LiveSynth {
             let read =
                 (self.delay_position + self.delay_line.len() - frames) % self.delay_line.len();
             let delayed = self.delay_line[read];
-            self.delay_line[self.delay_position] = if delay.mode == DelayMode::StereoCross {
-                [
-                    stereo[1] + delayed[1] * delay.feedback,
-                    stereo[0] + delayed[0] * delay.feedback,
-                ]
-            } else {
-                [
-                    stereo[0] + delayed[0] * delay.feedback,
-                    stereo[1] + delayed[1] * delay.feedback,
-                ]
-            };
+            self.delay_line[self.delay_position] =
+                stereo_delay_input(delay.mode, stereo, delayed, delay.feedback);
             stereo[0] += delayed[0] * delay.mix;
             stereo[1] += delayed[1] * delay.mix;
             self.delay_position = (self.delay_position + 1) % self.delay_line.len();

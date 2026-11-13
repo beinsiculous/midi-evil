@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::delay::{
     allocated_tail_frames, apply_stereo_delay_with_tempo, delay_frame_count, maximum_delay_frames,
-    tempo_bpm_at,
+    stereo_delay_input, tempo_bpm_at,
 };
 use crate::dynamics::CompressorProcessor;
 use crate::equalizer::EqualizerProcessor;
@@ -544,17 +544,8 @@ impl InsertProcessor {
                 let frames = delay_frame_count(sample_rate, settings, tempo_bpm);
                 let read = (*position + line.len() - frames) % line.len();
                 let delayed = line[read];
-                line[*position] = if settings.mode == crate::DelayMode::StereoCross {
-                    [
-                        stereo[1] + delayed[1] * settings.feedback,
-                        stereo[0] + delayed[0] * settings.feedback,
-                    ]
-                } else {
-                    [
-                        stereo[0] + delayed[0] * settings.feedback,
-                        stereo[1] + delayed[1] * settings.feedback,
-                    ]
-                };
+                line[*position] =
+                    stereo_delay_input(settings.mode, *stereo, delayed, settings.feedback);
                 stereo[0] += delayed[0] * settings.mix;
                 stereo[1] += delayed[1] * settings.mix;
                 *position = (*position + 1) % line.len();
