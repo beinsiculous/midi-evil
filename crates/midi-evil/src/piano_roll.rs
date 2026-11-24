@@ -28,6 +28,7 @@ pub struct RollState {
     resizing_note: Option<usize>,
     zoom: f32,
     scroll_to_middle: bool,
+    spike_steps: usize,
 }
 
 impl Default for RollState {
@@ -42,6 +43,7 @@ impl Default for RollState {
             resizing_note: None,
             zoom: 1.0,
             scroll_to_middle: true,
+            spike_steps: 0,
         }
     }
 }
@@ -243,6 +245,26 @@ pub fn show(
         .show_viewport(ui, |ui, viewport| {
             let (response, full_painter) = ui.allocate_painter(size, egui::Sense::click_and_drag());
             let board = response.rect;
+            if response.has_focus() {
+                let arrows = egui::EventFilter {
+                    horizontal_arrows: true,
+                    ..Default::default()
+                };
+                ui.memory_mut(|memory| memory.set_focus_lock_filter(response.id, arrows));
+                state.spike_steps += ui.input(|input| input.num_presses(egui::Key::ArrowRight));
+            }
+            let spike_text = format!("step {}", state.spike_steps);
+            ui.ctx().accesskit_node_builder(response.id, |node| {
+                node.set_label(format!("Piano roll, {spike_text}"));
+                node.set_description(format!("described {spike_text}"));
+                node.set_value(spike_text.clone());
+            });
+            ui.ctx()
+                .accesskit_node_builder(response.id.with("spike-status"), |node| {
+                    node.set_role(egui::accesskit::Role::Label);
+                    node.set_value(spike_text.clone());
+                    node.set_live(egui::accesskit::Live::Polite);
+                });
             let rect = Rect::from_min_max(
                 board.min + Vec2::new(KEYBOARD_WIDTH, RULER_HEIGHT),
                 board.max,
