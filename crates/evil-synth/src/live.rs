@@ -1,13 +1,12 @@
 //! Bounded, sample-by-sample synthesis for the performance keyboard.
 use crate::delay::{stereo_delay_frame_counts, stereo_delay_input};
 use crate::effects::InsertProcessor;
+use crate::polyphony::{oldest_voice_to_steal, release_frame_count};
 use crate::render::{DcBlocker, ModulationState};
 use crate::voice::{VoiceControls, VoiceState};
 use crate::{
     Delay, Error, Filter, INSERT_LIMIT, InsertEffect, Patch, VoiceMode, Waveform, Waveshaper,
 };
-
-const MAX_VOICES: usize = 32;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LiveControls {
@@ -50,6 +49,7 @@ struct Voice {
     modulation: ModulationState,
     frame: u64,
     gate: Option<f32>,
+    release_end_frame: Option<u64>,
 }
 
 impl Voice {
@@ -59,9 +59,21 @@ impl Voice {
     fn release(&mut self) {
         if self.gate.is_none() {
             self.gate = Some(self.time());
+            self.release_end_frame = Some(
+                self.frame
+                    + release_frame_count(
+                        self.patch.envelope.release_seconds,
+                        self.patch.sample_rate,
+                    ) as u64,
+            );
         }
     }
     fn finished(&self) -> bool {
+        if self.patch.polyphony.is_some() && self.patch.voice_mode == VoiceMode::Poly {
+            return self
+                .release_end_frame
+                .is_some_and(|release_end| self.frame >= release_end);
+        }
         self.gate
             .is_some_and(|gate| self.time() >= gate + self.patch.envelope.release_seconds)
     }
@@ -84,11 +96,12 @@ pub struct LiveSynth {
 impl LiveSynth {
     pub fn new(patch: Patch) -> Result<Self, Error> {
         patch.validate()?;
+        let polyphony = usize::from(patch.polyphony.unwrap_or(32));
         Ok(Self {
             controls: LiveControls::for_patch(&patch),
             delay_line: vec![[0.0; 2]; patch.sample_rate as usize * 2 + 1],
             patch,
-            voices: Vec::with_capacity(MAX_VOICES),
+            voices: Vec::with_capacity(polyphony),
             sustain: false,
             delay_position: 0,
             insert_processors: Vec::new(),
@@ -195,6 +208,9 @@ impl LiveSynth {
                 message: "pitch must be 0..127 and velocity 1..127".to_owned(),
             });
         }
+        if self.patch.polyphony.is_some() {
+            self.voices.retain(|voice| !voice.finished());
+        }
         let glide_from_semitones = self
             .voices
             .last()
@@ -242,12 +258,10 @@ impl LiveSynth {
         match self.patch.voice_mode {
             VoiceMode::Poly => {
                 self.voices.retain(|voice| voice.pitch != pitch);
-                if self.voices.len() == MAX_VOICES {
-                    let oldest_release = self
-                        .voices
-                        .iter()
-                        .position(|voice| !voice.held)
-                        .unwrap_or(0);
+                let limit = usize::from(self.patch.polyphony.unwrap_or(32));
+                while self.voices.len() >= limit {
+                    let oldest_release =
+                        oldest_voice_to_steal(self.voices.iter().map(|voice| !voice.held));
                     self.voices.remove(oldest_release);
                 }
             }
@@ -260,6 +274,7 @@ impl LiveSynth {
                     voice.patch = patch;
                     voice.state.select_note(&voice.patch, pitch);
                     voice.gate = None;
+                    voice.release_end_frame = None;
                     return Ok(());
                 }
                 self.voices.clear();
@@ -279,6 +294,7 @@ impl LiveSynth {
             patch,
             frame: 0,
             gate: None,
+            release_end_frame: None,
         });
         Ok(())
     }
@@ -379,7 +395,7 @@ impl LiveSynth {
         }
         for (sample, dc) in stereo.iter_mut().zip(&mut self.dc) {
             *sample = sample.tanh();
-            if self.patch.uses_sync() {
+            if self.patch.uses_output_dc_block() {
                 *sample = dc.process(*sample, self.patch.sample_rate);
             }
         }
@@ -690,7 +706,12 @@ mod tests {
         let mut live_nasty = LiveSynth::new(sound_patch).unwrap();
         live_nasty.note_on(60, 110).unwrap();
         let frames: Vec<[f32; 2]> = (0..36_000).map(|_| live_nasty.next_frame()).collect();
-        assert!(frames.iter().flatten().all(|sample| sample.is_finite()));
+        assert!(
+            frames
+                .iter()
+                .flatten()
+                .all(|sample| sample.is_finite() && sample.abs() <= 1.0)
+        );
         for stereo in &frames[..17_900] {
             assert!((stereo[0] - stereo[1]).abs() < 1e-6);
         }
@@ -1342,6 +1363,145 @@ mod tests {
         }
     }
 
+    #[test]
+    fn configured_polyphony_matches_offline_for_retrigger_release_and_capacity() {
+        for limit in [1, 2, 3] {
+            let patch = Patch {
+                sample_rate: 8_000,
+                duration_seconds: 0.1,
+                polyphony: Some(limit),
+                envelope: crate::Envelope {
+                    attack_seconds: 0.0,
+                    decay_seconds: 0.0,
+                    sustain_level: 1.0,
+                    release_seconds: 0.03,
+                },
+                ..Patch::default()
+            };
+            let notes = [
+                test_note(60, 0.0, 0.1),
+                test_note(60, 0.05, 0.15),
+                test_note(62, 0.02, 0.04),
+                test_note(64, 0.06, 0.1),
+                test_note(65, 0.09, 0.02),
+                test_note(67, 0.2, 0.05),
+                test_note(69, 0.2, 0.05),
+                test_note(71, 0.2, 0.05),
+            ];
+            assert_offline_matches_live(patch, &notes);
+        }
+    }
+
+    #[test]
+    fn configured_polyphony_expires_release_tails_at_note_on_boundaries() {
+        let patch = Patch {
+            sample_rate: 8_000,
+            duration_seconds: 0.1,
+            polyphony: Some(2),
+            envelope: crate::Envelope {
+                attack_seconds: 0.0,
+                decay_seconds: 0.0,
+                sustain_level: 1.0,
+                release_seconds: 0.25,
+            },
+            ..Patch::default()
+        };
+        assert_offline_matches_live(
+            patch,
+            &[
+                test_note(60, 0.0, 0.6),
+                test_note(62, 0.1, 0.4),
+                test_note(64, 0.75, 0.25),
+            ],
+        );
+    }
+
+    #[test]
+    fn configured_polyphony_without_retrigger_or_stealing_matches_legacy_offline() {
+        let legacy = Patch {
+            sample_rate: 8_000,
+            duration_seconds: 0.01,
+            envelope: crate::Envelope {
+                attack_seconds: 0.0,
+                decay_seconds: 0.0,
+                sustain_level: 1.0,
+                release_seconds: 0.002,
+            },
+            ..Patch::default()
+        };
+        let configured = Patch {
+            polyphony: Some(32),
+            ..legacy.clone()
+        };
+        let notes = [
+            test_note(60, 0.0, 0.01),
+            test_note(62, 0.0, 0.01),
+            test_note(64, 0.0, 0.01),
+        ];
+        assert_eq!(
+            crate::render_notes_dry(&legacy, &notes).unwrap().samples,
+            crate::render_notes_dry(&configured, &notes)
+                .unwrap()
+                .samples
+        );
+    }
+
+    #[test]
+    fn live_limit_reduction_preserves_current_voices_until_the_next_note_on() {
+        let patch = Patch {
+            sample_rate: 8_000,
+            polyphony: Some(4),
+            ..Patch::default()
+        };
+        let mut live = LiveSynth::new(patch.clone()).unwrap();
+        for pitch in [60, 62, 64, 67] {
+            live.note_on(pitch, 100).unwrap();
+        }
+        assert_eq!(live.voice_count(), 4);
+        live.set_patch(Patch {
+            polyphony: Some(2),
+            ..patch
+        })
+        .unwrap();
+        assert_eq!(live.voice_count(), 4);
+        live.note_on(69, 100).unwrap();
+        assert_eq!(live.voice_count(), 2);
+        let pitches: Vec<_> = live.voices.iter().map(|voice| voice.pitch).collect();
+        assert_eq!(pitches, [67, 69]);
+    }
+
+    #[test]
+    fn configured_polyphony_does_not_expire_a_retriggered_legato_voice() {
+        let patch = Patch {
+            sample_rate: 8_000,
+            voice_mode: VoiceMode::Legato,
+            polyphony: Some(2),
+            envelope: crate::Envelope {
+                attack_seconds: 0.0,
+                decay_seconds: 0.0,
+                sustain_level: 1.0,
+                release_seconds: 0.1,
+            },
+            ..Patch::default()
+        };
+        let mut live = LiveSynth::new(patch).unwrap();
+        live.note_on(60, 100).unwrap();
+        for _ in 0..800 {
+            live.next_frame();
+        }
+        live.note_off(60);
+        for _ in 0..400 {
+            live.next_frame();
+        }
+        live.note_on(62, 100).unwrap();
+        for _ in 0..800 {
+            live.next_frame();
+        }
+        assert_eq!(live.voice_count(), 1);
+        assert!(live.voices[0].gate.is_none());
+        assert_eq!(live.voices[0].release_end_frame, None);
+    }
+
     fn test_note(pitch: u8, start_seconds: f64, duration_seconds: f64) -> crate::SynthNote {
         crate::SynthNote {
             pitch,
@@ -1358,7 +1518,7 @@ mod tests {
             crate::render_notes_dry(&patch, notes).unwrap().samples,
             "offline rendering was not deterministic"
         );
-        let uses_sync = patch.uses_sync();
+        let uses_output_dc_block = patch.uses_output_dc_block();
         let sample_rate = patch.sample_rate;
         let mut dc = DcBlocker::default();
         let mut live = LiveSynth::new(patch).unwrap();
@@ -1378,7 +1538,7 @@ mod tests {
                 }
             }
             let expected = (dry.samples[frame] * 0.8 * std::f32::consts::FRAC_1_SQRT_2).tanh();
-            let expected = if uses_sync {
+            let expected = if uses_output_dc_block {
                 dc.process(expected, sample_rate)
             } else {
                 expected

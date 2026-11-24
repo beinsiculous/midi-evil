@@ -50,6 +50,12 @@ mod tests {
         assert!(!legacy.modulation_octaves);
         assert_eq!(legacy.dc_block_hz, 0.0);
         legacy.validate().unwrap();
+        let legacy_patch = crate::Patch {
+            sync: Some(legacy),
+            ..crate::Patch::default()
+        };
+        assert!(legacy_patch.uses_sync());
+        assert!(legacy_patch.uses_output_dc_block());
 
         let configured = OscillatorSync {
             ratio: 1.25,
@@ -62,6 +68,12 @@ mod tests {
             configured
         );
         configured.validate().unwrap();
+        let configured_patch = crate::Patch {
+            sync: Some(configured),
+            ..crate::Patch::default()
+        };
+        assert!(configured_patch.uses_sync());
+        assert!(!configured_patch.uses_output_dc_block());
     }
 
     #[test]

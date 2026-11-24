@@ -91,7 +91,7 @@ fn write_case(
             automation: &[],
             inserts: &[],
             send_gains: [0.0; evil_synth::SEND_COUNT],
-            dc_block: patch.uses_sync(),
+            dc_block: patch.uses_output_dc_block(),
         }],
         1.0,
     )?;

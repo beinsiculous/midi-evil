@@ -14,6 +14,7 @@ mod modal;
 mod modulation;
 mod oscillator;
 mod patch;
+mod polyphony;
 mod presets;
 mod render;
 mod reverb;

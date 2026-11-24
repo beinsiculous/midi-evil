@@ -43,6 +43,10 @@ pub struct Patch {
     /// Sync ratio and compatibility with patches that enabled sync with this field alone.
     pub sync: Option<OscillatorSync>,
     pub voice_mode: VoiceMode,
+    /// Configured Poly voice limit; `None` preserves legacy uncapped offline and 32-voice live rendering.
+    /// Older builds ignore this field and drop it when saving.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub polyphony: Option<u8>,
     pub unison: Option<Unison>,
     pub envelope: Envelope,
     pub filter: Option<Filter>,
@@ -86,6 +90,7 @@ impl Default for Patch {
             modal_one_shot: false,
             sync: None,
             voice_mode: VoiceMode::Poly,
+            polyphony: None,
             unison: None,
             envelope: Envelope::default(),
             filter: None,
@@ -123,6 +128,16 @@ impl Patch {
 
     pub fn uses_sync(&self) -> bool {
         self.effective_oscillator_mode() == OscillatorMode::Sync
+    }
+
+    /// Whether the output stage should apply the legacy post-limiter DC blocker
+    /// for synced oscillators that do not block DC per voice.
+    pub fn uses_output_dc_block(&self) -> bool {
+        self.uses_sync()
+            && self
+                .sync
+                .as_ref()
+                .is_none_or(|sync| sync.dc_block_hz == 0.0)
     }
 
     pub(crate) fn sync_ratio(&self) -> f32 {
@@ -258,6 +273,12 @@ impl Patch {
         }
         if self.oscillator_mode == OscillatorMode::Ring && self.oscillators.len() < 2 {
             return Err(invalid("ring mode needs Osc A and Osc B"));
+        }
+        if self
+            .polyphony
+            .is_some_and(|voices| !(1..=32).contains(&voices))
+        {
+            return Err(invalid("polyphony must be between 1 and 32 voices"));
         }
         if self
             .oscillators
@@ -832,6 +853,35 @@ mod tests {
         ring.voice_mode = VoiceMode::Legato;
         let decoded = Patch::from_json(&ring.to_json_pretty().unwrap()).unwrap();
         assert_eq!(decoded, ring);
+    }
+
+    #[test]
+    fn polyphony_is_opt_in_and_validated() {
+        let legacy = Patch::from_json("{}").unwrap();
+        assert_eq!(legacy.polyphony, None);
+        assert!(!legacy.to_json_pretty().unwrap().contains("polyphony"));
+        assert_eq!(Patch::default().polyphony, None);
+        for name in crate::PRESET_NAMES {
+            assert_eq!(crate::preset(name).unwrap().polyphony, None);
+        }
+
+        let configured = Patch {
+            polyphony: Some(2),
+            ..Patch::default()
+        };
+        let json = configured.to_json_pretty().unwrap();
+        assert!(json.contains("\"polyphony\": 2"));
+        assert_eq!(Patch::from_json(&json).unwrap(), configured);
+        for polyphony in [0, 33, u8::MAX] {
+            assert!(
+                Patch {
+                    polyphony: Some(polyphony),
+                    ..Patch::default()
+                }
+                .validate()
+                .is_err()
+            );
+        }
     }
 
     #[test]

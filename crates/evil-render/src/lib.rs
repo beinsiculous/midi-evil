@@ -109,7 +109,7 @@ pub fn render_audition(patch: &Patch) -> Result<RenderOutput, Error> {
             automation: &[],
             inserts: &[],
             send_gains: [0.0; evil_synth::SEND_COUNT],
-            dc_block: patch.uses_sync(),
+            dc_block: patch.uses_output_dc_block(),
         }],
         1.0,
     )?;
@@ -397,7 +397,7 @@ fn render_project_with_analysis_range(
                     mixer_automation,
                     settings.inserts.clone(),
                     settings.send_gains,
-                    patch.uses_sync(),
+                    patch.uses_output_dc_block(),
                 ));
             }
             InstrumentSource::DrumKit { kit, base_note } => {
@@ -750,6 +750,119 @@ mod tests {
         project.tracks[0].pitch_bends.clear();
         let plain = render_project(&project, Path::new(".")).unwrap();
         assert_ne!(bent.sound.left, plain.sound.left);
+    }
+
+    #[test]
+    fn configured_polyphony_survives_project_reload_and_changes_native_render() {
+        let directory = tempfile::tempdir().unwrap();
+        let patch = Patch {
+            polyphony: Some(1),
+            ..Patch::default()
+        };
+        std::fs::write(
+            directory.path().join("limited.json"),
+            patch.to_json_pretty().unwrap(),
+        )
+        .unwrap();
+        let mut project = Project::new("Limited polyphony");
+        project
+            .add_track(Track {
+                notes: [60, 62, 64]
+                    .into_iter()
+                    .map(|pitch| Note {
+                        pitch,
+                        start_tick: 0,
+                        duration_ticks: 240,
+                        velocity: 100,
+                    })
+                    .collect(),
+                ..Track::default()
+            })
+            .unwrap();
+        project.instruments[0].source = InstrumentSource::Synth {
+            patch: "limited.json".to_owned(),
+        };
+        let project_path = directory.path().join("song.evil");
+        project.save(&project_path).unwrap();
+        let reloaded = Project::load(&project_path).unwrap();
+        assert_eq!(
+            load_patch("limited.json", directory.path())
+                .unwrap()
+                .polyphony,
+            Some(1)
+        );
+        let limited = render_project(&reloaded, directory.path()).unwrap();
+        assert_eq!(limited.note_count, 3);
+
+        let mut legacy = reloaded;
+        std::fs::write(
+            directory.path().join("limited.json"),
+            Patch {
+                polyphony: None,
+                ..patch
+            }
+            .to_json_pretty()
+            .unwrap(),
+        )
+        .unwrap();
+        let uncapped = render_project(&legacy, directory.path()).unwrap();
+        assert_ne!(limited.sound.left, uncapped.sound.left);
+
+        legacy.tracks[0].notes.push(Note {
+            pitch: 60,
+            start_tick: 120,
+            duration_ticks: 240,
+            velocity: 100,
+        });
+        legacy.instruments[0].source = InstrumentSource::Synth {
+            patch: "lead".to_owned(),
+        };
+        assert_eq!(
+            load_patch("lead", directory.path()).unwrap().polyphony,
+            None
+        );
+        let named = render_project(&legacy, directory.path()).unwrap();
+        std::fs::write(
+            directory.path().join("legacy.json"),
+            evil_synth::preset("lead")
+                .unwrap()
+                .to_json_pretty()
+                .unwrap(),
+        )
+        .unwrap();
+        legacy.instruments[0].source = InstrumentSource::Synth {
+            patch: "legacy.json".to_owned(),
+        };
+        let explicit_legacy = render_project(&legacy, directory.path()).unwrap();
+        assert_eq!(named.sound.left, explicit_legacy.sound.left);
+        assert_eq!(named.sound.right, explicit_legacy.sound.right);
+        assert_eq!(named.mix_analysis, explicit_legacy.mix_analysis);
+
+        let mut overlap = legacy;
+        overlap.instruments[0].source = InstrumentSource::Synth {
+            patch: "limited.json".to_owned(),
+        };
+        std::fs::write(
+            directory.path().join("limited.json"),
+            Patch {
+                polyphony: Some(32),
+                ..Patch::default()
+            }
+            .to_json_pretty()
+            .unwrap(),
+        )
+        .unwrap();
+        let configured_overlap = render_project(&overlap, directory.path()).unwrap();
+        std::fs::write(
+            directory.path().join("limited.json"),
+            Patch::default().to_json_pretty().unwrap(),
+        )
+        .unwrap();
+        let independent_overlap = render_project(&overlap, directory.path()).unwrap();
+        assert_ne!(
+            configured_overlap.sound.left,
+            independent_overlap.sound.left
+        );
     }
 
     #[test]

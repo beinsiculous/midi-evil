@@ -346,6 +346,24 @@ fn show_voice(ui: &mut Ui, patch: &mut Patch) {
                     ui.selectable_value(&mut patch.voice_mode, mode, label);
                 }
             });
+        if patch.voice_mode == VoiceMode::Poly {
+            let mut limited = patch.polyphony.is_some();
+            if ui.checkbox(&mut limited, "Limit polyphony").changed() {
+                patch.polyphony = limited.then_some(32);
+            }
+            if limited {
+                let mut voices = patch.polyphony.unwrap_or(32);
+                if ui
+                    .add(egui::DragValue::new(&mut voices).range(1..=32))
+                    .changed()
+                {
+                    patch.polyphony = Some(voices);
+                }
+                ui.label("Repeated pitches replace earlier voices");
+            } else {
+                ui.label("Legacy: independent offline pitches / 32 live");
+            }
+        }
         ui.label("Osc A/B mode");
         let mut mode = patch.effective_oscillator_mode();
         let previous_mode = mode;
