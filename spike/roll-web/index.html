@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="midi-evil-harness" content="roll-web">
+<title>MIDI Evil piano roll — W0 web spike</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #131119; color: #eee7d7; font: 16px/1.5 system-ui, sans-serif; }
+  main { max-width: 1200px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 1.4rem; margin: 0 0 8px; }
+  a { color: #f9e29f; }
+  a:focus-visible, canvas:focus-visible { outline: 3px solid #f9e29f; outline-offset: 2px; }
+  #midi-evil-canvas { display: block; width: 100%; height: 70vh; margin: 12px 0; }
+  #current-section { border: 1px solid #44394f; padding: 8px 12px; }
+  #current-section h2 { font-size: 1rem; margin: 0; }
+  #midi-evil-current { margin: 4px 0 0; min-height: 1.5em; }
+  .visually-hidden {
+    position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden;
+    clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>MIDI Evil piano roll — W0 web spike</h1>
+  <div id="editor-neighbourhood">
+  <p>A throwaway test page. <a id="before-editor" href="#keys">How to use the editor</a></p>
+  <canvas id="midi-evil-canvas" role="application" aria-label="MIDI Evil editor"
+          aria-describedby="midi-evil-current"></canvas>
+  <section id="current-section" aria-labelledby="current-heading">
+    <h2 id="current-heading">Current</h2>
+    <p id="midi-evil-current">Loading the editor</p>
+  </section>
+  <div id="midi-evil-live" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
+  <p><a id="after-editor" href="#keys">The editor's keys</a></p>
+  </div>
+  <section id="keys" aria-labelledby="keys-heading">
+    <h2 id="keys-heading">Keys</h2>
+    <p>Tab into the editor. F6 moves between the transport and the piano roll. In the roll, Left
+      and Right move between notes, Home and End to the first and last, Up and Down change pitch
+      (with Shift, an octave), Control with Left or Right moves a note, Shift with Left or Right
+      changes its length, Enter adds a note and Delete removes one. Tab from the roll leaves the
+      editor; Shift+Tab from the transport leaves it backwards.</p>
+    <p><a href="#">Back to the top</a></p>
+  </section>
+</main>
+<script type="module">
+  // A failed start says so where the editor's description would be, not only in the console.
+  const current = document.getElementById("midi-evil-current");
+  try {
+    const { default: init, start } = await import("./roll_web.js");
+    await init();
+    await start();
+  } catch (error) {
+    current.textContent = `The editor did not start: ${error?.message ?? error}`;
+    console.error("the editor did not start", error);
+  }
+</script>
+</body>
+</html>

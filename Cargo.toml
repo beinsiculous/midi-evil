@@ -9,7 +9,7 @@ members = [
     "crates/evil-render",
     "crates/midi-evil",
 ]
-exclude = ["crates/oracle", "crates/evil-porting"]
+exclude = ["crates/oracle", "crates/evil-porting", "spike/roll-web"]
 resolver = "3"
 
 [workspace.package]

@@ -40,6 +40,11 @@ pub struct RollState {
     exposed_name: String,
     /// Set in a frame where a key was handled, for the status line.
     pub spoken_this_frame: Option<String>,
+    /// The newest name, never held back a frame: a surface with no accessibility node of its
+    /// own (the web build) reads it here.
+    pub current_name: String,
+    /// The notice raised this frame, for the same surfaces.
+    pub notice_this_frame: Option<String>,
 }
 
 impl Default for RollState {
@@ -60,6 +65,8 @@ impl Default for RollState {
             last_outcome: None,
             exposed_name: String::new(),
             spoken_this_frame: None,
+            current_name: String::new(),
+            notice_this_frame: None,
         }
     }
 }
@@ -546,6 +553,7 @@ pub fn show(
             }
             state.focus_id = Some(response.id);
             state.spoken_this_frame = None;
+            state.notice_this_frame = None;
             reconcile_cursor(state, sequence.notes());
             let mut notice = None;
             let mut cursor_moved = false;
@@ -754,6 +762,8 @@ pub fn show(
             if cursor_moved {
                 state.spoken_this_frame = Some(name.clone());
             }
+            state.current_name = name.clone();
+            state.notice_this_frame = notice.clone();
             match notice {
                 // The notice gets a frame of its own: when the focused node's name changes in
                 // the same frame, the name is what a screen reader speaks.
