@@ -5,6 +5,7 @@ use crate::insert_automation::{
     apply_delay_automation, apply_waveshaper_automation, has_delay_automation,
     has_waveshaper_automation,
 };
+use crate::polyphony;
 use crate::voice::{VoiceControls, VoiceState};
 use crate::waveshaper::apply_waveshaper;
 use crate::{Error, Lfo, LfoDestination, LfoPhaseSync, LfoWaveform, Patch, VoiceMode, Waveform};
@@ -84,7 +85,7 @@ pub fn render(patch: &Patch) -> Result<RenderedSound, Error> {
     apply_waveshaper_insert(patch, &mut samples, controllers);
     apply_delay_insert(patch, &mut samples, controllers, &[]);
     soft_limit(&mut samples);
-    if patch.uses_sync() {
+    if patch.uses_output_dc_block() {
         block_dc(&mut samples, patch.sample_rate);
     }
     Ok(RenderedSound {
@@ -202,6 +203,13 @@ pub fn render_notes_dry_with_tempo_and_full_automation(
     )
 }
 
+#[derive(Clone, Copy)]
+struct VoiceRenderTiming {
+    gate_frame_count: usize,
+    release_frame_count: usize,
+    audible_end_frame: usize,
+}
+
 fn render_notes_inner(
     patch: &Patch,
     notes: &[SynthNote],
@@ -233,7 +241,7 @@ fn render_notes_inner(
             apply_delay_insert(patch, &mut samples, controllers, tempo_changes);
         }
         soft_limit(&mut samples);
-        if apply_insert_effects && patch.uses_sync() {
+        if apply_insert_effects && patch.uses_output_dc_block() {
             block_dc(&mut samples, patch.sample_rate);
         }
         return Ok(RenderedSound {
@@ -242,6 +250,14 @@ fn render_notes_inner(
         });
     }
     let sample_rate = patch.sample_rate;
+    if patch.polyphony.is_some() {
+        for (index, note) in notes.iter().enumerate() {
+            validate_note(note, index)?;
+        }
+    }
+    let allocations = patch.polyphony.map(|limit| {
+        polyphony::allocate(notes, sample_rate, patch.envelope.release_seconds, limit)
+    });
     let cacheable = patch.glide_seconds == 0.0
         && pitch_bends.is_empty()
         && aftertouch.is_empty()
@@ -266,15 +282,47 @@ fn render_notes_inner(
             samples.resize(required_frames, 0.0);
         }
         let start_frame = (note.start_seconds * f64::from(sample_rate)).round() as usize;
-        let end_frame = start_frame + voice_frame_count(&voice);
+        let timing = allocations.as_ref().map(|allocations| {
+            let allocation = allocations[index];
+            VoiceRenderTiming {
+                gate_frame_count: allocation.gate_frame.saturating_sub(start_frame),
+                release_frame_count: allocation.release_end_frame.saturating_sub(start_frame),
+                audible_end_frame: allocation.audible_end_frame,
+            }
+        });
+        if timing.is_some_and(|timing| timing.audible_end_frame <= start_frame) {
+            continue;
+        }
+        let render_frame_count = timing.map_or_else(
+            || voice_frame_count(&voice),
+            |timing| timing.release_frame_count,
+        );
+        let end_frame = start_frame + render_frame_count;
+        let gate_seconds = timing.map_or(voice.duration_seconds, |timing| {
+            timing.gate_frame_count as f32 / sample_rate as f32
+        });
+        let mix_frame_count = |rendered: &[f32]| {
+            timing.map_or(rendered.len(), |timing| {
+                timing
+                    .audible_end_frame
+                    .saturating_sub(start_frame)
+                    .min(rendered.len())
+            })
+        };
         if samples.len() < end_frame {
             samples.resize(end_frame, 0.0);
         }
         if cacheable && cache.len() < 128 {
-            let key = (note.pitch, voice_frame_count(&voice) as u32, note.velocity);
+            let key = (
+                note.pitch,
+                render_frame_count as u32,
+                timing.map_or(0, |timing| timing.gate_frame_count) as u32,
+                voice.duration_seconds.to_bits(),
+                note.velocity,
+            );
             let rendered = cache.entry(key).or_insert_with(|| {
-                let mut rendered = vec![0.0; voice_frame_count(&voice)];
-                render_voice_into(
+                let mut rendered = vec![0.0; render_frame_count];
+                render_voice_into_with_timing(
                     &voice,
                     0,
                     &mut rendered,
@@ -288,10 +336,38 @@ fn render_notes_inner(
                         controllers: &[],
                         tempo_changes: &[],
                     },
+                    gate_seconds,
+                    render_frame_count,
                 );
                 rendered
             });
-            for (offset, sample) in rendered.iter().enumerate() {
+            for (offset, sample) in rendered.iter().take(mix_frame_count(rendered)).enumerate() {
+                samples[start_frame + offset] += sample;
+            }
+        } else if timing.is_some() {
+            let mut rendered = vec![0.0; render_frame_count];
+            render_voice_into_with_timing(
+                &voice,
+                0,
+                &mut rendered,
+                VoiceAutomation {
+                    note_start_seconds: note.start_seconds,
+                    note_pitch: note.pitch,
+                    lfo_seed: patch.seed,
+                    glide_from_pitch: notes[..index]
+                        .iter()
+                        .rev()
+                        .find(|previous| previous.start_seconds < note.start_seconds)
+                        .map(|previous| previous.pitch),
+                    pitch_bends,
+                    aftertouch,
+                    controllers,
+                    tempo_changes,
+                },
+                gate_seconds,
+                render_frame_count,
+            );
+            for (offset, sample) in rendered.iter().take(mix_frame_count(&rendered)).enumerate() {
                 samples[start_frame + offset] += sample;
             }
         } else {
@@ -321,7 +397,7 @@ fn render_notes_inner(
         apply_delay_insert(patch, &mut samples, controllers, tempo_changes);
     }
     soft_limit(&mut samples);
-    if apply_insert_effects && patch.uses_sync() {
+    if apply_insert_effects && patch.uses_output_dc_block() {
         block_dc(&mut samples, sample_rate);
     }
     Ok(RenderedSound {
@@ -1010,6 +1086,24 @@ fn render_voice_into(
     samples: &mut [f32],
     automation: VoiceAutomation<'_>,
 ) {
+    render_voice_into_with_timing(
+        patch,
+        start_frame,
+        samples,
+        automation,
+        patch.duration_seconds,
+        voice_frame_count(patch),
+    );
+}
+
+fn render_voice_into_with_timing(
+    patch: &Patch,
+    start_frame: usize,
+    samples: &mut [f32],
+    automation: VoiceAutomation<'_>,
+    gate_seconds: f32,
+    frame_count: usize,
+) {
     let mut voice = VoiceState::new(patch, automation.note_pitch);
     let mut modulation_state = ModulationState::at_with_seed(
         patch,
@@ -1017,14 +1111,14 @@ fn render_voice_into(
         automation.note_start_seconds,
         beats_at(automation.tempo_changes, automation.note_start_seconds),
     );
-    for frame in 0..voice_frame_count(patch) {
+    for frame in 0..frame_count {
         let time = frame as f32 / patch.sample_rate as f32;
         let absolute_time = automation.note_start_seconds + f64::from(time);
         let modulation = modulation_state.next(
             patch,
             patch.sample_rate,
             time,
-            patch.duration_seconds,
+            gate_seconds,
             modulation_depth(automation.controllers, absolute_time),
             tempo_bpm_at(automation.tempo_changes, absolute_time) / 60.0,
         );
@@ -1039,7 +1133,7 @@ fn render_voice_into(
             pressure: aftertouch_gain(automation.aftertouch, automation.note_pitch, absolute_time),
             expression: expression_gain(automation.controllers, absolute_time),
         };
-        samples[start_frame + frame] += voice.sample(patch, time, patch.duration_seconds, controls);
+        samples[start_frame + frame] += voice.sample(patch, time, gate_seconds, controls);
     }
 }
 
@@ -3314,6 +3408,70 @@ mod tests {
         let mut invalid = note(69);
         invalid.velocity = 0;
         assert!(render_notes(&Patch::default(), &[invalid]).is_err());
+    }
+
+    #[test]
+    fn configured_polyphony_validates_notes_before_allocation() {
+        let patch = Patch {
+            polyphony: Some(1),
+            ..Patch::default()
+        };
+        let invalid = SynthNote {
+            start_seconds: f64::INFINITY,
+            duration_seconds: 1.0,
+            pitch: 60,
+            velocity: 100,
+        };
+        assert!(render_notes_dry(&patch, &[invalid]).is_err());
+    }
+
+    #[test]
+    fn configured_polyphony_cache_distinguishes_original_sweep_durations() {
+        let patch = Patch {
+            sample_rate: 8_000,
+            polyphony: Some(1),
+            oscillators: vec![Oscillator {
+                start_frequency_hz: 440.0,
+                end_frequency_hz: 880.0,
+                ..Oscillator::default()
+            }],
+            ..Patch::default()
+        };
+        let notes = [
+            SynthNote {
+                start_seconds: 0.0,
+                duration_seconds: 0.5,
+                pitch: 60,
+                velocity: 100,
+            },
+            SynthNote {
+                start_seconds: 0.25,
+                duration_seconds: 1.0,
+                pitch: 60,
+                velocity: 100,
+            },
+            SynthNote {
+                start_seconds: 2.0,
+                duration_seconds: 0.25,
+                pitch: 60,
+                velocity: 100,
+            },
+        ];
+        let cached = render_notes_dry(&patch, &notes).unwrap().samples;
+        let uncached = render_notes_dry_with_full_automation(
+            &patch,
+            &notes,
+            &[],
+            &[],
+            &[SynthController {
+                time_seconds: 0.0,
+                controller: 11,
+                value: 127,
+            }],
+        )
+        .unwrap()
+        .samples;
+        assert_eq!(cached, uncached);
     }
 
     fn sample_test_patch(loop_enabled: bool) -> Patch {

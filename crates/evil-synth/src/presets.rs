@@ -94,7 +94,7 @@ pub fn preset(name: &str) -> Result<Patch, Error> {
         "nasty" => Patch {
             name: "Max Nasty".to_owned(),
             duration_seconds: 0.35,
-            gain: 0.58,
+            gain: 0.9,
             midi_program: Some(80),
             pitch_gain_per_octave: 0.28,
             oscillators: vec![Oscillator {
@@ -116,12 +116,12 @@ pub fn preset(name: &str) -> Result<Patch, Error> {
             },
             filter: Some(Filter {
                 mode: FilterMode::LowPass,
-                cutoff_hz: 16_000.0,
+                cutoff_hz: 14_000.0,
                 envelope_amount: 0.0,
                 resonance: 0.017,
-                stages: 2,
+                stages: 4,
                 key_tracking: true,
-                key_tracking_ratio: 1.0,
+                key_tracking_ratio: 0.65,
             }),
             lfo: Some(Lfo {
                 rate_hz: 10.4,

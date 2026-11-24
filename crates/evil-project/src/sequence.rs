@@ -119,16 +119,21 @@ pub fn transpose_notes(
 
 /// Shorten same-pitch overlaps without changing notes on other pitches.
 pub fn clean_overlaps(sequence: &mut (impl EventSequence + ?Sized)) {
-    let notes = sequence.notes_mut();
-    notes.sort_by_key(|note| (note.pitch, note.start_tick));
+    let mut notes: Vec<_> = sequence
+        .notes_mut()
+        .drain(..)
+        .enumerate()
+        .collect::<Vec<_>>();
+    notes.sort_by_key(|(_, note)| (note.pitch, note.start_tick));
     for index in 0..notes.len().saturating_sub(1) {
-        let next_start = notes[index + 1].start_tick;
-        let note = &mut notes[index];
+        let next_start = notes[index + 1].1.start_tick;
+        let note = &mut notes[index].1;
         if note.start_tick < next_start {
             note.duration_ticks = note.duration_ticks.min(next_start - note.start_tick);
         }
     }
-    notes.sort_by_key(|note| note.start_tick);
+    notes.sort_by_key(|(original_index, note)| (note.start_tick, *original_index));
+    *sequence.notes_mut() = notes.into_iter().map(|(_, note)| note).collect();
 }
 
 #[cfg(test)]
@@ -181,5 +186,16 @@ mod tests {
         assert_eq!(track.notes[0].duration_ticks, 120);
         assert_eq!(track.notes[1].duration_ticks, 240);
         assert_eq!(track.notes[2].duration_ticks, 240);
+    }
+
+    #[test]
+    fn clean_preserves_original_order_for_simultaneous_chords() {
+        let mut track = Track {
+            notes: vec![note(64, 0, 240), note(60, 0, 240), note(67, 0, 240)],
+            ..Track::default()
+        };
+        let original = track.notes.clone();
+        clean_overlaps(&mut track);
+        assert_eq!(track.notes, original);
     }
 }

@@ -9,8 +9,30 @@ Local compatibility research only. NanoStudio-derived banks and reference WAVs s
 - **Entire Song** mixdown with **Render tail** enabled.
 - Clean comparison: channel/master gain 1 and master compressor, EQ, reverb, and delay disabled so the render isolates A17 and its insert delay.
 - Reference: `target/nasty/a17-wholebar-clean-nanostudio.wav`, stereo PCM16 at 44,100 Hz, 8.705 seconds, SHA-256 `7db8817fde630832c8b730d87d147842ff3ecaa3a4043deb30a89c0aba6b5359`.
-- Current native: `target/nasty/melody-final/c4.wav`, stereo PCM16 at 48,000 Hz, 10.040 seconds of allocated delay tail, SHA-256 `00cec2785a388090607f80bae17945d00870ef6d5ba07467def5682ec12c4854`. Its measured active duration is 7.571 seconds; the older `echo-final` and `beatsync-*` files are historical.
+- Current native: `target/nasty/antigravity-nasty/c4.wav`, stereo PCM16 at 48,000 Hz, 10.040 seconds of allocated delay tail, SHA-256 `fcfcff900a8d2d58ff5d1f9d67ecf7295fba5ca5b9b56babf903c5f82ce71730`. Its measured active duration is 7.629 seconds; `melody-final`, `echo-final`, and `beatsync-*` are historical.
 - Reproduce the native side with `docs/cli-ai.md`'s full-bar workflow, using gain 1 for both track and master. Resample before comparing numeric metrics.
+
+## Octave hard-sync, 4-LFO graph, and asymmetric cross-delay follow-up, measured on 2026-11-24
+
+Replacing the linear sync-ratio and amplitude-saw approximation with the decoded A17 modulation graph and asymmetric cross-delay improves every matched-melody correlation, level, stereo-width, and per-note gate metric without clipping. Renders and reports are under `target/nasty/antigravity-nasty/`.
+
+- Reference: `target/nasty/melody-comparison/a17-melody-nanostudio.wav`, stereo PCM16 at 44,100 Hz, 11.468 seconds, SHA-256 `21f6fc328ec772a105769881ff7f3dec0d1999c6fa42cda52a3e277248c17436`.
+- Native: `target/nasty/antigravity-nasty/melody.wav`, stereo PCM16 at 48,000 Hz, 12.040 seconds, SHA-256 `b50b0feb8a3cfec902575e3d48146f531e91cbbd5540f964e75b275a3c35c31b`.
+
+| Metric | Native | NanoStudio |
+| --- | ---: | ---: |
+| Performance RMS, 0–4 s | 0.357272 | 0.375701 |
+| Tail RMS, 4–12 s | 0.054993 | 0.051664 |
+| Complete RMS | 0.210751 | 0.225771 |
+| Performance 10 ms envelope correlation | 0.7408 | 1.0 |
+| Complete 10 ms envelope correlation | 0.9447 | 1.0 |
+| Post-performance 10 ms envelope correlation | 0.9762 | 1.0 |
+| Complete stereo-side RMS | 0.066967 | 0.075519 |
+| Active duration | 9.252 s | 8.915 s |
+
+Max Nasty now uses opt-in octave-scaled hard sync (`modulation_octaves: true`, `ratio: 1.25`) with per-voice DC blocking (`dc_block_hz: 15.0`) so collapsed sync (`ratio < 0.5`) gates naturally to silence without an amplitude LFO, while `Patch::uses_output_dc_block()` skips the redundant post-limiter output DC blocker so rendered and live peaks remain bounded in `[-1.0, 1.0]`. Modulation uses four LFOs: free-running 10.4 Hz sine pitch vibrato (`5.0` cents), beat-synced 1/16 random-step sync ratio (`0.8` oct), beat-synced 1/3-beat saw-down sync ratio (`2.0` oct), and a beat-synced 2-beat square `LfoRate` lane (`1/3` depth) switching the saw between 1/16 and 1/8 notes. The filter is a 24 dB/oct 14 kHz low-pass (`resonance: 0.017`, `key_tracking_ratio: 0.65`) at `gain: 0.9` and `pitch_gain_per_octave: 0.28`, feeding a 2:1 asymmetric `StereoCross` delay (`beats_per_cycle: 1.5`, capped at `0.75 s` left / `0.375 s` right via `right_time_ratio: 0.5`, `feedback: 0.5`, `mix: 0.5`, `tail_seconds: 8.0`).
+
+Every melody gate sits within `-1.34 / +0.42 dB` of `a17-melody-nanostudio.wav` with zero clipped samples (peak `0.8509`), and mean per-note absolute log2 spectral-centroid error drops to `0.1128` oct. Full-tail 10 ms envelope correlations reach `0.9199 / 0.9340 / 0.9374 / 0.9432` across C2–C5 (`pitches.json`) and `0.9483 / 0.9630` at 60/240 BPM (`bpm60.json`, `bpm240.json`), with final-second resting DC mean `<= 3.1e-6`. Inspection of the NanoStudio project XML confirmed that `a17-melody.prj` renders clean (`Mixer Vol=1.0`, `Eden1 Vol=1.0`, `TCE-1` and `EQ-3B` disabled), whereas the older working single-note/tempo captures (`a17-c3-working.prj`, `a17-60-ui.prj`, `a17-240-ui.prj`) had lower mixer gains (`0.797937` / `0.896241`) and master `TCE-1`/`EQ-3B` enabled, explaining why held-note RMS (`0.3595 / 0.3655 / 0.3327 / 0.2878`) sits above those historical captures; C5 remains slightly brighter (`5,348` vs `4,357 Hz` in the melody) at 48 kHz vs 44.1 kHz.
 
 ## Matched-melody follow-up, measured on 2026-11-13
 
