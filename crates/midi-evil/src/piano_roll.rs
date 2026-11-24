@@ -245,6 +245,11 @@ pub fn show(
         .show_viewport(ui, |ui, viewport| {
             let (response, full_painter) = ui.allocate_painter(size, egui::Sense::click_and_drag());
             let board = response.rect;
+            // egui gives focus on click only to text fields; without this a click selects nothing
+            // a key can act on.
+            if response.clicked() || response.drag_started() {
+                response.request_focus();
+            }
             if response.has_focus() {
                 let arrows = egui::EventFilter {
                     horizontal_arrows: true,
