@@ -4,8 +4,9 @@ use crate::{effect_ui, sample_recorder::SampleRecorder, theme};
 use eframe::egui::{self, ComboBox, DragValue, Ui};
 
 use evil_synth::{
-    AuxEnvelope, Delay, Envelope, FilterMode, Lfo, LfoDestination, LfoWaveform, Oscillator,
-    OscillatorMode, Patch, SampleOscillator, SampleZone, VoiceMode, Waveform, Waveshaper,
+    AuxEnvelope, Delay, Envelope, FilterMode, Lfo, LfoDestination, LfoPhaseSync, LfoWaveform,
+    Oscillator, OscillatorMode, Patch, SampleOscillator, SampleZone, VoiceMode, Waveform,
+    Waveshaper,
 };
 
 pub struct PatchLab {
@@ -1266,9 +1267,32 @@ fn show_lfo(ui: &mut Ui, lfo: &mut Lfo, index: usize, lfo_count: usize) {
             });
     });
     ui.horizontal_wrapped(|ui| {
-        let mut synced = lfo.beats_per_cycle.is_some();
-        if ui.checkbox(&mut synced, "Sync to song tempo").changed() {
-            lfo.beats_per_cycle = synced.then_some(1.0);
+        ComboBox::from_id_salt(("lfo-phase-sync", index))
+            .selected_text(match lfo.phase_sync {
+                LfoPhaseSync::Off => "Off (free-running)",
+                LfoPhaseSync::Key => "Key (note-on reset)",
+                LfoPhaseSync::Beat => "Beat (song phase)",
+            })
+            .show_ui(ui, |ui| {
+                if ui
+                    .selectable_value(&mut lfo.phase_sync, LfoPhaseSync::Off, "Off")
+                    .changed()
+                {
+                    lfo.beats_per_cycle = None;
+                }
+                ui.selectable_value(&mut lfo.phase_sync, LfoPhaseSync::Key, "Key");
+                if ui
+                    .selectable_value(&mut lfo.phase_sync, LfoPhaseSync::Beat, "Beat")
+                    .changed()
+                {
+                    lfo.beats_per_cycle.get_or_insert(1.0);
+                }
+            });
+        if lfo.phase_sync != LfoPhaseSync::Beat {
+            let mut synced = lfo.beats_per_cycle.is_some();
+            if ui.checkbox(&mut synced, "Tempo-sync rate").changed() {
+                lfo.beats_per_cycle = synced.then_some(1.0);
+            }
         }
         if let Some(beats) = &mut lfo.beats_per_cycle {
             ui.add(

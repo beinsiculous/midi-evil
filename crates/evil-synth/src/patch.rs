@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AuxEnvelope, Delay, Envelope, Error, Filter, Lfo, LfoDestination, ModalPartial, Oscillator,
-    OscillatorMode, OscillatorSync, Unison, VoiceMode, Waveshaper, sample::validate_sample_zones,
+    AuxEnvelope, Delay, Envelope, Error, Filter, Lfo, LfoDestination, LfoPhaseSync, ModalPartial,
+    Oscillator, OscillatorMode, OscillatorSync, Unison, VoiceMode, Waveshaper,
+    sample::validate_sample_zones,
 };
 
 const MAX_DURATION_SECONDS: f32 = 60.0;
@@ -392,6 +393,7 @@ impl Patch {
                 || lfo
                     .beats_per_cycle
                     .is_some_and(|beats| !beats.is_finite() || !(0.001..=64.0).contains(&beats))
+                || (lfo.phase_sync == LfoPhaseSync::Beat && lfo.beats_per_cycle.is_none())
                 || !lfo.depth_cents.is_finite()
                 || !lfo.fade_in_seconds.is_finite()
                 || !(0.0..=MAX_DURATION_SECONDS).contains(&lfo.fade_in_seconds)
@@ -575,6 +577,7 @@ mod tests {
             lfo: Some(Lfo {
                 rate_hz: 6.0,
                 beats_per_cycle: Some(0.25),
+                phase_sync: LfoPhaseSync::Beat,
                 depth_cents: 25.0,
                 waveform: crate::LfoWaveform::RandomRamp,
                 fade_in_seconds: 1.25,
@@ -619,9 +622,19 @@ mod tests {
     }
 
     #[test]
-    fn legacy_lfo_json_defaults_to_immediate_and_rejects_invalid_fade_in() {
+    fn legacy_lfo_json_defaults_to_key_sync_and_immediate_fade_in() {
         let patch = Patch::from_json(r#"{"lfo": {"depth_cents": 20.0}}"#).unwrap();
-        assert_eq!(patch.lfo.unwrap().fade_in_seconds, 0.0);
+        let lfo = patch.lfo.unwrap();
+        assert_eq!(lfo.fade_in_seconds, 0.0);
+        assert_eq!(lfo.phase_sync, LfoPhaseSync::Key);
+        let invalid_beat = Patch {
+            lfo: Some(Lfo {
+                phase_sync: LfoPhaseSync::Beat,
+                ..Lfo::default()
+            }),
+            ..Patch::default()
+        };
+        assert!(invalid_beat.validate().is_err());
         for fade_in_seconds in [-0.1, 60.1, f32::NAN] {
             let patch = Patch {
                 lfo: Some(Lfo {

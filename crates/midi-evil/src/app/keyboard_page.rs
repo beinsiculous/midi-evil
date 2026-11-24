@@ -123,6 +123,7 @@ impl StudioApp {
             },
             pan: instrument.pan,
             tempo_bpm: self.project.tempo_bpm,
+            song_beat: self.song_playhead_tick() as f64 / f64::from(self.project.ticks_per_quarter),
             filter: patch.filter.clone(),
             waveshaper: patch.waveshaper.clone(),
             delay: patch.delay.clone(),

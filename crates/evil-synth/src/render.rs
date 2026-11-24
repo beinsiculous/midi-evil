@@ -7,7 +7,7 @@ use crate::insert_automation::{
 };
 use crate::voice::{VoiceControls, VoiceState};
 use crate::waveshaper::apply_waveshaper;
-use crate::{Error, Lfo, LfoDestination, LfoWaveform, Patch, VoiceMode, Waveform};
+use crate::{Error, Lfo, LfoDestination, LfoPhaseSync, LfoWaveform, Patch, VoiceMode, Waveform};
 
 const MAX_PERFORMANCE_SECONDS: f64 = 3_600.0;
 
@@ -54,6 +54,7 @@ pub struct SynthTempoChange {
 struct VoiceAutomation<'a> {
     note_start_seconds: f64,
     note_pitch: u8,
+    lfo_seed: u32,
     glide_from_pitch: Option<u8>,
     pitch_bends: &'a [SynthPitchBend],
     aftertouch: &'a [SynthAftertouch],
@@ -72,6 +73,7 @@ pub fn render(patch: &Patch) -> Result<RenderedSound, Error> {
         VoiceAutomation {
             note_start_seconds: 0.0,
             note_pitch: 69,
+            lfo_seed: patch.seed,
             glide_from_pitch: None,
             pitch_bends: &[],
             aftertouch: &[],
@@ -245,6 +247,7 @@ fn render_notes_inner(
         && aftertouch.is_empty()
         && controllers.is_empty()
         && (tempo_changes.is_empty() || patch.lfos().all(|lfo| lfo.beats_per_cycle.is_none()))
+        && patch.lfos().all(|lfo| lfo.phase_sync == LfoPhaseSync::Key)
         && patch
             .oscillators
             .iter()
@@ -278,6 +281,7 @@ fn render_notes_inner(
                     VoiceAutomation {
                         note_start_seconds: 0.0,
                         note_pitch: note.pitch,
+                        lfo_seed: patch.seed,
                         glide_from_pitch: None,
                         pitch_bends: &[],
                         aftertouch: &[],
@@ -298,6 +302,7 @@ fn render_notes_inner(
                 VoiceAutomation {
                     note_start_seconds: note.start_seconds,
                     note_pitch: note.pitch,
+                    lfo_seed: patch.seed,
                     glide_from_pitch: notes[..index]
                         .iter()
                         .rev()
@@ -394,13 +399,25 @@ struct SingleVoice {
 }
 
 impl SingleVoice {
-    fn new(patch: Patch, note: &SynthNote, glide_from_semitones: f32) -> Self {
+    fn new(
+        patch: Patch,
+        note: &SynthNote,
+        glide_from_semitones: f32,
+        tempo_changes: &[SynthTempoChange],
+        lfo_seed: u32,
+    ) -> Self {
+        let modulation = ModulationState::at_with_seed(
+            &patch,
+            lfo_seed,
+            note.start_seconds,
+            beats_at(tempo_changes, note.start_seconds),
+        );
         Self {
             pitch: note.pitch,
             note_start_seconds: note.start_seconds,
             glide_from_semitones,
             state: VoiceState::new(&patch, note.pitch),
-            modulation: ModulationState::new(&patch),
+            modulation,
             patch,
             frame: 0,
             gate: None,
@@ -483,7 +500,13 @@ fn render_single_voice(
                     let next_patch = voice_patch(patch, note, 0)?;
                     match patch.voice_mode {
                         VoiceMode::Mono => {
-                            voice = Some(SingleVoice::new(next_patch, note, glide_from_semitones));
+                            voice = Some(SingleVoice::new(
+                                next_patch,
+                                note,
+                                glide_from_semitones,
+                                tempo_changes,
+                                patch.seed,
+                            ));
                         }
                         VoiceMode::Legato => {
                             if let Some(current) = &mut voice {
@@ -493,8 +516,13 @@ fn render_single_voice(
                                 current.state.select_note(&current.patch, note.pitch);
                                 current.gate = None;
                             } else {
-                                voice =
-                                    Some(SingleVoice::new(next_patch, note, glide_from_semitones));
+                                voice = Some(SingleVoice::new(
+                                    next_patch,
+                                    note,
+                                    glide_from_semitones,
+                                    tempo_changes,
+                                    patch.seed,
+                                ));
                             }
                         }
                         VoiceMode::Poly => unreachable!("polyphonic rendering uses note voices"),
@@ -617,6 +645,21 @@ fn validate_tempo_changes(tempo_changes: &[SynthTempoChange]) -> Result<(), Erro
     Ok(())
 }
 
+fn beats_at(tempo_changes: &[SynthTempoChange], time_seconds: f64) -> f64 {
+    let mut beats = 0.0;
+    let mut previous_time = 0.0;
+    let mut bpm = 120.0;
+    for change in tempo_changes {
+        if change.time_seconds > time_seconds {
+            break;
+        }
+        beats += (change.time_seconds - previous_time) * f64::from(bpm) / 60.0;
+        previous_time = change.time_seconds;
+        bpm = change.bpm;
+    }
+    beats + (time_seconds - previous_time) * f64::from(bpm) / 60.0
+}
+
 fn modulation_depth(controllers: &[SynthController], time_seconds: f64) -> f32 {
     if controllers.iter().any(|event| event.controller == 1) {
         controller_gain(controllers, 1, time_seconds, 0.0)
@@ -695,14 +738,44 @@ pub(crate) struct Modulation {
 pub(crate) struct ModulationState {
     lfo_phases: Vec<f32>,
     lfo_cycles: Vec<u64>,
+    lfo_seeds: Vec<u32>,
 }
 
 impl ModulationState {
+    #[cfg(test)]
     pub(crate) fn new(patch: &Patch) -> Self {
-        Self {
+        Self::at(patch, 0.0, 0.0)
+    }
+
+    pub(crate) fn at(patch: &Patch, time_seconds: f64, beats: f64) -> Self {
+        Self::at_with_seed(patch, patch.seed, time_seconds, beats)
+    }
+
+    fn at_with_seed(patch: &Patch, seed: u32, time_seconds: f64, beats: f64) -> Self {
+        let mut state = Self {
             lfo_phases: vec![0.0; patch.lfo_count()],
             lfo_cycles: vec![0; patch.lfo_count()],
+            lfo_seeds: patch
+                .lfos()
+                .map(|lfo| {
+                    if lfo.phase_sync == LfoPhaseSync::Key {
+                        patch.seed
+                    } else {
+                        seed
+                    }
+                })
+                .collect(),
+        };
+        for (index, lfo) in patch.lfos().enumerate() {
+            let cycles = match lfo.phase_sync {
+                LfoPhaseSync::Off => time_seconds * f64::from(lfo.rate_hz),
+                LfoPhaseSync::Key => 0.0,
+                LfoPhaseSync::Beat => beats / f64::from(lfo.beats_per_cycle.unwrap_or(1.0)),
+            };
+            state.lfo_phases[index] = cycles.fract() as f32;
+            state.lfo_cycles[index] = cycles.floor().max(0.0) as u64;
         }
+        state
     }
 
     pub(crate) fn next(
@@ -724,7 +797,7 @@ impl ModulationState {
                     lfo,
                     self.lfo_phases[index],
                     self.lfo_cycles[index],
-                    patch.seed,
+                    self.lfo_seeds[index],
                     index,
                 ) * lfo_fade_in(lfo, time);
                 rate_multipliers[target] += depth * lfo.lfo_rate_depth * value;
@@ -740,9 +813,12 @@ impl ModulationState {
             }
         }
         for (index, lfo) in patch.lfos().enumerate() {
-            let base_rate = lfo
-                .beats_per_cycle
-                .map_or(lfo.rate_hz, |beats| quarter_hz / beats);
+            let base_rate = if lfo.phase_sync == LfoPhaseSync::Off {
+                lfo.rate_hz
+            } else {
+                lfo.beats_per_cycle
+                    .map_or(lfo.rate_hz, |beats| quarter_hz / beats)
+            };
             let rate = (base_rate * rate_multipliers[index]).max(0.0);
             let phase_step = rate / sample_rate as f32;
             let value = if lfo.destination == LfoDestination::Amplitude
@@ -752,7 +828,7 @@ impl ModulationState {
                     lfo,
                     self.lfo_phases[index],
                     self.lfo_cycles[index],
-                    patch.seed,
+                    self.lfo_seeds[index],
                     index,
                     phase_step * (lfo.amplitude_transition_seconds * sample_rate as f32),
                 )
@@ -761,7 +837,7 @@ impl ModulationState {
                     lfo,
                     self.lfo_phases[index],
                     self.lfo_cycles[index],
-                    patch.seed,
+                    self.lfo_seeds[index],
                     index,
                 )
             } * lfo_fade_in(lfo, time);
@@ -896,7 +972,12 @@ fn render_voice_into(
     automation: VoiceAutomation<'_>,
 ) {
     let mut voice = VoiceState::new(patch, automation.note_pitch);
-    let mut modulation_state = ModulationState::new(patch);
+    let mut modulation_state = ModulationState::at_with_seed(
+        patch,
+        automation.lfo_seed,
+        automation.note_start_seconds,
+        beats_at(automation.tempo_changes, automation.note_start_seconds),
+    );
     for frame in 0..voice_frame_count(patch) {
         let time = frame as f32 / patch.sample_rate as f32;
         let absolute_time = automation.note_start_seconds + f64::from(time);
@@ -965,8 +1046,9 @@ fn soft_limit(samples: &mut [f32]) {
 mod tests {
     use super::*;
     use crate::{
-        AuxEnvelope, Envelope, Filter, Lfo, LfoDestination, LfoWaveform, ModalPartial, Oscillator,
-        OscillatorSync, PRESET_NAMES, SampleOscillator, Unison, Waveform, preset,
+        AuxEnvelope, Envelope, Filter, Lfo, LfoDestination, LfoPhaseSync, LfoWaveform,
+        ModalPartial, Oscillator, OscillatorSync, PRESET_NAMES, SampleOscillator, Unison, Waveform,
+        preset,
     };
 
     #[test]
@@ -1111,6 +1193,38 @@ mod tests {
                 .next(&reseeded, 4, 0.0, 1.0, 1.0, 1.0)
                 .amplitude
         );
+    }
+
+    #[test]
+    fn key_and_global_random_lfos_keep_their_seed_scope() {
+        let note = SynthNote {
+            start_seconds: 0.25,
+            duration_seconds: 0.25,
+            pitch: 69,
+            velocity: 100,
+        };
+        for phase_sync in [LfoPhaseSync::Key, LfoPhaseSync::Off] {
+            let patch = Patch {
+                lfo: Some(Lfo {
+                    phase_sync,
+                    waveform: LfoWaveform::RandomStep,
+                    destination: LfoDestination::Amplitude,
+                    amplitude_depth: 1.0,
+                    ..Lfo::default()
+                }),
+                ..Patch::default()
+            };
+            let second_voice = voice_patch(&patch, &note, 1).unwrap();
+            let mut first = ModulationState::at_with_seed(&patch, patch.seed, 0.25, 0.5);
+            let mut second = ModulationState::at_with_seed(&second_voice, patch.seed, 0.25, 0.5);
+            let first = first.next(&patch, 48_000, 0.25, 1.0, 1.0, 2.0);
+            let second = second.next(&second_voice, 48_000, 0.25, 1.0, 1.0, 2.0);
+            if phase_sync == LfoPhaseSync::Key {
+                assert_ne!(first.amplitude, second.amplitude);
+            } else {
+                assert_eq!(first.amplitude, second.amplitude);
+            }
+        }
     }
 
     #[test]
@@ -1776,6 +1890,101 @@ mod tests {
             .samples;
         assert_eq!(changed[..12_000], steady[..12_000]);
         assert_ne!(changed[12_000..], steady[12_000..]);
+    }
+
+    #[test]
+    fn phase_synced_lfos_share_the_song_clock_at_delayed_note_on() {
+        let tempo = [
+            SynthTempoChange {
+                time_seconds: 0.0,
+                bpm: 120.0,
+            },
+            SynthTempoChange {
+                time_seconds: 0.1,
+                bpm: 240.0,
+            },
+        ];
+        for phase_sync in [LfoPhaseSync::Off, LfoPhaseSync::Beat] {
+            for waveform in [LfoWaveform::SawUp, LfoWaveform::RandomStep] {
+                let patch = Patch {
+                    duration_seconds: 0.75,
+                    lfo: Some(Lfo {
+                        rate_hz: 2.0,
+                        beats_per_cycle: (phase_sync == LfoPhaseSync::Beat).then_some(1.0),
+                        phase_sync,
+                        waveform,
+                        destination: LfoDestination::Amplitude,
+                        amplitude_depth: 0.75,
+                        ..Lfo::default()
+                    }),
+                    envelope: Envelope {
+                        attack_seconds: 0.0,
+                        decay_seconds: 0.0,
+                        sustain_level: 1.0,
+                        release_seconds: 0.0,
+                    },
+                    ..Patch::default()
+                };
+                let reference = render_notes_with_tempo(
+                    &patch,
+                    &[SynthNote {
+                        start_seconds: 0.0,
+                        duration_seconds: 0.75,
+                        pitch: 69,
+                        velocity: 100,
+                    }],
+                    &tempo,
+                )
+                .unwrap();
+                let delayed = render_notes_with_tempo(
+                    &patch,
+                    &[SynthNote {
+                        start_seconds: 0.25,
+                        duration_seconds: 0.125,
+                        pitch: 69,
+                        velocity: 100,
+                    }],
+                    &tempo,
+                )
+                .unwrap();
+                let start = 12_000;
+                for (frame, (actual, expected)) in delayed.samples[start..start + 6_000]
+                    .iter()
+                    .zip(&reference.samples[start..start + 6_000])
+                    .enumerate()
+                {
+                    assert!(
+                        (actual - expected).abs() < 0.0005,
+                        "{phase_sync:?} {waveform:?} diverged at frame {frame}: {actual} != {expected}"
+                    );
+                }
+            }
+        }
+
+        let mut key_reset = Patch {
+            lfo: Some(Lfo {
+                rate_hz: 2.0,
+                waveform: LfoWaveform::SawUp,
+                destination: LfoDestination::Amplitude,
+                amplitude_depth: 0.75,
+                ..Lfo::default()
+            }),
+            ..Patch::default()
+        };
+        let mut state = ModulationState::at(&key_reset, 0.25, 0.5);
+        assert_eq!(
+            state.next(&key_reset, 48_000, 0.0, 1.0, 1.0, 2.0).amplitude,
+            -0.75
+        );
+        key_reset.lfo.as_mut().unwrap().phase_sync = LfoPhaseSync::Off;
+        let mut state = ModulationState::at(&key_reset, 0.25, 0.5);
+        assert!(
+            state
+                .next(&key_reset, 48_000, 0.0, 1.0, 1.0, 2.0)
+                .amplitude
+                .abs()
+                < 0.0001
+        );
     }
 
     #[test]
