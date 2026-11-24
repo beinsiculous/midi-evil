@@ -251,7 +251,7 @@ impl VoiceState {
                 modulation.filter_cutoff_octaves
                     + aux.filter_cutoff_octaves
                     + if filter.key_tracking {
-                        bend_semitones / 12.0
+                        bend_semitones / 12.0 * filter.key_tracking_ratio
                     } else {
                         0.0
                     },

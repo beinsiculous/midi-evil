@@ -1018,6 +1018,12 @@ fn show_shape(ui: &mut Ui, patch: &mut Patch) {
                 );
             ui.add(egui::Slider::new(&mut filter.resonance, 0.0..=1.0).text("Resonance"));
             ui.checkbox(&mut filter.key_tracking, "Track keys");
+            if filter.key_tracking {
+                ui.add(
+                    egui::Slider::new(&mut filter.key_tracking_ratio, 0.0..=2.0)
+                        .text("Key tracking ratio"),
+                );
+            }
         });
     }
 

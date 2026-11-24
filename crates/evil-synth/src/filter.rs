@@ -21,6 +21,8 @@ pub struct Filter {
     /// Number of cascaded 6 dB/octave stages.
     pub stages: u8,
     pub key_tracking: bool,
+    /// Octaves of cutoff movement per octave of pitch when key tracking is enabled.
+    pub key_tracking_ratio: f32,
 }
 
 impl Default for Filter {
@@ -32,6 +34,7 @@ impl Default for Filter {
             resonance: 0.0,
             stages: 1,
             key_tracking: false,
+            key_tracking_ratio: 1.0,
         }
     }
 }

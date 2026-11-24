@@ -375,9 +375,13 @@ impl Patch {
                 || !filter.envelope_amount.is_finite()
                 || !filter.resonance.is_finite()
                 || !(0.0..=1.0).contains(&filter.resonance)
-                || !(1..=4).contains(&filter.stages))
+                || !(1..=4).contains(&filter.stages)
+                || !filter.key_tracking_ratio.is_finite()
+                || !(0.0..=2.0).contains(&filter.key_tracking_ratio))
         {
-            return Err(invalid("filter cutoff and envelope_amount must be valid"));
+            return Err(invalid(
+                "filter cutoff, modulation, stages, and key tracking must be valid",
+            ));
         }
         if self.lfo_count() > 8 {
             return Err(invalid("a patch supports at most 8 LFO lanes"));

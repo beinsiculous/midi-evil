@@ -354,8 +354,9 @@ impl LiveSynth {
 fn pitched_filter(filter: Option<Filter>, pitch: u8, sample_rate: u32) -> Option<Filter> {
     filter.map(|mut filter| {
         if filter.key_tracking {
-            filter.cutoff_hz = (filter.cutoff_hz * 2.0_f32.powf((f32::from(pitch) - 60.0) / 12.0))
-                .min(sample_rate as f32 * 0.49);
+            filter.cutoff_hz = (filter.cutoff_hz
+                * 2.0_f32.powf((f32::from(pitch) - 60.0) / 12.0 * filter.key_tracking_ratio))
+            .min(sample_rate as f32 * 0.49);
         }
         filter
     })
@@ -364,6 +365,18 @@ fn pitched_filter(filter: Option<Filter>, pitch: u8, sample_rate: u32) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pitched_filter_applies_the_key_tracking_ratio() {
+        let filter = Filter {
+            cutoff_hz: 1_000.0,
+            key_tracking: true,
+            key_tracking_ratio: 0.5,
+            ..Filter::default()
+        };
+        let pitched = pitched_filter(Some(filter), 72, 48_000).unwrap();
+        assert!((pitched.cutoff_hz - 2.0_f32.sqrt() * 1_000.0).abs() < 0.001);
+    }
 
     #[test]
     fn edited_patch_changes_new_notes_and_preserves_held_voices() {
@@ -606,6 +619,7 @@ mod tests {
                                 resonance,
                                 stages,
                                 key_tracking: true,
+                                key_tracking_ratio: 1.0,
                             }),
                             filter_envelope: Some(crate::Envelope {
                                 attack_seconds: 0.01,

@@ -17,23 +17,27 @@ Local compatibility research only. NanoStudio-derived banks and reference WAVs s
 The held-note calibration hid structural behavior that only appears in a performance. A new two-bar fixture plays the same twelve syncopated C2–C5 notes with identical gates and velocities 96–120 in both engines, at 120 BPM with track/master gain 1, disabled master/send effects, and a rendered tail. The NanoStudio-saved project and comparison reports are under `target/nasty/melody-comparison/`; the built-in render is `target/nasty/melody-final/melody.wav`.
 
 - Reference: `target/nasty/melody-comparison/a17-melody-nanostudio.wav`, stereo PCM16 at 44,100 Hz, 11.468 seconds, SHA-256 `21f6fc328ec772a105769881ff7f3dec0d1999c6fa42cda52a3e277248c17436`.
-- Native: `target/nasty/melody-final/melody.wav`, stereo PCM16 at 48,000 Hz, 12.040 seconds, SHA-256 `a0bb69bca50071691bc71424ae264e1a1525b27b052b7d74f5051dd7b919929b`.
+- Native: `target/nasty/melody-final/melody.wav`, stereo PCM16 at 48,000 Hz, 12.040 seconds, SHA-256 `a6c0771d25cf2d6fa5fc1ff330d7ae3de344c194ee2d80ce2230106fdc84306f`.
 
 | Metric | Native | NanoStudio |
 | --- | ---: | ---: |
-| Performance RMS, 0–4 s | 0.340951 | 0.375701 |
-| Complete RMS | 0.198590 | 0.225771 |
-| Performance 10 ms envelope correlation | 0.6775 | 1.0 |
-| Complete 10 ms envelope correlation | 0.9257 | 1.0 |
+| Performance RMS, 0–4 s | 0.341566 | 0.375701 |
+| Complete RMS | 0.198950 | 0.225771 |
+| Performance 10 ms envelope correlation | 0.6789 | 1.0 |
+| Complete 10 ms envelope correlation | 0.9260 | 1.0 |
 | Post-performance 10 ms envelope correlation | 0.9456 | 1.0 |
-| Complete stereo-side RMS | 0.056696 | 0.075519 |
+| Complete stereo-side RMS | 0.056752 | 0.075519 |
 | Active duration | 9.181 s | 8.915 s |
 
-The reference is exactly dual-mono until frame 16,665 at 44,100 Hz (0.377891 seconds), then becomes stereo. This is the approximately 2.891 ms source onset plus a **375 ms dotted-eighth delay**, not the previously inferred 500 ms mono-compatible delay. At 60/120/240 BPM the first stereo frame confirms a 0.75-beat delay capped at 0.375 seconds. The first isolated echo is right-channel-only, with 0.9977 waveform correlation to the dry note and 0.4985 fitted gain. `DelayMode::PingPong` now models this centered-input alternating routing in shared offline, automated, typed-insert, and live paths; existing `StereoCross` behavior is unchanged.
+The reference is exactly dual-mono until frame 16,665 at 44,100 Hz (0.377891 seconds), then becomes stereo. This is the approximately 2.891 ms source onset plus a **375 ms dotted-eighth delay**, not the previously inferred 500 ms mono-compatible delay. At 60/120/240 BPM the first stereo frame confirms a 0.75-beat delay capped at 0.375 seconds. The first isolated echo is right-channel-only, with 0.9977 waveform correlation to the dry note and 0.4985 fitted gain. `DelayMode::PingPong` models this centered-input alternating routing in shared offline, automated, typed-insert, and live paths; existing `StereoCross` behavior is unchanged.
 
-The melody calibration sets gain 1.0, attack 3 ms, wet mix 0.5, feedback 0.65, and an 8-second allocated tail. Every gate is now within +0.26/-2.06 dB of its matched reference, versus -6.94/-9.68 dB before this follow-up. Feedback 0.65 gives the best combined tail/duration result; 0.7 overextends it. Envelope-decay/sustain, sync-ratio-depth, and fixed/key-tracked-filter sweeps did not produce a better combined result, so they were not adopted. Reports and rejected-candidate measurements are under `target/nasty/melody-comparison/`.
+The melody calibration sets gain 1.0, attack 3 ms, wet mix 0.5, feedback 0.65, an 8-second allocated tail, and `key_tracking_ratio: 0.5` on the 18 kHz low-pass filter. Every gate is now within +0.26/-2.01 dB of its matched reference, versus -6.94/-9.68 dB before this follow-up. Half-rate key tracking reduces mean per-note absolute log spectral-centroid error from 0.1211 to 0.0930 while slightly improving performance/complete correlation, RMS, stereo-side RMS, and C2's gate. Feedback 0.65 gives the best combined tail/duration result; 0.7 overextends it. Envelope-decay/sustain and sync-ratio-depth sweeps did not produce a better combined result, so they were not adopted. Reports and rejected-candidate measurements are under `target/nasty/melody-comparison/`.
 
-This is a better performance match, not a uniform improvement. Performance-window envelope correlation is only 0.6775, C2's gate remains 2.06 dB quiet, native peaks remain slightly lower, and dry trough/spectral shapes still differ. Older held-note RMS matches are **not preserved**: C2/C3/C4/C5 held RMS is 0.324588/0.320050/0.392097/0.335896 against 0.224185/0.179252/0.147276/0.129100. Their full-tail correlations remain 0.9086–0.9128. At 60/240 BPM, held RMS is 0.410598/0.294189 against 0.146528/0.166470, full-tail correlations are 0.9379/0.9435, and active durations are 9.628/3.631 seconds against 9.126/3.626. Current multi-pitch reports are `target/nasty/melody-final/pitches.json`, `60.json`, and `240.json`. The sections below retain the earlier held-note calibrations as history, not current level claims.
+The tracking change is not uniform: some G3/C4 gates become brighter, and complete-melody centroid rises from 3,865 to 3,984 Hz against the reference's 3,871 Hz. It improves the aggregate per-note spectral match rather than claiming a uniform spectrum match. The ratio defaults to 1.0 for legacy patches and other presets, with shared offline/live behavior and Patch Lab controls. Candidate renders and the tracking sweep are under `target/nasty/melody-tracking/`.
+
+Additional trough experiments were rejected. Increasing effective amplitude-saw depth from 1.0 to 1.25–2.0 improved only the isolated first-note dry shape while worsening full-melody correlation, levels, stereo width, and gate error. Routing a second LFO4 lane into amplitude articulation at 0.1–0.5 rate depth gave at most small full-melody gains with worse isolated dry correlation, so it was not adopted. Those reports are under `target/nasty/melody-trough/`.
+
+This is a better performance match, not a uniform improvement. Performance-window envelope correlation is only 0.6789, C2's gate remains 2.01 dB quiet, native peaks remain slightly lower, and dry trough/spectral shapes still differ. Older held-note RMS matches are **not preserved**: C2/C3/C4/C5 held RMS is 0.326296/0.321077/0.392097/0.335896 against 0.224185/0.179252/0.147276/0.129100. Their full-tail correlations remain 0.9088–0.9128. At 60/240 BPM, held RMS is 0.410598/0.294189 against 0.146528/0.166470, full-tail correlations are 0.9379/0.9435, and active durations are 9.628/3.631 seconds against 9.126/3.626. Current multi-pitch reports are `target/nasty/melody-final/pitches.json`, `60.json`, and `240.json`. The sections below retain the earlier held-note calibrations as history, not current level claims.
 
 ## Echo and audition follow-up, measured on 2026-11-13
 

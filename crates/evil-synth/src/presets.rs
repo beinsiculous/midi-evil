@@ -118,6 +118,7 @@ pub fn preset(name: &str) -> Result<Patch, Error> {
                 resonance: 0.0,
                 stages: 4,
                 key_tracking: true,
+                key_tracking_ratio: 0.5,
             }),
             lfo: Some(Lfo {
                 rate_hz: 10.4,
@@ -205,6 +206,7 @@ pub fn preset(name: &str) -> Result<Patch, Error> {
                 resonance: 0.65,
                 stages: 4,
                 key_tracking: true,
+                key_tracking_ratio: 1.0,
             }),
             filter_envelope: Some(Envelope {
                 attack_seconds: 0.1,
@@ -389,6 +391,7 @@ fn filter(mode: FilterMode, cutoff_hz: f32) -> Filter {
         resonance: 0.0,
         stages: 1,
         key_tracking: false,
+        key_tracking_ratio: 1.0,
     }
 }
 

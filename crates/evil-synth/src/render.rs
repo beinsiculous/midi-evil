@@ -352,7 +352,8 @@ fn voice_patch(patch: &Patch, note: &SynthNote, index: usize) -> Result<Patch, E
     if let Some(filter) = &mut voice.filter
         && filter.key_tracking
     {
-        filter.cutoff_hz = (filter.cutoff_hz * filter_pitch_ratio).min(sample_rate as f32 * 0.49);
+        filter.cutoff_hz = (filter.cutoff_hz * filter_pitch_ratio.powf(filter.key_tracking_ratio))
+            .min(sample_rate as f32 * 0.49);
     }
     if patch.velocity_filter_octaves != 0.0
         && let Some(filter) = &mut voice.filter
@@ -2688,6 +2689,31 @@ mod tests {
             render_notes(&middle_c_untracked, &[note(60)])
                 .unwrap()
                 .samples
+        );
+    }
+
+    #[test]
+    fn filter_key_tracking_ratio_scales_pitch_response() {
+        let full = Patch {
+            pitch_tracking: false,
+            filter: Some(Filter {
+                cutoff_hz: 500.0,
+                key_tracking: true,
+                ..Filter::default()
+            }),
+            ..Patch::default()
+        };
+        let mut half = full.clone();
+        half.filter.as_mut().unwrap().key_tracking_ratio = 0.5;
+        let mut middle_c = full.clone();
+        middle_c.filter.as_mut().unwrap().key_tracking_ratio = 0.0;
+        assert_ne!(
+            render_notes(&full, &[note(72)]).unwrap().samples,
+            render_notes(&half, &[note(72)]).unwrap().samples
+        );
+        assert_eq!(
+            render_notes(&middle_c, &[note(60)]).unwrap().samples,
+            render_notes(&middle_c, &[note(72)]).unwrap().samples
         );
     }
 
