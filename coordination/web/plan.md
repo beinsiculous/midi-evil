@@ -10,7 +10,7 @@ corrected in the same commit that settles this plan (see *The record's correctio
 Milestone **MIDI Evil Web** in `beinsiculous/midi-evil`: W0 `#2`, W1 `#3`, W2 `#4`, W3 `#5`,
 W4 `#6`, W5 `#7`, W-A `#8`, W6 `#9`. Branch `jesse` throughout.
 
-**Status: DRAFT v4 — not settled. W0 does not start until Jesse calls this settled.** Rounds 1 and
+**Status: SETTLED by Jesse, 2026-11-24 (v4, committed `b1d2a8f`). W0 is open.** Rounds 1 and
 2 (`codex`, and `deepseek` standing in for `kimi`, which has no credential on bob-ross) are answered
 in `review/web/rebuttal-1.md` and `rebuttal-2.md`.
 
@@ -21,7 +21,8 @@ through review after W0's result. Settling this plan authorises W0 and nothing a
 
 ## Decisions
 
-- **D1 — Roles.** Claude plans and builds each batch (the 2026-09-25 pivot); a vendor never reviews
+- **D1 — Roles.** Claude Fable plans; **Claude Opus 5.5 builds each batch from a handoff** (Jesse,
+  2026-11-24), and the planner takes the result back as `handoff-loop` § 3 says; a vendor never reviews
   its own vendor's work, so every plan revision and every diff goes to `kimi` (`deepseek` when kimi
   is out); `codex` (Astra) joins wherever a screen is in it — this plan, W0's result, W-A1, W-A2,
   W6; `gemini` joins where a harness, fixture or public seam changes — W0's result and probes, W1,
