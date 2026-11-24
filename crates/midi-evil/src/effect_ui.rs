@@ -194,6 +194,9 @@ pub fn delay_controls(ui: &mut Ui, effect: &mut Delay) {
             ui.selectable_value(&mut effect.mode, DelayMode::StereoCross, "Stereo cross");
             ui.selectable_value(&mut effect.mode, DelayMode::PingPong, "Ping-pong");
         });
+    if effect.mode != DelayMode::Mono {
+        ui.add(Slider::new(&mut effect.right_time_ratio, 0.05..=1.0).text("Right time ratio"));
+    }
 }
 
 fn modulation_controls(

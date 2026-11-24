@@ -806,9 +806,7 @@ mod tests {
             feedback: 0.5,
             mix: 1.0,
             mode: crate::DelayMode::StereoCross,
-            beats_per_cycle: None,
-            maximum_time_seconds: None,
-            tail_seconds: 0.0,
+            ..Delay::default()
         };
         let stereo = mix_stereo(
             &[MonoTrack {
@@ -851,9 +849,7 @@ mod tests {
             feedback: 0.95,
             mix: 1.0,
             mode: crate::DelayMode::StereoCross,
-            beats_per_cycle: None,
-            maximum_time_seconds: None,
-            tail_seconds: 0.0,
+            ..Delay::default()
         };
         let controllers = (20..=25)
             .map(|controller| SynthController {
@@ -972,9 +968,7 @@ mod tests {
                     feedback: 0.0,
                     mix: 1.0,
                     mode: crate::DelayMode::Mono,
-                    beats_per_cycle: None,
-                    maximum_time_seconds: None,
-                    tail_seconds: 0.0,
+                    ..Delay::default()
                 })),
                 gain: 1.0,
             },

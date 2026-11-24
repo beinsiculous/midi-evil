@@ -1,7 +1,7 @@
 use crate::{
-    Delay, DelayMode, Envelope, Error, Filter, FilterMode, Lfo, LfoDestination, LfoWaveform,
-    ModalPartial, Oscillator, OscillatorMode, OscillatorSync, Patch, VoiceMode, Waveform,
-    Waveshaper,
+    Delay, DelayMode, Envelope, Error, Filter, FilterMode, Lfo, LfoDestination, LfoPhaseSync,
+    LfoWaveform, ModalPartial, Oscillator, OscillatorMode, OscillatorSync, Patch, VoiceMode,
+    Waveform, Waveshaper,
 };
 
 pub const PRESET_NAMES: &[&str] = &[
@@ -89,86 +89,86 @@ pub fn preset(name: &str) -> Result<Patch, Error> {
             filter: Some(filter(FilterMode::LowPass, 3_500.0)),
             ..Patch::default()
         },
-        // A17's sync-square Osc Mix motion maps to a modulated native sync ratio.
-        // Matched-melody calibration shapes the amplitude articulation and ping-pong
-        // tail while bandlimiting resets and retaining high-frequency oscillator energy.
+        // Octave-scaled hard sync swept by a random-step lane and a tempo-switched
+        // beat-synced saw, cleaned per voice before an asymmetric stereo cross-delay.
         "nasty" => Patch {
             name: "Max Nasty".to_owned(),
             duration_seconds: 0.35,
-            gain: 1.0,
+            gain: 0.58,
             midi_program: Some(80),
-            pitch_gain_per_octave: 0.3,
+            pitch_gain_per_octave: 0.28,
             oscillators: vec![Oscillator {
                 waveform: Waveform::Square,
                 detune_cents: 15.5,
                 ..Oscillator::default()
             }],
             oscillator_mode: OscillatorMode::Sync,
-            sync: Some(OscillatorSync { ratio: 1.25 }),
+            sync: Some(OscillatorSync {
+                ratio: 1.25,
+                modulation_octaves: true,
+                dc_block_hz: 15.0,
+            }),
             envelope: Envelope {
                 attack_seconds: 0.003,
-                decay_seconds: 0.18,
+                decay_seconds: 0.35,
                 sustain_level: 0.75,
                 release_seconds: 0.04,
             },
             filter: Some(Filter {
                 mode: FilterMode::LowPass,
-                cutoff_hz: 18_000.0,
+                cutoff_hz: 16_000.0,
                 envelope_amount: 0.0,
-                resonance: 0.0,
-                stages: 4,
+                resonance: 0.017,
+                stages: 2,
                 key_tracking: true,
-                key_tracking_ratio: 0.5,
+                key_tracking_ratio: 1.0,
             }),
             lfo: Some(Lfo {
                 rate_hz: 10.4,
-                depth_cents: 2.0,
+                phase_sync: LfoPhaseSync::Off,
+                depth_cents: 5.0,
                 destination: LfoDestination::Pitch,
-                waveform: LfoWaveform::SawUp,
+                waveform: LfoWaveform::Sine,
                 ..Lfo::default()
             }),
             modulation: vec![
                 Lfo {
-                    rate_hz: 4.41,
-                    destination: LfoDestination::SyncRatio,
-                    waveform: LfoWaveform::SawUp,
-                    sync_ratio_depth: 0.15,
-                    ..Lfo::default()
-                },
-                Lfo {
-                    // Source LFO3 beat-sync mode 6: sixteenth notes at 120 BPM.
                     rate_hz: 8.0,
                     beats_per_cycle: Some(0.25),
+                    phase_sync: LfoPhaseSync::Beat,
                     destination: LfoDestination::SyncRatio,
-                    waveform: LfoWaveform::SawDown,
-                    sync_ratio_depth: 0.1,
+                    waveform: LfoWaveform::RandomStep,
+                    sync_ratio_depth: 0.8,
                     ..Lfo::default()
                 },
                 Lfo {
-                    rate_hz: 20.0,
+                    rate_hz: 6.0,
+                    beats_per_cycle: Some(1.0 / 3.0),
+                    phase_sync: LfoPhaseSync::Beat,
+                    destination: LfoDestination::SyncRatio,
+                    waveform: LfoWaveform::SawDown,
+                    sync_ratio_depth: 2.0,
+                    ..Lfo::default()
+                },
+                Lfo {
+                    rate_hz: 1.0,
+                    beats_per_cycle: Some(2.0),
+                    phase_sync: LfoPhaseSync::Beat,
                     destination: LfoDestination::LfoRate,
                     waveform: LfoWaveform::Square,
                     target_lfo: Some(2),
-                    lfo_rate_depth: 0.25,
-                    ..Lfo::default()
-                },
-                Lfo {
-                    rate_hz: 8.0,
-                    beats_per_cycle: Some(0.25),
-                    destination: LfoDestination::Amplitude,
-                    waveform: LfoWaveform::SawDown,
-                    amplitude_depth: 1.0,
-                    amplitude_transition_seconds: 2.0 / 48_000.0,
+                    lfo_rate_depth: 1.0 / 3.0,
                     ..Lfo::default()
                 },
             ],
             delay: Some(Delay {
-                time_seconds: 0.375,
-                beats_per_cycle: Some(0.75),
-                maximum_time_seconds: Some(0.375),
-                feedback: 0.65,
+                time_seconds: 0.75,
+                beats_per_cycle: Some(1.5),
+                maximum_time_seconds: Some(0.75),
+                feedback: 0.5,
                 mix: 0.5,
-                mode: DelayMode::PingPong,
+                mode: DelayMode::StereoCross,
+                right_time_ratio: 0.5,
                 tail_seconds: 8.0,
             }),
             ..Patch::default()
@@ -227,6 +227,7 @@ pub fn preset(name: &str) -> Result<Patch, Error> {
                 mix: 0.04,
                 mode: DelayMode::StereoCross,
                 tail_seconds: 6.0,
+                ..Delay::default()
             }),
             ..Patch::default()
         },
@@ -418,16 +419,34 @@ mod tests {
         );
 
         let nasty = preset("nasty").unwrap();
+        let nasty_sync = nasty.sync.as_ref().unwrap();
+        assert!(nasty_sync.modulation_octaves);
+        assert!(nasty_sync.dc_block_hz > 0.0);
         let nasty_delay = nasty.delay.unwrap();
         assert_eq!(nasty_delay.tail_seconds, 8.0);
-        assert_eq!(nasty_delay.beats_per_cycle, Some(0.75));
-        assert_eq!(nasty_delay.maximum_time_seconds, Some(0.375));
-        assert_eq!(nasty_delay.mode, DelayMode::PingPong);
+        assert_eq!(nasty_delay.beats_per_cycle, Some(1.5));
+        assert_eq!(nasty_delay.maximum_time_seconds, Some(0.75));
+        assert_eq!(nasty_delay.mode, DelayMode::StereoCross);
+        assert_eq!(nasty_delay.right_time_ratio, 0.5);
         assert!(
             nasty
                 .modulation
                 .iter()
-                .any(|lfo| lfo.amplitude_transition_seconds > 0.0)
+                .any(|lfo| lfo.waveform == LfoWaveform::RandomStep
+                    && lfo.phase_sync == LfoPhaseSync::Beat)
+        );
+        assert!(
+            nasty
+                .modulation
+                .iter()
+                .any(|lfo| lfo.destination == LfoDestination::LfoRate
+                    && lfo.phase_sync == LfoPhaseSync::Beat)
+        );
+        assert!(
+            nasty
+                .modulation
+                .iter()
+                .all(|lfo| lfo.destination != LfoDestination::Amplitude)
         );
     }
 }

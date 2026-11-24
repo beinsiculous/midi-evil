@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::delay::{
-    allocated_tail_frames, apply_stereo_delay_with_tempo, delay_frame_count, maximum_delay_frames,
-    stereo_delay_input, tempo_bpm_at,
+    allocated_tail_frames, apply_stereo_delay_with_tempo, maximum_delay_frames,
+    stereo_delay_frame_counts, stereo_delay_input, tempo_bpm_at,
 };
 use crate::dynamics::CompressorProcessor;
 use crate::equalizer::EqualizerProcessor;
@@ -541,9 +541,11 @@ impl InsertProcessor {
                 line,
                 position,
             } => {
-                let frames = delay_frame_count(sample_rate, settings, tempo_bpm);
-                let read = (*position + line.len() - frames) % line.len();
-                let delayed = line[read];
+                let [left_frames, right_frames] =
+                    stereo_delay_frame_counts(sample_rate, settings, tempo_bpm);
+                let read_left = (*position + line.len() - left_frames) % line.len();
+                let read_right = (*position + line.len() - right_frames) % line.len();
+                let delayed = [line[read_left][0], line[read_right][1]];
                 line[*position] =
                     stereo_delay_input(settings.mode, *stereo, delayed, settings.feedback);
                 stereo[0] += delayed[0] * settings.mix;
@@ -628,9 +630,8 @@ mod tests {
                 feedback: 0.5,
                 mix: 0.3,
                 mode: DelayMode::StereoCross,
-                beats_per_cycle: None,
-                maximum_time_seconds: None,
-                tail_seconds: 0.0,
+                right_time_ratio: 0.5,
+                ..Delay::default()
             }),
         ];
         let original: Vec<f32> = (0..64)

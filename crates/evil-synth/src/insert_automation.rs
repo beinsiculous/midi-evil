@@ -1,6 +1,6 @@
 use crate::delay::{
-    allocated_tail_frames, delay_frame_count, maximum_delay_frames, stereo_delay_input,
-    tempo_bpm_at,
+    allocated_tail_frames, delay_frame_count, maximum_delay_frames, stereo_delay_frame_counts,
+    stereo_delay_input, tempo_bpm_at,
 };
 use crate::{Delay, SynthController, SynthTempoChange, Waveshaper};
 
@@ -106,13 +106,14 @@ pub(crate) fn apply_stereo_delay_automation_with_tempo(
     for frame in 0..left.len() {
         let time = frame as f64 / f64::from(sample_rate);
         let delay = automated_delay(base, controllers, time);
-        let delay_frames =
-            delay_frame_count(sample_rate, &delay, tempo_bpm_at(tempo_changes, time));
-        let read = (position + left_line.len() - delay_frames) % left_line.len();
+        let [left_frames, right_frames] =
+            stereo_delay_frame_counts(sample_rate, &delay, tempo_bpm_at(tempo_changes, time));
+        let read_left = (position + left_line.len() - left_frames) % left_line.len();
+        let read_right = (position + right_line.len() - right_frames) % right_line.len();
         let dry_left = left[frame];
         let dry_right = right[frame];
-        let delayed_left = left_line[read];
-        let delayed_right = right_line[read];
+        let delayed_left = left_line[read_left];
+        let delayed_right = right_line[read_right];
         let input = stereo_delay_input(
             base.mode,
             [dry_left, dry_right],
@@ -222,5 +223,39 @@ mod tests {
         );
         assert_eq!(left[1], 1.0);
         assert_eq!(left[1_000], 0.0);
+    }
+
+    #[test]
+    fn stereo_delay_automation_preserves_right_time_ratio() {
+        let delay = Delay {
+            time_seconds: 0.04,
+            feedback: 0.5,
+            mix: 0.5,
+            mode: crate::DelayMode::StereoCross,
+            right_time_ratio: 0.5,
+            ..Delay::default()
+        };
+        let mut static_left = vec![1.0];
+        let mut static_right = vec![1.0];
+        crate::delay::apply_stereo_delay_with_tempo(
+            &mut static_left,
+            &mut static_right,
+            1_000,
+            &delay,
+            &[],
+        );
+
+        let mut auto_left = vec![1.0];
+        let mut auto_right = vec![1.0];
+        apply_stereo_delay_automation_with_tempo(
+            &mut auto_left,
+            &mut auto_right,
+            1_000,
+            &delay,
+            &[],
+            &[],
+        );
+        assert_eq!(auto_left, static_left);
+        assert_eq!(auto_right, static_right);
     }
 }

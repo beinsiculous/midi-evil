@@ -770,7 +770,7 @@ impl ModulationState {
             let cycles = match lfo.phase_sync {
                 LfoPhaseSync::Off => time_seconds * f64::from(lfo.rate_hz),
                 LfoPhaseSync::Key => 0.0,
-                LfoPhaseSync::Beat => beats / f64::from(lfo.beats_per_cycle.unwrap_or(1.0)),
+                LfoPhaseSync::Beat => integrated_beat_cycles(patch, index, lfo, beats),
             };
             state.lfo_phases[index] = cycles.fract() as f32;
             state.lfo_cycles[index] = cycles.floor().max(0.0) as u64;
@@ -950,12 +950,51 @@ pub(crate) struct DcBlocker {
 
 impl DcBlocker {
     pub(crate) fn process(&mut self, input: f32, sample_rate: u32) -> f32 {
-        let coefficient = 1.0 - 2.0 * std::f32::consts::PI * 10.0 / sample_rate as f32;
+        self.process_with_cutoff(input, sample_rate, 10.0)
+    }
+
+    pub(crate) fn process_with_cutoff(
+        &mut self,
+        input: f32,
+        sample_rate: u32,
+        cutoff_hz: f32,
+    ) -> f32 {
+        let coefficient =
+            (1.0 - 2.0 * std::f32::consts::PI * cutoff_hz / sample_rate as f32).clamp(0.0, 0.999_9);
         let output = input - self.previous_input + coefficient * self.previous_output;
         self.previous_input = input;
         self.previous_output = output;
         output
     }
+}
+
+fn integrated_beat_cycles(patch: &Patch, index: usize, lfo: &Lfo, beats: f64) -> f64 {
+    let cycles_per_beat_divisor = f64::from(lfo.beats_per_cycle.unwrap_or(1.0));
+    let mut modulators = patch.lfos().filter(|modulator| {
+        modulator.destination == LfoDestination::LfoRate && modulator.target_lfo == Some(index)
+    });
+    let (Some(modulator), None) = (modulators.next(), modulators.next()) else {
+        return beats / cycles_per_beat_divisor;
+    };
+    if modulator.phase_sync != LfoPhaseSync::Beat
+        || modulator.waveform != LfoWaveform::Square
+        || modulator.fade_in_seconds != 0.0
+    {
+        return beats / cycles_per_beat_divisor;
+    }
+    let Some(period_beats) = modulator.beats_per_cycle else {
+        return beats / cycles_per_beat_divisor;
+    };
+    let period = f64::from(period_beats);
+    let half_period = period * 0.5;
+    let high_rate = (1.0 + f64::from(modulator.lfo_rate_depth)).max(0.0);
+    let low_rate = (1.0 - f64::from(modulator.lfo_rate_depth)).max(0.0);
+    let full_cycles = (beats / period).floor().max(0.0);
+    let remainder = (beats - full_cycles * period).max(0.0);
+    let effective_beats = full_cycles * half_period * (high_rate + low_rate)
+        + remainder.min(half_period) * high_rate
+        + (remainder - half_period).max(0.0) * low_rate;
+    effective_beats / cycles_per_beat_divisor
 }
 
 pub(crate) fn block_dc(samples: &mut [f32], sample_rate: u32) {
@@ -1988,6 +2027,70 @@ mod tests {
     }
 
     #[test]
+    fn beat_synced_rate_modulated_lfo_integrates_initial_phase() {
+        let patch = Patch {
+            lfo: Some(Lfo {
+                rate_hz: 6.0,
+                beats_per_cycle: Some(1.0 / 3.0),
+                phase_sync: LfoPhaseSync::Beat,
+                waveform: LfoWaveform::SawDown,
+                destination: LfoDestination::SyncRatio,
+                sync_ratio_depth: 2.0,
+                ..Lfo::default()
+            }),
+            modulation: vec![Lfo {
+                rate_hz: 1.0,
+                beats_per_cycle: Some(2.0),
+                phase_sync: LfoPhaseSync::Beat,
+                waveform: LfoWaveform::Square,
+                destination: LfoDestination::LfoRate,
+                target_lfo: Some(0),
+                lfo_rate_depth: 1.0 / 3.0,
+                ..Lfo::default()
+            }],
+            ..Patch::default()
+        };
+        let sample_rate = 32_768;
+        let quarter_hz = 2.0;
+        let mut stepped = ModulationState::at(&patch, 0.0, 0.0);
+        let mut stepped_at = Vec::new();
+        for frame in 0..=34_000 {
+            let time = frame as f32 / sample_rate as f32;
+            let phase_before = stepped.lfo_phases[0];
+            let value = stepped
+                .next(&patch, sample_rate, time, f32::INFINITY, 1.0, quarter_hz)
+                .sync_ratio;
+            if matches!(
+                frame,
+                0 | 8_192 | 9_000 | 16_384 | 17_200 | 20_480 | 24_576 | 25_400 | 32_768 | 33_600
+            ) {
+                stepped_at.push((frame, phase_before, value));
+            }
+        }
+        for (frame, expected_phase, expected_value) in stepped_at {
+            let time = f64::from(frame) / f64::from(sample_rate);
+            let beat = time * f64::from(quarter_hz);
+            let mut direct = ModulationState::at(&patch, time, beat);
+            let direct_phase = direct.lfo_phases[0];
+            let wrapped_delta = (direct_phase - expected_phase).rem_euclid(1.0);
+            let circular_phase_error = wrapped_delta.min(1.0 - wrapped_delta);
+            assert!(
+                circular_phase_error < 0.0005,
+                "frame {frame} (beat {beat}): phase {direct_phase} != {expected_phase}"
+            );
+            if !matches!(frame, 8_192 | 16_384 | 24_576 | 32_768) {
+                let actual = direct
+                    .next(&patch, sample_rate, 0.0, f32::INFINITY, 1.0, quarter_hz)
+                    .sync_ratio;
+                assert!(
+                    (actual - expected_value).abs() < 0.002,
+                    "frame {frame} (beat {beat}): direct {actual} != stepped {expected_value}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn eden_parameters_change_the_audio() {
         let plain = Patch::default();
         let detuned = Patch {
@@ -2167,7 +2270,10 @@ mod tests {
                     route_base.oscillators[0].waveform = Waveform::Square;
                 }
                 if route == 4 {
-                    route_base.sync = Some(OscillatorSync { ratio: 2.0 });
+                    route_base.sync = Some(OscillatorSync {
+                        ratio: 2.0,
+                        ..OscillatorSync::default()
+                    });
                 }
                 if route == 7 {
                     route_base.oscillators.push(Oscillator {
@@ -2250,7 +2356,10 @@ mod tests {
         };
         let mut base = auxiliary_test_patch();
         base.oscillators[0].waveform = Waveform::Square;
-        base.sync = Some(OscillatorSync { ratio: 2.0 });
+        base.sync = Some(OscillatorSync {
+            ratio: 2.0,
+            ..OscillatorSync::default()
+        });
         let combined = Patch {
             aux_envelope: Some(shared.clone()),
             aux_envelope_2: Some(shared.clone()),
@@ -2389,7 +2498,10 @@ mod tests {
             ..auxiliary_test_patch()
         };
         routed.oscillators[0].waveform = Waveform::Square;
-        routed.sync = Some(OscillatorSync { ratio: 2.0 });
+        routed.sync = Some(OscillatorSync {
+            ratio: 2.0,
+            ..OscillatorSync::default()
+        });
         let plain = Patch {
             aux_envelope: None,
             aux_envelope_2: None,
@@ -2674,7 +2786,10 @@ mod tests {
                 waveform: Waveform::Square,
                 ..Oscillator::default()
             }],
-            sync: Some(OscillatorSync { ratio: 2.0 }),
+            sync: Some(OscillatorSync {
+                ratio: 2.0,
+                ..OscillatorSync::default()
+            }),
             envelope: envelope.clone(),
             lfo: Some(Lfo {
                 rate_hz: 0.0,

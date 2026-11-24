@@ -1,5 +1,5 @@
 //! Bounded, sample-by-sample synthesis for the performance keyboard.
-use crate::delay::{delay_frame_count, stereo_delay_input};
+use crate::delay::{stereo_delay_frame_counts, stereo_delay_input};
 use crate::effects::InsertProcessor;
 use crate::render::{DcBlocker, ModulationState};
 use crate::voice::{VoiceControls, VoiceState};
@@ -354,10 +354,16 @@ impl LiveSynth {
             }
         }
         if let Some(delay) = &self.controls.delay {
-            let frames = delay_frame_count(self.patch.sample_rate, delay, self.controls.tempo_bpm);
-            let read =
-                (self.delay_position + self.delay_line.len() - frames) % self.delay_line.len();
-            let delayed = self.delay_line[read];
+            let [left_frames, right_frames] =
+                stereo_delay_frame_counts(self.patch.sample_rate, delay, self.controls.tempo_bpm);
+            let read_left =
+                (self.delay_position + self.delay_line.len() - left_frames) % self.delay_line.len();
+            let read_right = (self.delay_position + self.delay_line.len() - right_frames)
+                % self.delay_line.len();
+            let delayed = [
+                self.delay_line[read_left][0],
+                self.delay_line[read_right][1],
+            ];
             self.delay_line[self.delay_position] =
                 stereo_delay_input(delay.mode, stereo, delayed, delay.feedback);
             stereo[0] += delayed[0] * delay.mix;
@@ -596,6 +602,106 @@ mod tests {
     }
 
     #[test]
+    fn octave_sync_rate_modulated_patch_and_asymmetric_delay_match_offline() {
+        let mut nasty = crate::preset("nasty").unwrap();
+        nasty.duration_seconds = 0.25;
+        nasty.delay = None;
+        assert_offline_matches_live(nasty, &[test_note(60, 0.25, 0.2)]);
+
+        let delay = Delay {
+            time_seconds: 0.04,
+            feedback: 0.5,
+            mix: 0.5,
+            mode: crate::DelayMode::StereoCross,
+            right_time_ratio: 0.5,
+            ..Delay::default()
+        };
+
+        let patch = Patch {
+            sample_rate: 8_000,
+            duration_seconds: 0.001,
+            gain: 1.0,
+            oscillators: vec![crate::Oscillator {
+                waveform: Waveform::Square,
+                ..crate::Oscillator::default()
+            }],
+            envelope: crate::Envelope {
+                attack_seconds: 0.0,
+                decay_seconds: 0.0,
+                sustain_level: 1.0,
+                release_seconds: 0.0,
+            },
+            delay: Some(delay.clone()),
+            ..Patch::default()
+        };
+        let dry_only = Patch {
+            delay: None,
+            ..patch.clone()
+        };
+        let dry_impulse = crate::render_notes_dry(
+            &dry_only,
+            &[crate::SynthNote {
+                pitch: 69,
+                start_seconds: 0.0,
+                duration_seconds: 0.001,
+                velocity: 127,
+            }],
+        )
+        .unwrap()
+        .samples;
+        let mut expected_left: Vec<f32> = dry_impulse
+            .iter()
+            .map(|sample| sample * std::f32::consts::FRAC_1_SQRT_2)
+            .collect();
+        let mut expected_right = expected_left.clone();
+        crate::delay::apply_stereo_delay_with_tempo(
+            &mut expected_left,
+            &mut expected_right,
+            8_000,
+            &delay,
+            &[],
+        );
+
+        let mut live = LiveSynth::new(patch).unwrap();
+        let mut controls = LiveControls::for_patch(&live.patch);
+        controls.gain = 1.0;
+        live.set_controls(controls).unwrap();
+        live.note_on(69, 127).unwrap();
+        for frame in 0..960 {
+            if frame == 8 {
+                live.note_off(69);
+            }
+            let actual = live.next_frame();
+            assert!(
+                (actual[0] - expected_left[frame].tanh()).abs() < 1e-5,
+                "live delay left mismatch at frame {frame}: {} != {}",
+                actual[0],
+                expected_left[frame].tanh()
+            );
+            assert!(
+                (actual[1] - expected_right[frame].tanh()).abs() < 1e-5,
+                "live delay right mismatch at frame {frame}: {} != {}",
+                actual[1],
+                expected_right[frame].tanh()
+            );
+        }
+
+        let sound_patch = crate::preset("nasty").unwrap();
+        let mut live_nasty = LiveSynth::new(sound_patch).unwrap();
+        live_nasty.note_on(60, 110).unwrap();
+        let frames: Vec<[f32; 2]> = (0..36_000).map(|_| live_nasty.next_frame()).collect();
+        assert!(frames.iter().flatten().all(|sample| sample.is_finite()));
+        for stereo in &frames[..17_900] {
+            assert!((stereo[0] - stereo[1]).abs() < 1e-6);
+        }
+        assert!(
+            frames[18_000..35_900]
+                .iter()
+                .any(|stereo| (stereo[0] - stereo[1]).abs() > 0.01)
+        );
+    }
+
+    #[test]
     fn live_beat_phase_accepts_the_sequencer_position() {
         let patch = Patch {
             lfo: Some(crate::Lfo {
@@ -634,7 +740,10 @@ mod tests {
                 for pitch in [48, 72, 96] {
                     let patch = Patch {
                         duration_seconds: 0.03,
-                        sync: synced.then_some(crate::OscillatorSync { ratio: 1.75 }),
+                        sync: synced.then_some(crate::OscillatorSync {
+                            ratio: 1.75,
+                            ..crate::OscillatorSync::default()
+                        }),
                         oscillators: vec![crate::Oscillator {
                             waveform,
                             ..crate::Oscillator::default()
@@ -793,7 +902,10 @@ mod tests {
                             patch.oscillators[0].waveform = Waveform::Square;
                         }
                         if route == 4 {
-                            patch.sync = Some(crate::OscillatorSync { ratio: 2.0 });
+                            patch.sync = Some(crate::OscillatorSync {
+                                ratio: 2.0,
+                                ..crate::OscillatorSync::default()
+                            });
                         }
                         if route == 7 {
                             patch.oscillators.push(crate::Oscillator {
@@ -856,7 +968,10 @@ mod tests {
                 let mut patch = Patch {
                     voice_mode: mode,
                     glide_seconds: 0.025,
-                    sync: Some(crate::OscillatorSync { ratio: 2.0 }),
+                    sync: Some(crate::OscillatorSync {
+                        ratio: 2.0,
+                        ..crate::OscillatorSync::default()
+                    }),
                     aux_envelope: Some(first.clone()),
                     aux_envelope_2: Some(second.clone()),
                     ..auxiliary_test_patch()
