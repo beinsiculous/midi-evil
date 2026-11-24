@@ -1,5 +1,9 @@
 use super::*;
-use crate::{theme, workspace::View};
+use crate::{
+    theme,
+    transport_readout::{PlayingState, TransportState},
+    workspace::View,
+};
 
 impl StudioApp {
     pub(super) fn toolbar(&mut self, ui: &mut egui::Ui) {
@@ -149,19 +153,24 @@ impl StudioApp {
                         .show(ui, |ui| {
                             ui.vertical(|ui| {
                                 ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new(if self.recorder.is_some() {
-                                            "RECORDING"
+                                    let transport = TransportState {
+                                        playing: if self.recorder.is_some() {
+                                            PlayingState::Recording
                                         } else if self.render_job.is_some() {
-                                            "RENDERING"
+                                            PlayingState::Rendering
                                         } else if active {
-                                            "PLAYING"
+                                            PlayingState::Playing
                                         } else {
-                                            "READY"
-                                        })
-                                        .size(11.0)
-                                        .color(if active { theme::GREEN } else { theme::MUTED }),
-                                    );
+                                            PlayingState::Stopped
+                                        },
+                                        tempo_beats_per_minute: self.project.tempo_bpm,
+                                        position_milliseconds: self
+                                            .preview
+                                            .as_ref()
+                                            .map_or(0, |player| player.position().as_millis()),
+                                    };
+                                    let readout = self.transport_readout.show(ui, &transport);
+                                    self.regions.transport_readout = Some(readout.id);
                                     ui.label(
                                         RichText::new(if self.dirty {
                                             "• MODIFIED"
@@ -190,15 +199,16 @@ impl StudioApp {
                         });
                     ui.vertical(|ui| {
                         theme::label(ui, "TEMPO");
-                        if ui
-                            .add(
-                                egui::DragValue::new(&mut self.project.tempo_bpm)
-                                    .range(1.0..=999.0)
-                                    .speed(0.1)
-                                    .suffix(" BPM"),
-                            )
-                            .changed()
-                        {
+                        let tempo = ui.add(
+                            egui::DragValue::new(&mut self.project.tempo_bpm)
+                                .range(1.0..=999.0)
+                                .speed(0.1)
+                                .suffix(" BPM"),
+                        );
+                        ui.ctx().accesskit_node_builder(tempo.id, |node| {
+                            node.set_label("Tempo, beats per minute");
+                        });
+                        if tempo.changed() {
                             self.dirty = true;
                         }
                     });
@@ -376,7 +386,7 @@ impl StudioApp {
     }
 
     pub(super) fn track_panel(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::left("tracks")
+        let side_panel = egui::Panel::left("tracks")
             .default_size(252.0)
             .min_size(225.0)
             .max_size(340.0)
@@ -442,6 +452,9 @@ impl StudioApp {
                                         },
                                     )),
                                 );
+                            if selected {
+                                self.regions.selected_track_button = Some(response.id);
+                            }
                             if response.clicked() {
                                 self.select_sound_track(index);
                             }
@@ -604,6 +617,7 @@ impl StudioApp {
                     }
                 }
             });
+        self.regions.side_panel = Some(side_panel.response.rect);
     }
 
     pub(super) fn note_inspector(&mut self, ui: &mut egui::Ui) {

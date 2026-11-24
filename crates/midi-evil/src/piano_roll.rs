@@ -1,6 +1,7 @@
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
 use evil_project::{EventSequence, Note, Project};
 
+use crate::description::{self, Meter, Origin, Outcome};
 use crate::theme;
 
 const KEY_HEIGHT: f32 = 18.0;
@@ -8,6 +9,7 @@ const KEYBOARD_WIDTH: f32 = 62.0;
 const RULER_HEIGHT: f32 = 26.0;
 const MAX_PITCH: u8 = 127;
 const DEFAULT_NOTE_VELOCITY: u8 = 100;
+const MIDDLE_C: u8 = 60;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PartDragState {
@@ -28,7 +30,16 @@ pub struct RollState {
     resizing_note: Option<usize>,
     zoom: f32,
     scroll_to_middle: bool,
-    spike_steps: usize,
+    /// The roll's widget id, so the editor region's F6 stop can focus it.
+    pub focus_id: Option<egui::Id>,
+    /// The notes and cursor as the roll last left them; a difference at the next frame is a
+    /// change the roll did not make, and the cursor finds its note again by value.
+    synced_notes: Vec<Note>,
+    synced_index: Option<usize>,
+    last_outcome: Option<Outcome>,
+    exposed_name: String,
+    /// Set in a frame where a key was handled, for the status line.
+    pub spoken_this_frame: Option<String>,
 }
 
 impl Default for RollState {
@@ -43,7 +54,12 @@ impl Default for RollState {
             resizing_note: None,
             zoom: 1.0,
             scroll_to_middle: true,
-            spike_steps: 0,
+            focus_id: None,
+            synced_notes: Vec::new(),
+            synced_index: None,
+            last_outcome: None,
+            exposed_name: String::new(),
+            spoken_this_frame: None,
         }
     }
 }
@@ -119,6 +135,9 @@ pub fn bar_ticks(project: &Project) -> u64 {
 pub struct RollContext {
     pub ticks_per_quarter: u16,
     pub bar_ticks: u64,
+    pub meter: Meter,
+    /// How many arrangement parts play the pattern shown; `None` for a unique timeline.
+    pub sharing_parts: Option<usize>,
 }
 
 impl RollContext {
@@ -126,7 +145,282 @@ impl RollContext {
         Self {
             ticks_per_quarter: project.ticks_per_quarter,
             bar_ticks: bar_ticks(project),
+            meter: Meter {
+                ticks_per_quarter: project.ticks_per_quarter,
+                beats_per_bar: project.beats_per_bar,
+                beat_unit: project.beat_unit,
+            },
+            sharing_parts: None,
         }
+    }
+
+    fn origin(self) -> Origin {
+        match self.sharing_parts {
+            Some(sharing_parts) => Origin::Pattern { sharing_parts },
+            None => Origin::Song,
+        }
+    }
+}
+
+/// One keyboard command on the roll.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RollCommand {
+    Previous,
+    Next,
+    First,
+    Last,
+    PitchUp,
+    PitchDown,
+    OctaveUp,
+    OctaveDown,
+    Earlier,
+    Later,
+    Shorter,
+    Longer,
+    Add,
+    Delete,
+}
+
+impl RollCommand {
+    fn from_key(key: egui::Key, modifiers: egui::Modifiers) -> Option<Self> {
+        use egui::Key;
+        let command = if modifiers.is_none() {
+            match key {
+                Key::ArrowLeft => Self::Previous,
+                Key::ArrowRight => Self::Next,
+                Key::Home => Self::First,
+                Key::End => Self::Last,
+                Key::ArrowUp => Self::PitchUp,
+                Key::ArrowDown => Self::PitchDown,
+                Key::Enter => Self::Add,
+                Key::Delete => Self::Delete,
+                _ => return None,
+            }
+        } else if modifiers.shift_only() {
+            match key {
+                Key::ArrowUp => Self::OctaveUp,
+                Key::ArrowDown => Self::OctaveDown,
+                Key::ArrowLeft => Self::Shorter,
+                Key::ArrowRight => Self::Longer,
+                _ => return None,
+            }
+        } else if modifiers.command_only() {
+            match key {
+                Key::ArrowLeft => Self::Earlier,
+                Key::ArrowRight => Self::Later,
+                _ => return None,
+            }
+        } else {
+            return None;
+        };
+        Some(command)
+    }
+}
+
+/// The grid the keyboard edits move on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EditGrid {
+    pub snap: u64,
+    pub beat: u64,
+    /// A shared pattern's length; every note must start inside it.
+    pub pattern_length: Option<u64>,
+}
+
+/// Note indices in the order the cursor walks them: by start, then pitch, then index.
+pub fn walk_order(notes: &[Note]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..notes.len()).collect();
+    order.sort_by_key(|&index| (notes[index].start_tick, notes[index].pitch, index));
+    order
+}
+
+/// Applies one command to the notes and returns the new cursor and what happened. The cursor
+/// is an index into `notes`; one out of range is treated as no cursor.
+pub fn apply_command(
+    notes: &mut Vec<Note>,
+    cursor: Option<usize>,
+    command: RollCommand,
+    grid: EditGrid,
+) -> (Option<usize>, Outcome) {
+    let cursor = cursor.filter(|&index| index < notes.len());
+    if notes.is_empty() && command != RollCommand::Add {
+        return (None, Outcome::Empty);
+    }
+    let order = walk_order(notes);
+    let place = cursor.and_then(|index| order.iter().position(|&walked| walked == index));
+    match command {
+        RollCommand::Next => match place {
+            None => (Some(order[0]), Outcome::Moved),
+            Some(place) if place + 1 < order.len() => (Some(order[place + 1]), Outcome::Moved),
+            Some(_) => (cursor, Outcome::AlreadyLast),
+        },
+        RollCommand::Previous => match place {
+            None => (order.last().copied(), Outcome::Moved),
+            Some(0) => (cursor, Outcome::AlreadyFirst),
+            Some(place) => (Some(order[place - 1]), Outcome::Moved),
+        },
+        RollCommand::First => match place {
+            Some(0) => (cursor, Outcome::AlreadyFirst),
+            _ => (Some(order[0]), Outcome::Moved),
+        },
+        RollCommand::Last => match place {
+            Some(place) if place + 1 == order.len() => (cursor, Outcome::AlreadyLast),
+            _ => (order.last().copied(), Outcome::Moved),
+        },
+        RollCommand::Add => add_note(notes, cursor, grid),
+        RollCommand::Delete => match (cursor, place) {
+            (Some(index), Some(place)) => {
+                let neighbour = order
+                    .get(place + 1)
+                    .or_else(|| place.checked_sub(1).and_then(|before| order.get(before)))
+                    .copied();
+                let removed = notes.remove(index);
+                let neighbour =
+                    neighbour.map(|other| if other > index { other - 1 } else { other });
+                (neighbour, Outcome::Deleted(removed))
+            }
+            _ => (None, Outcome::NoSelection),
+        },
+        _ => {
+            let Some(index) = cursor else {
+                return (None, Outcome::NoSelection);
+            };
+            let outcome = edit_note(&mut notes[index], command, grid);
+            (Some(index), outcome)
+        }
+    }
+}
+
+fn add_note(
+    notes: &mut Vec<Note>,
+    cursor: Option<usize>,
+    grid: EditGrid,
+) -> (Option<usize>, Outcome) {
+    let (pitch, start_tick) = match cursor {
+        Some(index) => {
+            let after = &notes[index];
+            match after.start_tick.checked_add(after.duration_ticks) {
+                Some(end) => (after.pitch, end),
+                None => return (cursor, Outcome::NoRoom),
+            }
+        }
+        None => (MIDDLE_C, 0),
+    };
+    let beyond_pattern = grid
+        .pattern_length
+        .is_some_and(|length| start_tick >= length);
+    if beyond_pattern || start_tick.checked_add(grid.beat).is_none() {
+        return (cursor, Outcome::NoRoom);
+    }
+    notes.push(Note {
+        pitch,
+        velocity: DEFAULT_NOTE_VELOCITY,
+        start_tick,
+        duration_ticks: grid.beat,
+    });
+    (Some(notes.len() - 1), Outcome::Added)
+}
+
+fn edit_note(note: &mut Note, command: RollCommand, grid: EditGrid) -> Outcome {
+    let snap = grid.snap.max(1);
+    match command {
+        RollCommand::PitchUp | RollCommand::OctaveUp => {
+            if note.pitch == MAX_PITCH {
+                return Outcome::AlreadyHighest;
+            }
+            let step = if command == RollCommand::OctaveUp {
+                12
+            } else {
+                1
+            };
+            note.pitch = note.pitch.saturating_add(step).min(MAX_PITCH);
+        }
+        RollCommand::PitchDown | RollCommand::OctaveDown => {
+            if note.pitch == 0 {
+                return Outcome::AlreadyLowest;
+            }
+            let step = if command == RollCommand::OctaveDown {
+                12
+            } else {
+                1
+            };
+            note.pitch = note.pitch.saturating_sub(step);
+        }
+        RollCommand::Earlier => {
+            if note.start_tick == 0 {
+                return Outcome::AlreadyAtStart;
+            }
+            note.start_tick = note.start_tick.saturating_sub(snap);
+        }
+        RollCommand::Later => {
+            let latest_start = match grid.pattern_length {
+                Some(length) => (length.saturating_sub(1) / snap) * snap,
+                None => u64::MAX - note.duration_ticks,
+            };
+            if note.start_tick >= latest_start {
+                return Outcome::AlreadyAtEnd;
+            }
+            note.start_tick = note.start_tick.saturating_add(snap).min(latest_start);
+        }
+        RollCommand::Shorter => {
+            if note.duration_ticks <= snap {
+                return Outcome::AlreadyShortest;
+            }
+            note.duration_ticks = (note.duration_ticks - snap).max(snap);
+        }
+        RollCommand::Longer => {
+            let Some(longer) = note
+                .duration_ticks
+                .checked_add(snap)
+                .filter(|longer| note.start_tick.checked_add(*longer).is_some())
+            else {
+                return Outcome::AlreadyAtEnd;
+            };
+            note.duration_ticks = longer;
+        }
+        RollCommand::Previous
+        | RollCommand::Next
+        | RollCommand::First
+        | RollCommand::Last
+        | RollCommand::Add
+        | RollCommand::Delete => unreachable!("navigation, Add and Delete are not note edits"),
+    }
+    Outcome::Edited
+}
+
+/// Where the cursor's note is after a change the roll did not make: Clean overlaps re-sorts and
+/// shortens, undo replaces the list, the inspector edits in place. `None` when the note cannot be
+/// found again — the cursor then resets rather than point at a different note.
+pub fn relocate_cursor(
+    previous: &[Note],
+    previous_index: usize,
+    current: &[Note],
+) -> Option<usize> {
+    let cursor_note = *previous.get(previous_index)?;
+    let occurrence = previous[..previous_index]
+        .iter()
+        .filter(|note| **note == cursor_note)
+        .count();
+    let equal: Vec<usize> = (0..current.len())
+        .filter(|&index| current[index] == cursor_note)
+        .collect();
+    if let Some(&index) = equal.get(occurrence).or(equal.first()) {
+        return Some(index);
+    }
+    let edited_in_place = previous.len() == current.len()
+        && (0..current.len())
+            .all(|index| index == previous_index || current[index] == previous[index]);
+    if edited_in_place {
+        return Some(previous_index);
+    }
+    let same_onset: Vec<usize> = (0..current.len())
+        .filter(|&index| {
+            current[index].start_tick == cursor_note.start_tick
+                && current[index].pitch == cursor_note.pitch
+        })
+        .collect();
+    match same_onset.as_slice() {
+        [index] => Some(*index),
+        _ => None,
     }
 }
 
@@ -247,29 +541,56 @@ pub fn show(
             let board = response.rect;
             // egui gives focus on click only to text fields; without this a click selects nothing
             // a key can act on.
-            if response.clicked() || response.drag_started() {
+            if response.clicked_by(egui::PointerButton::Primary) || response.drag_started() {
                 response.request_focus();
             }
+            state.focus_id = Some(response.id);
+            state.spoken_this_frame = None;
+            reconcile_cursor(state, sequence.notes());
+            let mut notice = None;
+            let mut cursor_moved = false;
+            if state.last_outcome == Some(Outcome::SelectionLost) && state.synced_index.is_some() {
+                notice = description::notice(Outcome::SelectionLost, context.origin());
+            }
             if response.has_focus() {
+                // Without the filter an arrow key moves focus off the roll; Tab is left alone.
                 let arrows = egui::EventFilter {
                     horizontal_arrows: true,
+                    vertical_arrows: true,
                     ..Default::default()
                 };
                 ui.memory_mut(|memory| memory.set_focus_lock_filter(response.id, arrows));
-                state.spike_steps += ui.input(|input| input.num_presses(egui::Key::ArrowRight));
-            }
-            let spike_text = format!("step {}", state.spike_steps);
-            ui.ctx().accesskit_node_builder(response.id, |node| {
-                node.set_label(format!("Piano roll, {spike_text}"));
-                node.set_description(format!("described {spike_text}"));
-                node.set_value(spike_text.clone());
-            });
-            ui.ctx()
-                .accesskit_node_builder(response.id.with("spike-status"), |node| {
-                    node.set_role(egui::accesskit::Role::Label);
-                    node.set_value(spike_text.clone());
-                    node.set_live(egui::accesskit::Live::Polite);
+                let grid = EditGrid {
+                    snap,
+                    beat,
+                    pattern_length,
+                };
+                // Every press counts, repeats included, in the order they came: a held arrow
+                // moves once per repeat even when several arrive in one frame.
+                let commands: Vec<RollCommand> = ui.input(|input| {
+                    input
+                        .events
+                        .iter()
+                        .filter_map(|event| match event {
+                            egui::Event::Key {
+                                key,
+                                pressed: true,
+                                modifiers,
+                                ..
+                            } => RollCommand::from_key(*key, *modifiers),
+                            _ => None,
+                        })
+                        .collect()
                 });
+                for command in commands {
+                    let (cursor, outcome) =
+                        apply_command(sequence.notes_mut(), state.selected_note, command, grid);
+                    state.selected_note = cursor;
+                    state.last_outcome = Some(outcome);
+                    notice = description::notice(outcome, context.origin());
+                    cursor_moved = true;
+                }
+            }
             let rect = Rect::from_min_max(
                 board.min + Vec2::new(KEYBOARD_WIDTH, RULER_HEIGHT),
                 board.max,
@@ -374,7 +695,7 @@ pub fn show(
                 state.dragging_note = None;
                 state.resizing_note = None;
             }
-            if response.clicked()
+            if response.clicked_by(egui::PointerButton::Primary)
                 && let Some(position) = response.interact_pointer_pos()
                 && edit_area.contains(position)
             {
@@ -397,19 +718,84 @@ pub fn show(
                     changed = true;
                 }
             }
-            if response.hovered()
-                && !ui.ctx().egui_wants_keyboard_input()
-                && ui.input(|input| input.key_pressed(egui::Key::Delete))
-                && let Some(index) = state.selected_note.take()
-                && index < sequence.notes().len()
-            {
-                sequence.notes_mut().remove(index);
-                changed = true;
+            if state.selected_note != state.synced_index && !cursor_moved {
+                // The pointer chose a note; what the last key did no longer describes it.
+                state.last_outcome = None;
             }
+            if cursor_moved
+                && let Some(note) = state
+                    .selected_note
+                    .and_then(|index| sequence.notes().get(index))
+            {
+                ui.scroll_to_rect(
+                    note_rect(note, rect, pixels_per_tick),
+                    Some(egui::Align::Center),
+                );
+            }
+            if response.has_focus() {
+                full_painter.rect_stroke(
+                    Rect::from_min_size(visible_origin, viewport.size()).shrink(1.0),
+                    0.0,
+                    Stroke::new(2.0, theme::IVORY),
+                    egui::StrokeKind::Inside,
+                );
+            }
+            state.synced_notes = sequence.notes().to_vec();
+            state.synced_index = state.selected_note;
+            let name = description::roll_name(
+                state
+                    .selected_note
+                    .and_then(|index| sequence.notes().get(index)),
+                sequence.notes().len(),
+                state.last_outcome,
+                context.meter,
+                context.origin(),
+            );
+            if cursor_moved {
+                state.spoken_this_frame = Some(name.clone());
+            }
+            match notice {
+                // The notice gets a frame of its own: when the focused node's name changes in
+                // the same frame, the name is what a screen reader speaks.
+                Some(notice) => {
+                    ui.ctx()
+                        .accesskit_node_builder(response.id.with("roll-notice"), |node| {
+                            node.set_role(egui::accesskit::Role::Label);
+                            node.set_value(notice);
+                            node.set_live(egui::accesskit::Live::Polite);
+                        });
+                    ui.ctx().request_repaint();
+                }
+                None => state.exposed_name = name,
+            }
+            let exposed_name = state.exposed_name.clone();
+            ui.ctx().accesskit_node_builder(response.id, |node| {
+                node.set_role(egui::accesskit::Role::Canvas);
+                node.set_label(exposed_name);
+                node.set_description(description::ROLL_KEYS);
+            });
             changed
         })
         .inner
         || original_notes != sequence.notes()
+}
+
+/// Finds the cursor's note again after a change the roll did not make, and adopts a selection
+/// someone else made (the pointer, the inspector, a track or part change).
+fn reconcile_cursor(state: &mut RollState, notes: &[Note]) {
+    if state.selected_note != state.synced_index {
+        state.last_outcome = None;
+        return;
+    }
+    if notes == state.synced_notes.as_slice() {
+        return;
+    }
+    if let Some(index) = state.selected_note {
+        state.selected_note = relocate_cursor(&state.synced_notes, index, notes);
+        if state.selected_note.is_none() {
+            state.last_outcome = Some(Outcome::SelectionLost);
+        }
+    }
 }
 
 fn draw_grid(
@@ -702,6 +1088,341 @@ mod tests {
             ..Track::default()
         };
         assert_eq!(timeline_ticks(&track, 480), 32 * 480);
+    }
+
+    const PATTERN_GRID: EditGrid = EditGrid {
+        snap: 120,
+        beat: 480,
+        pattern_length: Some(1_920),
+    };
+    const TIMELINE_GRID: EditGrid = EditGrid {
+        snap: 120,
+        beat: 480,
+        pattern_length: None,
+    };
+
+    fn note_at(pitch: u8, start_tick: u64, duration_ticks: u64) -> Note {
+        Note {
+            pitch,
+            velocity: 90,
+            start_tick,
+            duration_ticks,
+        }
+    }
+
+    #[test]
+    fn the_cursor_walks_by_start_then_pitch_then_index() {
+        let notes = vec![
+            note_at(64, 480, 120),
+            note_at(60, 0, 120),
+            note_at(60, 480, 120),
+            note_at(60, 480, 120),
+        ];
+        assert_eq!(walk_order(&notes), vec![1, 2, 3, 0]);
+        let mut edited = notes.clone();
+        assert_eq!(
+            apply_command(&mut edited, None, RollCommand::Next, TIMELINE_GRID),
+            (Some(1), Outcome::Moved)
+        );
+        assert_eq!(
+            apply_command(&mut edited, Some(3), RollCommand::Next, TIMELINE_GRID),
+            (Some(0), Outcome::Moved)
+        );
+        assert_eq!(
+            apply_command(&mut edited, Some(0), RollCommand::Next, TIMELINE_GRID),
+            (Some(0), Outcome::AlreadyLast)
+        );
+        assert_eq!(
+            apply_command(&mut edited, Some(1), RollCommand::Previous, TIMELINE_GRID),
+            (Some(1), Outcome::AlreadyFirst)
+        );
+        assert_eq!(
+            apply_command(&mut edited, Some(0), RollCommand::First, TIMELINE_GRID),
+            (Some(1), Outcome::Moved)
+        );
+        assert_eq!(
+            apply_command(&mut edited, Some(1), RollCommand::Last, TIMELINE_GRID),
+            (Some(0), Outcome::Moved)
+        );
+        assert_eq!(edited, notes, "moving the cursor edits nothing");
+    }
+
+    #[test]
+    fn pitch_is_clamped_at_127_and_at_0() {
+        let mut notes = vec![note_at(127, 0, 120)];
+        assert_eq!(
+            apply_command(&mut notes, Some(0), RollCommand::PitchUp, TIMELINE_GRID),
+            (Some(0), Outcome::AlreadyHighest)
+        );
+        assert_eq!(
+            apply_command(&mut notes, Some(0), RollCommand::OctaveUp, TIMELINE_GRID),
+            (Some(0), Outcome::AlreadyHighest)
+        );
+        assert_eq!(notes[0].pitch, 127);
+        notes[0].pitch = 120;
+        apply_command(&mut notes, Some(0), RollCommand::OctaveUp, TIMELINE_GRID);
+        assert_eq!(notes[0].pitch, 127);
+        notes[0].pitch = 0;
+        assert_eq!(
+            apply_command(&mut notes, Some(0), RollCommand::PitchDown, TIMELINE_GRID),
+            (Some(0), Outcome::AlreadyLowest)
+        );
+        assert_eq!(notes[0].pitch, 0);
+        notes[0].pitch = 5;
+        assert_eq!(
+            apply_command(&mut notes, Some(0), RollCommand::OctaveDown, TIMELINE_GRID),
+            (Some(0), Outcome::Edited)
+        );
+        assert_eq!(notes[0].pitch, 0);
+    }
+
+    #[test]
+    fn a_move_saturates_at_tick_0_and_at_the_patterns_last_snap() {
+        let mut notes = vec![note_at(60, 0, 480)];
+        assert_eq!(
+            apply_command(&mut notes, Some(0), RollCommand::Earlier, PATTERN_GRID),
+            (Some(0), Outcome::AlreadyAtStart)
+        );
+        notes[0].start_tick = 50;
+        apply_command(&mut notes, Some(0), RollCommand::Earlier, PATTERN_GRID);
+        assert_eq!(notes[0].start_tick, 0);
+        notes[0].start_tick = 1_750;
+        apply_command(&mut notes, Some(0), RollCommand::Later, PATTERN_GRID);
+        assert_eq!(notes[0].start_tick, 1_800);
+        assert_eq!(
+            apply_command(&mut notes, Some(0), RollCommand::Later, PATTERN_GRID),
+            (Some(0), Outcome::AlreadyAtEnd)
+        );
+        assert_eq!(notes[0].start_tick, 1_800);
+        notes[0].start_tick = 1_800;
+        apply_command(&mut notes, Some(0), RollCommand::Later, TIMELINE_GRID);
+        assert_eq!(notes[0].start_tick, 1_920, "a unique timeline has no end");
+    }
+
+    #[test]
+    fn a_note_is_never_shorter_than_one_snap() {
+        let mut notes = vec![note_at(60, 0, 120)];
+        assert_eq!(
+            apply_command(&mut notes, Some(0), RollCommand::Shorter, TIMELINE_GRID),
+            (Some(0), Outcome::AlreadyShortest)
+        );
+        notes[0].duration_ticks = 150;
+        apply_command(&mut notes, Some(0), RollCommand::Shorter, TIMELINE_GRID);
+        assert_eq!(notes[0].duration_ticks, 120);
+        apply_command(&mut notes, Some(0), RollCommand::Longer, TIMELINE_GRID);
+        assert_eq!(notes[0].duration_ticks, 240);
+    }
+
+    #[test]
+    fn enter_with_no_cursor_or_in_an_empty_roll_adds_middle_c_at_tick_0() {
+        let mut empty = Vec::new();
+        assert_eq!(
+            apply_command(&mut empty, None, RollCommand::Add, PATTERN_GRID),
+            (Some(0), Outcome::Added)
+        );
+        assert_eq!(
+            empty,
+            vec![Note {
+                pitch: 60,
+                velocity: DEFAULT_NOTE_VELOCITY,
+                start_tick: 0,
+                duration_ticks: 480
+            }]
+        );
+        let mut notes = vec![note_at(72, 960, 240)];
+        assert_eq!(
+            apply_command(&mut notes, None, RollCommand::Add, TIMELINE_GRID),
+            (Some(1), Outcome::Added)
+        );
+        assert_eq!((notes[1].pitch, notes[1].start_tick), (60, 0));
+    }
+
+    #[test]
+    fn enter_adds_one_beat_after_the_cursors_note_at_its_pitch() {
+        let mut notes = vec![note_at(67, 240, 360)];
+        assert_eq!(
+            apply_command(&mut notes, Some(0), RollCommand::Add, TIMELINE_GRID),
+            (Some(1), Outcome::Added)
+        );
+        assert_eq!(
+            (notes[1].pitch, notes[1].start_tick, notes[1].duration_ticks),
+            (67, 600, 480)
+        );
+    }
+
+    #[test]
+    fn enter_with_no_room_in_a_shared_pattern_adds_nothing() {
+        let mut notes = vec![note_at(60, 1_440, 480)];
+        assert_eq!(
+            apply_command(&mut notes, Some(0), RollCommand::Add, PATTERN_GRID),
+            (Some(0), Outcome::NoRoom)
+        );
+        assert_eq!(notes.len(), 1);
+        let mut pattern = evil_project::Pattern {
+            length_ticks: 1_920,
+            notes,
+            ..evil_project::Pattern::default()
+        };
+        apply_command(&mut pattern.notes, Some(0), RollCommand::Add, PATTERN_GRID);
+        let mut project = Project::new("Room");
+        project
+            .add_pattern(pattern)
+            .expect("the pattern still validates");
+    }
+
+    #[test]
+    fn delete_moves_to_the_next_note_else_the_previous_else_none() {
+        let mut notes = vec![
+            note_at(60, 0, 120),
+            note_at(62, 480, 120),
+            note_at(64, 960, 120),
+        ];
+        let (cursor, outcome) =
+            apply_command(&mut notes, Some(1), RollCommand::Delete, TIMELINE_GRID);
+        assert_eq!(outcome, Outcome::Deleted(note_at(62, 480, 120)));
+        assert_eq!(
+            cursor.map(|index| notes[index]),
+            Some(note_at(64, 960, 120))
+        );
+        let (cursor, _) = apply_command(&mut notes, cursor, RollCommand::Delete, TIMELINE_GRID);
+        assert_eq!(cursor.map(|index| notes[index]), Some(note_at(60, 0, 120)));
+        let (cursor, outcome) =
+            apply_command(&mut notes, cursor, RollCommand::Delete, TIMELINE_GRID);
+        assert_eq!(
+            (cursor, outcome),
+            (None, Outcome::Deleted(note_at(60, 0, 120)))
+        );
+        assert!(notes.is_empty());
+        assert_eq!(
+            apply_command(&mut notes, None, RollCommand::Delete, TIMELINE_GRID),
+            (None, Outcome::Empty)
+        );
+        assert_eq!(
+            apply_command(&mut notes, None, RollCommand::Next, TIMELINE_GRID),
+            (None, Outcome::Empty)
+        );
+    }
+
+    #[test]
+    fn an_edit_with_no_cursor_says_so_and_changes_nothing() {
+        let mut notes = vec![note_at(60, 0, 120)];
+        for command in [
+            RollCommand::PitchUp,
+            RollCommand::Earlier,
+            RollCommand::Shorter,
+            RollCommand::Delete,
+        ] {
+            assert_eq!(
+                apply_command(&mut notes, None, command, TIMELINE_GRID),
+                (None, Outcome::NoSelection)
+            );
+        }
+        assert_eq!(notes, vec![note_at(60, 0, 120)]);
+    }
+
+    #[test]
+    fn the_cursor_keeps_its_note_through_clean_overlaps() {
+        let mut track = Track {
+            notes: vec![
+                note_at(64, 960, 240),
+                note_at(60, 0, 960),
+                note_at(60, 480, 240),
+                note_at(62, 480, 240),
+            ],
+            ..Track::default()
+        };
+        let before = track.notes.clone();
+        evil_project::clean_overlaps(&mut track);
+        assert_ne!(
+            track.notes[1], before[1],
+            "the selected note was re-sorted and shortened"
+        );
+        let found = relocate_cursor(&before, 1, &track.notes).expect("found again");
+        assert_eq!(
+            (track.notes[found].pitch, track.notes[found].start_tick),
+            (60, 0)
+        );
+        let found = relocate_cursor(&before, 3, &track.notes).expect("found again");
+        assert_eq!(track.notes[found], note_at(62, 480, 240));
+    }
+
+    #[test]
+    fn the_cursor_keeps_its_note_when_the_list_is_replaced_and_resets_when_it_is_gone() {
+        let before = vec![
+            note_at(60, 0, 120),
+            note_at(62, 480, 120),
+            note_at(64, 960, 120),
+        ];
+        let replaced = vec![
+            note_at(64, 960, 120),
+            note_at(70, 10, 5),
+            note_at(62, 480, 120),
+        ];
+        assert_eq!(relocate_cursor(&before, 1, &replaced), Some(2));
+        let without = vec![note_at(60, 0, 120), note_at(64, 960, 120)];
+        assert_eq!(relocate_cursor(&before, 1, &without), None);
+        let mut edited_in_place = before.clone();
+        edited_in_place[1].pitch = 63;
+        assert_eq!(relocate_cursor(&before, 1, &edited_in_place), Some(1));
+    }
+
+    #[test]
+    fn a_held_arrow_moves_once_per_press_even_within_one_frame() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let mut project = Project::new("Held");
+        project.add_track(Track::default()).unwrap();
+        project.tracks[0].notes = (0..6).map(|step| note_at(60, step * 480, 240)).collect();
+        let mut state = RollState::default();
+        let mut time = 0.0;
+        let mut frame = |state: &mut RollState, events: Vec<egui::Event>| {
+            time += 0.1;
+            let _ = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 600.0))),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    show(
+                        ui,
+                        RollContext::new(&project),
+                        &mut project.tracks[0],
+                        state,
+                        None,
+                    );
+                },
+            );
+        };
+        frame(&mut state, vec![]);
+        let roll = state.focus_id.expect("the roll was shown");
+        context.memory_mut(|memory| memory.request_focus(roll));
+        frame(&mut state, vec![]);
+        frame(&mut state, vec![]);
+        let right = |repeat| egui::Event::Key {
+            key: egui::Key::ArrowRight,
+            physical_key: None,
+            pressed: true,
+            repeat,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(
+            &mut state,
+            vec![right(false), right(true), right(true), right(true)],
+        );
+        assert_eq!(state.selected_note, Some(3));
+        assert!(
+            state
+                .exposed_name
+                .starts_with("Piano roll, C 4, bar 1 beat 4"),
+            "{}",
+            state.exposed_name
+        );
+        assert!(
+            context.memory(|memory| memory.has_focus(roll)),
+            "arrows keep focus"
+        );
     }
 
     #[test]

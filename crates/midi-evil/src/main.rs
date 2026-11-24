@@ -4,6 +4,7 @@ mod art;
 mod automation;
 mod beats;
 mod beats_player;
+mod description;
 mod effect_ui;
 mod history;
 mod instance;
@@ -23,6 +24,7 @@ mod render_job;
 mod sample_recorder;
 mod theme;
 mod transport;
+mod transport_readout;
 mod workspace;
 
 use std::process::ExitCode;

@@ -26,6 +26,7 @@ use crate::piano_roll::{self, RollState};
 use crate::preview::PreviewPlayer;
 use crate::render_job::{RenderJob, WavExportQueue};
 use crate::transport::Transport;
+use crate::transport_readout::TransportReadout;
 
 pub struct StudioApp {
     project: Project,
@@ -76,6 +77,25 @@ pub struct StudioApp {
     sounds: crate::instruments::SoundBrowser,
     recovery: crate::recovery::RecoveryWindow,
     drafts: drafts::SoundDrafts,
+    transport_readout: TransportReadout,
+    regions: RegionLayout,
+}
+
+/// Where last frame put the three regions F6 moves between, and the control each one's stop
+/// lands on.
+#[derive(Default)]
+struct RegionLayout {
+    transport_readout: Option<egui::Id>,
+    side_panel: Option<egui::Rect>,
+    selected_track_button: Option<egui::Id>,
+    editor: Option<egui::Rect>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Region {
+    Toolbar,
+    SidePanel,
+    Editor,
 }
 
 enum PendingRender {
@@ -169,6 +189,8 @@ impl StudioApp {
             sounds: crate::instruments::SoundBrowser::restore(storage),
             recovery: crate::recovery::RecoveryWindow::default(),
             drafts: drafts::SoundDrafts::default(),
+            transport_readout: TransportReadout::default(),
+            regions: RegionLayout::default(),
         };
         app.add_track();
         app.dirty = false;
@@ -385,7 +407,87 @@ impl StudioApp {
                 == rfd::MessageDialogResult::Yes
     }
 
+    /// F6 and Shift+F6 move focus between the toolbar, the side panel and the editor, so the
+    /// roll is reachable without Tabbing through every control before it.
+    fn region_keys(&mut self, context: &egui::Context) {
+        let backwards =
+            context.input_mut(|input| input.consume_key(egui::Modifiers::SHIFT, egui::Key::F6));
+        let forwards = !backwards
+            && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::F6));
+        if !backwards && !forwards {
+            return;
+        }
+        let mut regions = vec![Region::Toolbar];
+        if self.regions.side_panel.is_some() {
+            regions.push(Region::SidePanel);
+        }
+        regions.push(Region::Editor);
+        let current = context
+            .memory(|memory| memory.focused())
+            .and_then(|focused| self.region_of(context, focused))
+            .and_then(|region| regions.iter().position(|candidate| *candidate == region));
+        let count = regions.len();
+        let next = match (current, forwards) {
+            (Some(place), true) => (place + 1) % count,
+            (Some(place), false) => (place + count - 1) % count,
+            (None, true) => 0,
+            (None, false) => count - 1,
+        };
+        if let Some(target) = self.region_stop(context, regions[next]) {
+            context.memory_mut(|memory| memory.request_focus(target));
+        }
+    }
+
+    fn region_of(&self, context: &egui::Context, widget: egui::Id) -> Option<Region> {
+        let placed =
+            context.viewport(|viewport| viewport.prev_pass.widgets.get(widget).copied())?;
+        if placed.layer_id != egui::LayerId::background() {
+            return None;
+        }
+        let center = placed.rect.center();
+        if self
+            .regions
+            .side_panel
+            .is_some_and(|side| side.contains(center))
+        {
+            return Some(Region::SidePanel);
+        }
+        match self.regions.editor {
+            Some(editor) if center.y < editor.top() => Some(Region::Toolbar),
+            _ => Some(Region::Editor),
+        }
+    }
+
+    fn region_stop(&self, context: &egui::Context, region: Region) -> Option<egui::Id> {
+        let first_focusable_in = |area: egui::Rect| {
+            context.viewport(|viewport| {
+                viewport
+                    .prev_pass
+                    .widgets
+                    .get_layer(egui::LayerId::background())
+                    .find(|widget| {
+                        widget.enabled
+                            && widget.sense.is_focusable()
+                            && area.contains(widget.rect.center())
+                    })
+                    .map(|widget| widget.id)
+            })
+        };
+        match region {
+            Region::Toolbar => self.regions.transport_readout,
+            Region::SidePanel => self
+                .regions
+                .selected_track_button
+                .or_else(|| first_focusable_in(self.regions.side_panel?)),
+            Region::Editor if self.view == View::Notes && self.roll.focus_id.is_some() => {
+                self.roll.focus_id
+            }
+            Region::Editor => first_focusable_in(self.regions.editor?),
+        }
+    }
+
     fn shortcuts(&mut self, context: &egui::Context) {
+        self.region_keys(context);
         let command =
             |key| context.input(|input| input.modifiers.command && input.key_pressed(key));
         if command(egui::Key::N) {
@@ -1447,6 +1549,9 @@ impl eframe::App for StudioApp {
         self.poll_midi_input();
         self.sync_sound_drafts();
         self.shortcuts(root.ctx());
+        self.regions.side_panel = None;
+        self.regions.selected_track_button = None;
+        self.regions.editor = None;
         if self
             .preview
             .as_ref()
@@ -1477,7 +1582,7 @@ impl eframe::App for StudioApp {
                 self.automation_panel(root);
             }
         }
-        egui::CentralPanel::default()
+        let editor = egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(theme::BACKGROUND).inner_margin(16))
             .show(root, |ui| {
                 if self.project.tracks.is_empty() && self.view != View::Pads {
@@ -1540,7 +1645,15 @@ impl eframe::App for StudioApp {
                                 },
                             );
                         });
-                        let context = piano_roll::RollContext::new(&self.project);
+                        let mut context = piano_roll::RollContext::new(&self.project);
+                        context.sharing_parts = pattern.map(|pattern| {
+                            self.project
+                                .tracks
+                                .iter()
+                                .flat_map(|track| &track.parts)
+                                .filter(|part| part.pattern == pattern)
+                                .count()
+                        });
                         let pattern_length =
                             pattern.map(|index| self.project.patterns[index].length_ticks);
                         let sequence: &mut dyn evil_project::EventSequence = match pattern {
@@ -1554,6 +1667,9 @@ impl eframe::App for StudioApp {
                             } else {
                                 "Unique timeline notes edited".to_owned()
                             };
+                        }
+                        if let Some(spoken) = self.roll.spoken_this_frame.take() {
+                            self.status = spoken;
                         }
                     }
                     View::Mixer => {
@@ -1588,6 +1704,7 @@ impl eframe::App for StudioApp {
                     }
                 }
             });
+        self.regions.editor = Some(editor.response.rect);
         self.sync_sound_drafts();
         self.about_window(root.ctx());
         self.sound_browser(root.ctx());
