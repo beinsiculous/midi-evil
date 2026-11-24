@@ -284,7 +284,11 @@ impl Patch {
         if self.oscillators.is_empty() || self.oscillators.len() > 8 {
             return Err(invalid("a patch needs between 1 and 8 oscillators"));
         }
-        if self.oscillator_mode == OscillatorMode::Ring && self.oscillators.len() < 2 {
+        if matches!(
+            self.oscillator_mode,
+            OscillatorMode::Ring | OscillatorMode::Ring2
+        ) && self.oscillators.len() < 2
+        {
             return Err(invalid("ring mode needs Osc A and Osc B"));
         }
         if self
@@ -633,6 +637,7 @@ mod tests {
             samples: vec![0.0, 0.5, -0.5, 0.0],
             sample_rate: 48_000,
             root_frequency_hz: 220.0,
+            direction: crate::SampleDirection::ForwardReverse,
             playback_start_frame: 0,
             playback_end_frame: None,
             loop_enabled: true,
@@ -754,6 +759,7 @@ mod tests {
         assert_eq!(sample.loop_start_frame, 0);
         assert_eq!(sample.loop_end_frame, None);
         assert_eq!(sample.playback_range(), 0..4);
+        assert_eq!(sample.direction, crate::SampleDirection::Forward);
         assert_eq!(sample.loop_range(), 0..4);
     }
 

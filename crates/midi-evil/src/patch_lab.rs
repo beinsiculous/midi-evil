@@ -5,8 +5,8 @@ use eframe::egui::{self, ComboBox, DragValue, Ui};
 
 use evil_synth::{
     AuxEnvelope, Delay, Envelope, FilterMode, Lfo, LfoDestination, LfoPhaseSync, LfoWaveform,
-    Oscillator, OscillatorMode, Patch, SampleOscillator, SampleZone, VoiceMode, Waveform,
-    Waveshaper,
+    Oscillator, OscillatorMode, Patch, SampleDirection, SampleOscillator, SampleZone, VoiceMode,
+    Waveform, Waveshaper,
 };
 
 pub struct PatchLab {
@@ -409,7 +409,8 @@ fn show_voice(ui: &mut Ui, patch: &mut Patch) {
                 for (label, value) in [
                     ("Mix", OscillatorMode::Mix),
                     ("Sync", OscillatorMode::Sync),
-                    ("Ring", OscillatorMode::Ring),
+                    ("Ring 1", OscillatorMode::Ring),
+                    ("Ring 2 · fixed Osc B key pitch", OscillatorMode::Ring2),
                 ] {
                     ui.selectable_value(&mut mode, value, label);
                 }
@@ -501,8 +502,10 @@ fn show_voice(ui: &mut Ui, patch: &mut Patch) {
             patch.oscillators.push(Default::default());
         }
         if patch.oscillators.len() > 1
-            && (patch.effective_oscillator_mode() != OscillatorMode::Ring
-                || patch.oscillators.len() > 2)
+            && (!matches!(
+                patch.effective_oscillator_mode(),
+                OscillatorMode::Ring | OscillatorMode::Ring2
+            ) || patch.oscillators.len() > 2)
             && ui.button("Remove last oscillator").clicked()
         {
             patch.oscillators.pop();
@@ -848,7 +851,30 @@ fn show_sample_controls(ui: &mut Ui, sample: &mut SampleOscillator) {
             "{} · {} source frames · {} Hz · playback {}..{}",
             sample.name, frame_count, sample.sample_rate, playback.start, playback.end
         ));
-        ui.checkbox(&mut sample.loop_enabled, "Loop");
+        if ui.checkbox(&mut sample.loop_enabled, "Loop").changed() && !sample.loop_enabled {
+            sample.direction = SampleDirection::Forward;
+        }
+        ComboBox::from_id_salt("sample-direction")
+            .selected_text(match sample.direction {
+                SampleDirection::Forward => "Forward",
+                SampleDirection::ForwardReverse => "Forward + reverse",
+                SampleDirection::ReverseForward => "Reverse + forward",
+            })
+            .show_ui(ui, |ui| {
+                for (label, direction) in [
+                    ("Forward", SampleDirection::Forward),
+                    ("Forward + reverse", SampleDirection::ForwardReverse),
+                    ("Reverse + forward", SampleDirection::ReverseForward),
+                ] {
+                    if ui
+                        .selectable_value(&mut sample.direction, direction, label)
+                        .changed()
+                        && direction.is_bidirectional()
+                    {
+                        sample.loop_enabled = true;
+                    }
+                }
+            });
     });
 
     let mut playback_start = playback.start;

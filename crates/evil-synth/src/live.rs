@@ -554,6 +554,7 @@ mod tests {
             crate::OscillatorMode::Mix,
             crate::OscillatorMode::Sync,
             crate::OscillatorMode::Ring,
+            crate::OscillatorMode::Ring2,
         ] {
             for pitch in [48, 60, 72] {
                 let patch = Patch {
@@ -1086,6 +1087,44 @@ mod tests {
     }
 
     #[test]
+    fn bidirectional_sample_loops_match_offline_at_multiple_pitches() {
+        for direction in [
+            crate::SampleDirection::ForwardReverse,
+            crate::SampleDirection::ReverseForward,
+        ] {
+            for pitch in [48, 60, 72] {
+                let patch = Patch {
+                    sample_rate: 8_000,
+                    duration_seconds: 0.02,
+                    oscillators: vec![crate::Oscillator {
+                        waveform: Waveform::Sample,
+                        sample: Some(crate::SampleOscillator {
+                            samples: (0..32)
+                                .map(|index| (index % 9) as f32 / 8.0 - 0.5)
+                                .collect(),
+                            sample_rate: 8_000,
+                            loop_enabled: true,
+                            direction,
+                            loop_start_frame: 5,
+                            loop_end_frame: Some(13),
+                            ..crate::SampleOscillator::default()
+                        }),
+                        ..crate::Oscillator::default()
+                    }],
+                    envelope: crate::Envelope {
+                        attack_seconds: 0.0,
+                        decay_seconds: 0.0,
+                        sustain_level: 1.0,
+                        release_seconds: 0.002,
+                    },
+                    ..Patch::default()
+                };
+                assert_offline_matches_live(patch, &[test_note(pitch, 0.0, 0.02)]);
+            }
+        }
+    }
+
+    #[test]
     fn sample_key_zones_match_offline_for_fixed_and_tracked_pitch() {
         for loop_enabled in [false, true] {
             for pitch_tracking in [false, true] {
@@ -1356,6 +1395,7 @@ mod tests {
             playback_start_frame: 0,
             playback_end_frame: None,
             loop_enabled,
+            direction: crate::SampleDirection::Forward,
             loop_start_frame: 3,
             loop_end_frame: Some(13),
         };
@@ -1367,6 +1407,7 @@ mod tests {
             playback_start_frame: 0,
             playback_end_frame: None,
             loop_enabled,
+            direction: crate::SampleDirection::Forward,
             loop_start_frame: 5,
             loop_end_frame: Some(17),
         };

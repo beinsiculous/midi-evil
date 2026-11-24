@@ -55,6 +55,21 @@ pub(crate) fn validate_sample_zones(zones: &[SampleZone]) -> Result<(), Error> {
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SampleDirection {
+    #[default]
+    Forward,
+    ForwardReverse,
+    ReverseForward,
+}
+
+impl SampleDirection {
+    pub fn is_bidirectional(self) -> bool {
+        self != Self::Forward
+    }
+}
+
 /// Embedded mono audio for one sample oscillator.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -71,6 +86,7 @@ pub struct SampleOscillator {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub playback_end_frame: Option<usize>,
     pub loop_enabled: bool,
+    pub direction: SampleDirection,
     /// First frame in the loop region, within the playback range.
     pub loop_start_frame: usize,
     /// Exclusive loop end; `None` preserves the default playback-range loop.
@@ -87,6 +103,7 @@ impl Default for SampleOscillator {
             playback_start_frame: 0,
             playback_end_frame: None,
             loop_enabled: false,
+            direction: SampleDirection::Forward,
             loop_start_frame: 0,
             loop_end_frame: None,
         }
@@ -187,6 +204,11 @@ impl SampleOscillator {
                 "sample loop points must be nonempty and lie within the playback range".to_owned(),
             ));
         }
+        if self.direction.is_bidirectional() && !self.loop_enabled {
+            return Err(Error::InvalidPatch(
+                "bidirectional sample directions require loop playback".to_owned(),
+            ));
+        }
         Ok(())
     }
 
@@ -255,7 +277,11 @@ impl SampleOscillator {
     pub(crate) fn advance(&self, position: f64, frames: f64) -> f64 {
         let position = position + frames;
         if self.loop_enabled {
-            self.loop_position(position)
+            if self.direction.is_bidirectional() {
+                position
+            } else {
+                self.loop_position(position)
+            }
         } else {
             position.min(self.playback_range().end as f64)
         }
@@ -265,6 +291,10 @@ impl SampleOscillator {
         let len = self.samples.len();
         if len == 0 || position < 0.0 {
             return 0.0;
+        }
+        if self.loop_enabled && self.direction.is_bidirectional() {
+            let (position, reverse) = self.bidirectional_position(position);
+            return self.at_bidirectional(position, reverse);
         }
         let playback_range = self.playback_range();
         let position = if self.loop_enabled {
@@ -288,6 +318,59 @@ impl SampleOscillator {
         };
         let fraction = position.fract() as f32;
         self.samples[index] + (self.samples[next] - self.samples[index]) * fraction
+    }
+
+    fn at_bidirectional(&self, position: f64, reverse: bool) -> f32 {
+        let playback_range = self.playback_range();
+        if position < playback_range.start as f64 || position >= playback_range.end as f64 {
+            return 0.0;
+        }
+        let reverse_fractional = reverse && position.fract() > 0.0;
+        let index = if reverse_fractional {
+            position.ceil() as usize
+        } else {
+            position.floor() as usize
+        };
+        let next = if reverse {
+            index.saturating_sub(1)
+        } else {
+            index + 1
+        };
+        let next = if playback_range.contains(&next) {
+            next
+        } else {
+            index
+        };
+        let fraction = if reverse_fractional {
+            index as f64 - position
+        } else {
+            position.fract()
+        } as f32;
+        self.samples[index] + (self.samples[next] - self.samples[index]) * fraction
+    }
+
+    fn bidirectional_position(&self, position: f64) -> (f64, bool) {
+        let loop_range = self.loop_range();
+        let frame_count = loop_range.end - loop_range.start;
+        if frame_count <= 1 {
+            return (loop_range.start as f64, false);
+        }
+        let endpoint = (frame_count - 1) as f64;
+        let period = endpoint * 2.0;
+        let phase = match self.direction {
+            SampleDirection::ForwardReverse if position < loop_range.end as f64 => {
+                return (position, false);
+            }
+            SampleDirection::ForwardReverse => endpoint + position - (loop_range.end - 1) as f64,
+            SampleDirection::ReverseForward => endpoint + position - loop_range.start as f64,
+            SampleDirection::Forward => return (position, false),
+        }
+        .rem_euclid(period);
+        if phase < endpoint {
+            (loop_range.start as f64 + phase, false)
+        } else {
+            (loop_range.start as f64 + period - phase, true)
+        }
     }
 
     fn loop_position(&self, position: f64) -> f64 {
@@ -377,6 +460,43 @@ mod tests {
                 explicit_full_source.advance(position, 0.75)
             );
         }
+    }
+
+    #[test]
+    fn bidirectional_loops_reverse_at_both_endpoints_without_repeating_them() {
+        fn render_positions(sample: &SampleOscillator, count: usize) -> Vec<f32> {
+            let mut position = if sample.direction == SampleDirection::ReverseForward {
+                sample.loop_range().start as f64
+            } else {
+                sample.playback_range().start as f64
+            };
+            (0..count)
+                .map(|_| {
+                    let value = sample.at(position);
+                    position = sample.advance(position, 1.0);
+                    value
+                })
+                .collect()
+        }
+
+        let mut sample = SampleOscillator {
+            loop_enabled: true,
+            direction: SampleDirection::ForwardReverse,
+            ..SampleOscillator::new(vec![0.0, 1.0, 2.0, 3.0], 8_000)
+        };
+        assert_eq!(
+            render_positions(&sample, 8),
+            vec![0.0, 1.0, 2.0, 3.0, 2.0, 1.0, 0.0, 1.0]
+        );
+        sample.direction = SampleDirection::ReverseForward;
+        assert_eq!(
+            render_positions(&sample, 8),
+            vec![3.0, 2.0, 1.0, 0.0, 1.0, 2.0, 3.0, 2.0]
+        );
+        assert_eq!(sample.at(0.5), 2.5);
+        assert_eq!(sample.at(1.5), 1.5);
+        sample.loop_enabled = false;
+        assert!(sample.validate().is_err());
     }
 
     #[test]

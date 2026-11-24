@@ -154,10 +154,18 @@ impl VoiceState {
             let voice_pitch = pitch_multiplier * 2.0_f32.powf(detune / 1200.0);
             let slave_pitch = sync_ratio.map_or(voice_pitch, |ratio| ratio * voice_pitch);
             let mut voice_sample = 0.0;
-            if oscillator_mode == OscillatorMode::Ring {
+            if matches!(
+                oscillator_mode,
+                OscillatorMode::Ring | OscillatorMode::Ring2
+            ) {
                 let mut oscillators = patch.oscillators.iter().zip(states.iter_mut());
                 let (a, a_state) = oscillators.next().expect("ring mode requires Osc A");
                 let (b, b_state) = oscillators.next().expect("ring mode requires Osc B");
+                let b_pitch = if oscillator_mode == OscillatorMode::Ring2 && patch.pitch_tracking {
+                    voice_pitch * 2.0_f32.powf((69.0 - f32::from(self.note_pitch)) / 12.0)
+                } else {
+                    voice_pitch
+                };
                 let a = a.sample(
                     a_state,
                     sweep_progress,
@@ -165,13 +173,7 @@ impl VoiceState {
                     voice_pitch,
                     pulse_width,
                 );
-                let b = b.sample(
-                    b_state,
-                    sweep_progress,
-                    sample_rate,
-                    voice_pitch,
-                    pulse_width,
-                );
+                let b = b.sample(b_state, sweep_progress, sample_rate, b_pitch, pulse_width);
                 voice_sample = a * b
                     + oscillators
                         .map(|(oscillator, state)| {
@@ -332,6 +334,53 @@ mod tests {
             let b = patch.oscillators[1].sample(&mut b_state, time, patch.sample_rate, 1.0, 0.0);
             assert_eq!(mix.sample(&patch, time, 1.0, controls()), a + b);
             assert_eq!(ring.sample(&ring_patch, time, 1.0, controls()), a * b);
+        }
+    }
+
+    #[test]
+    fn ring2_removes_only_the_keyboard_ratio_from_osc_b() {
+        let base = Patch {
+            gain: 1.0,
+            duration_seconds: 1.0,
+            oscillator_mode: OscillatorMode::Ring2,
+            oscillators: vec![
+                Oscillator {
+                    amplitude: 0.6,
+                    ..Oscillator::default()
+                },
+                Oscillator {
+                    start_frequency_hz: 660.0,
+                    end_frequency_hz: 660.0,
+                    amplitude: 0.4,
+                    ..Oscillator::default()
+                },
+            ],
+            envelope: Envelope {
+                attack_seconds: 0.0,
+                decay_seconds: 0.0,
+                sustain_level: 1.0,
+                release_seconds: 0.0,
+            },
+            ..Patch::default()
+        };
+        for pitch in [48, 60, 72] {
+            let key_ratio = 2.0_f32.powf((f32::from(pitch) - 69.0) / 12.0);
+            let mut patch = base.clone();
+            for oscillator in &mut patch.oscillators {
+                oscillator.start_frequency_hz *= key_ratio;
+                oscillator.end_frequency_hz *= key_ratio;
+            }
+            let mut voice = VoiceState::new(&patch, pitch);
+            let mut a_state = patch.oscillators[0].state(1, pitch);
+            let mut b_state = base.oscillators[1].state(2, 69);
+            for frame in 0..64 {
+                let time = frame as f32 / patch.sample_rate as f32;
+                let a =
+                    patch.oscillators[0].sample(&mut a_state, time, patch.sample_rate, 1.0, 0.0);
+                let b = base.oscillators[1].sample(&mut b_state, time, patch.sample_rate, 1.0, 0.0);
+                let actual = voice.sample(&patch, time, 1.0, controls());
+                assert!((actual - a * b).abs() < 0.000_001);
+            }
         }
     }
 
