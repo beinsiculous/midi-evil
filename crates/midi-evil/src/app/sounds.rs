@@ -177,7 +177,7 @@ impl StudioApp {
                 instrument.source = InstrumentSource::Synth {
                     patch: reference.clone(),
                 };
-                instrument.midi_program = patch.midi_program;
+                instrument.apply_patch_metadata(&patch);
                 let file_name = if sound.user {
                     reference.clone()
                 } else {
@@ -461,6 +461,30 @@ mod tests {
         assert!(app.selected_sound().unwrap().same_source(&first));
         app.sounds.forget(&missing);
         assert!(!app.sounds.is_remembered(&missing));
+    }
+
+    #[test]
+    fn assigning_a_synth_applies_preset_send_defaults_and_preserves_channel_trim() {
+        let context = egui::Context::default();
+        let mut app = StudioApp::create(&context, None, LaunchOptions::default(), None);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("send-preset.json");
+        let patch = evil_synth::Patch {
+            midi_program: Some(42),
+            send_gains: [0.25, 0.75],
+            ..evil_synth::Patch::default()
+        };
+        std::fs::write(&path, patch.to_json_pretty().unwrap()).unwrap();
+        let instrument = app.project.instrument_for_track_mut(0).unwrap();
+        instrument.gain = 0.4;
+        instrument.pan = -0.3;
+
+        assert!(app.assign_sound(Sound::file(&path, SoundKind::Synth)));
+        let instrument = app.project.instrument_for_track(0).unwrap();
+        assert_eq!(instrument.send_gains, [0.25, 0.75]);
+        assert_eq!(instrument.midi_program, Some(42));
+        assert_eq!(instrument.gain, 0.4);
+        assert_eq!(instrument.pan, -0.3);
     }
 
     #[test]

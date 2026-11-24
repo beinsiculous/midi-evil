@@ -14,6 +14,7 @@ pub struct PatchLab {
     pub file_name: String,
     pub track_index: usize,
     original_patch: Patch,
+    comparison: Option<Patch>,
     unassigned: bool,
     pub page: PatchPage,
     slicing: SliceControls,
@@ -49,6 +50,7 @@ impl PatchLab {
     pub fn new(patch: Patch, file_name: String, track_index: usize) -> Self {
         Self {
             original_patch: patch.clone(),
+            comparison: None,
             unassigned: false,
             patch,
             file_name,
@@ -69,17 +71,41 @@ impl PatchLab {
         Self::draft(Patch::default(), "untitled.json".to_owned(), track_index)
     }
 
+    pub fn is_comparing(&self) -> bool {
+        self.comparison.is_some()
+    }
+
+    pub fn toggle_compare(&mut self) {
+        if let Some(edited) = self.comparison.take() {
+            self.patch = edited;
+        } else {
+            self.comparison = Some(std::mem::replace(
+                &mut self.patch,
+                self.original_patch.clone(),
+            ));
+        }
+    }
+
+    fn restore_edited_patch(&mut self) {
+        if self.is_comparing() {
+            self.toggle_compare();
+        }
+    }
+
     pub fn duplicate(&mut self) {
+        self.restore_edited_patch();
         self.unassigned = true;
         self.file_name = duplicate_file_name(&self.file_name);
         self.original_patch = self.patch.clone();
     }
 
     pub fn reset(&mut self) {
+        self.comparison = None;
         self.patch = self.original_patch.clone();
     }
 
     pub fn mark_saved(&mut self, file_name: String) {
+        self.restore_edited_patch();
         self.unassigned = false;
         self.file_name = file_name;
         self.original_patch = self.patch.clone();
@@ -97,7 +123,8 @@ impl PatchLab {
     }
 
     pub fn has_unsaved_changes(&self) -> bool {
-        self.unassigned || self.patch != self.original_patch || self.recording_active()
+        let edited = self.comparison.as_ref().unwrap_or(&self.patch);
+        self.unassigned || edited != &self.original_patch || self.recording_active()
     }
 
     pub fn start_recording(&mut self) -> Result<String, String> {
@@ -208,6 +235,15 @@ fn show_output(ui: &mut Ui, patch: &mut Patch) {
         ui.label("Duration");
         ui.add(DragValue::new(&mut patch.duration_seconds).range(0.001..=60.0));
     });
+    ui.horizontal_wrapped(|ui| {
+        for (index, gain) in patch.send_gains.iter_mut().enumerate() {
+            ui.add(
+                egui::Slider::new(gain, 0.0..=1.0).text(format!("Send {} preset level", index + 1)),
+            );
+        }
+    })
+    .response
+    .on_hover_text("Saved with the patch and applied when it is assigned; later mixer edits stay with the project");
     ui.horizontal_wrapped(|ui| {
         let mut has_program = patch.midi_program.is_some();
         if ui
@@ -1017,9 +1053,15 @@ fn sample_waveform(ui: &mut Ui, sample: &SampleOscillator) {
 }
 
 fn show_shape(ui: &mut Ui, patch: &mut Patch) {
-    envelope_plot(ui, &patch.envelope, "Amplitude envelope");
+    envelope_plot(
+        ui,
+        &patch.envelope,
+        "Amplitude envelope",
+        patch.invert_amp_envelope,
+    );
     theme::label(ui, "AMPLITUDE ENVELOPE");
     show_envelope_controls(ui, &mut patch.envelope);
+    ui.checkbox(&mut patch.invert_amp_envelope, "Invert amplitude envelope");
 
     ui.heading("Filter");
     let mut filter_enabled = patch.filter.is_some();
@@ -1068,7 +1110,7 @@ fn show_shape(ui: &mut Ui, patch: &mut Patch) {
         patch.filter_envelope = independent.then(|| patch.envelope.clone());
     }
     if let Some(envelope) = &mut patch.filter_envelope {
-        envelope_plot(ui, envelope, "Filter envelope");
+        envelope_plot(ui, envelope, "Filter envelope", false);
         show_envelope_controls(ui, envelope);
     } else {
         ui.label("Routed from the amplitude envelope");
@@ -1130,7 +1172,12 @@ fn show_auxiliary_envelope(
         *slot = enabled.then_some(AuxEnvelope::default());
     }
     if let Some(aux) = slot {
-        envelope_plot(ui, &aux.envelope, &format!("Auxiliary envelope {index}"));
+        envelope_plot(
+            ui,
+            &aux.envelope,
+            &format!("Auxiliary envelope {index}"),
+            false,
+        );
         show_envelope_controls(ui, &mut aux.envelope);
         ui.label("Signed depths add to existing envelopes and LFO modulation");
         ui.add(egui::Slider::new(&mut aux.amplitude_depth, -1.0..=1.0).text("Amplitude depth"));
@@ -1211,7 +1258,7 @@ fn show_effects(ui: &mut Ui, patch: &mut Patch) {
     }
 }
 
-fn envelope_plot(ui: &mut Ui, envelope: &Envelope, label: &str) {
+fn envelope_plot(ui: &mut Ui, envelope: &Envelope, label: &str, inverted: bool) {
     let (response, painter) =
         ui.allocate_painter(egui::vec2(ui.available_width(), 88.0), egui::Sense::hover());
     let rect = response.rect;
@@ -1228,12 +1275,13 @@ fn envelope_plot(ui: &mut Ui, envelope: &Envelope, label: &str) {
         )
     };
     let sustain_at = envelope.attack_seconds + envelope.decay_seconds;
+    let shape = |level| if inverted { 1.0 - level } else { level };
     let points = vec![
-        point(0.0, 0.0),
-        point(envelope.attack_seconds, 1.0),
-        point(sustain_at, envelope.sustain_level),
-        point(sustain_at + hold, envelope.sustain_level),
-        point(total, 0.0),
+        point(0.0, shape(0.0)),
+        point(envelope.attack_seconds, shape(1.0)),
+        point(sustain_at, shape(envelope.sustain_level)),
+        point(sustain_at + hold, shape(envelope.sustain_level)),
+        point(total, shape(0.0)),
     ];
     painter.add(egui::Shape::line(
         points,
@@ -1460,6 +1508,35 @@ mod tests {
         assert_eq!(lab.file_name, "patches/lead-copy.json");
         assert_eq!(lab.track_index, 2);
         assert_ne!(lab.patch, patch);
+    }
+
+    #[test]
+    fn compare_parks_and_restores_edits_without_losing_dirty_state() {
+        let original = Patch {
+            name: "Original".to_owned(),
+            gain: 0.8,
+            ..Patch::default()
+        };
+        let mut lab = PatchLab::new(original.clone(), "lead.json".to_owned(), 0);
+        lab.patch.gain = 0.25;
+        lab.patch.send_gains = [0.5, 0.75];
+
+        lab.toggle_compare();
+        assert!(lab.is_comparing());
+        assert_eq!(lab.patch, original);
+        assert!(lab.has_unsaved_changes());
+
+        lab.toggle_compare();
+        assert!(!lab.is_comparing());
+        assert_eq!(lab.patch.gain, 0.25);
+        assert_eq!(lab.patch.send_gains, [0.5, 0.75]);
+        assert!(lab.has_unsaved_changes());
+
+        lab.toggle_compare();
+        lab.reset();
+        assert!(!lab.is_comparing());
+        assert_eq!(lab.patch, original);
+        assert!(!lab.has_unsaved_changes());
     }
 
     #[test]

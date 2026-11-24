@@ -22,14 +22,25 @@ impl Default for Envelope {
 
 impl Envelope {
     pub fn amplitude(&self, time_seconds: f32, gate_seconds: f32) -> f32 {
-        if time_seconds <= gate_seconds {
-            return self.level(time_seconds);
-        }
-        if self.release_seconds == 0.0 || time_seconds >= gate_seconds + self.release_seconds {
-            return 0.0;
-        }
-        let release_progress = (time_seconds - gate_seconds) / self.release_seconds;
-        self.level(gate_seconds) * (1.0 - release_progress).max(0.0)
+        self.amplitude_with_inversion(time_seconds, gate_seconds, false)
+    }
+
+    pub(crate) fn amplitude_with_inversion(
+        &self,
+        time_seconds: f32,
+        gate_seconds: f32,
+        inverted: bool,
+    ) -> f32 {
+        let level = if time_seconds <= gate_seconds {
+            self.level(time_seconds)
+        } else {
+            if self.release_seconds == 0.0 || time_seconds >= gate_seconds + self.release_seconds {
+                return 0.0;
+            }
+            let release_progress = (time_seconds - gate_seconds) / self.release_seconds;
+            self.level(gate_seconds) * (1.0 - release_progress).max(0.0)
+        };
+        if inverted { 1.0 - level } else { level }
     }
 
     fn level(&self, time_seconds: f32) -> f32 {
@@ -76,5 +87,23 @@ mod tests {
         };
         assert_eq!(envelope.amplitude(0.25, 0.25), 0.25);
         assert_eq!(envelope.amplitude(0.5, 0.25), 0.125);
+    }
+
+    #[test]
+    fn inversion_reverses_the_active_shape_and_stops_after_release() {
+        let envelope = Envelope {
+            attack_seconds: 0.1,
+            decay_seconds: 0.1,
+            sustain_level: 0.5,
+            release_seconds: 0.2,
+        };
+        for time in [0.0, 0.05, 0.1, 0.15, 0.25, 0.3, 0.4] {
+            assert_eq!(
+                envelope.amplitude_with_inversion(time, 0.3, true),
+                1.0 - envelope.amplitude(time, 0.3)
+            );
+        }
+        assert_eq!(envelope.amplitude_with_inversion(0.5, 0.3, true), 0.0);
+        assert_eq!(envelope.amplitude_with_inversion(0.6, 0.3, true), 0.0);
     }
 }

@@ -100,7 +100,9 @@ impl VoiceState {
         let amp_envelope = if patch.modal_one_shot {
             1.0
         } else {
-            patch.envelope.amplitude(time, gate_seconds)
+            patch
+                .envelope
+                .amplitude_with_inversion(time, gate_seconds, patch.invert_amp_envelope)
         };
         let aux = [patch.aux_envelope.as_ref(), patch.aux_envelope_2.as_ref()]
             .into_iter()

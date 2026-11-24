@@ -1,4 +1,4 @@
-use evil_synth::{INSERT_LIMIT, InsertEffect, SEND_COUNT};
+use evil_synth::{INSERT_LIMIT, InsertEffect, Patch, SEND_COUNT};
 use serde::{Deserialize, Serialize};
 
 use crate::{Error, invalid};
@@ -60,6 +60,11 @@ impl Instrument {
             },
             ..Self::default()
         }
+    }
+
+    pub fn apply_patch_metadata(&mut self, patch: &Patch) {
+        self.midi_program = patch.midi_program;
+        self.send_gains = patch.send_gains;
     }
 
     pub fn drum_kit(name: impl Into<String>, kit: impl Into<String>) -> Self {

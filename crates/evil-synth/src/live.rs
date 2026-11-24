@@ -520,6 +520,35 @@ mod tests {
     }
 
     #[test]
+    fn inverted_amplitude_envelope_matches_offline_and_live() {
+        let patch = Patch {
+            sample_rate: 8_000,
+            duration_seconds: 0.2,
+            invert_amp_envelope: true,
+            envelope: crate::Envelope {
+                attack_seconds: 0.04,
+                decay_seconds: 0.04,
+                sustain_level: 0.4,
+                release_seconds: 0.05,
+            },
+            ..Patch::default()
+        };
+        let notes = [test_note(60, 0.0, 0.2)];
+        assert_offline_matches_live(patch.clone(), &notes);
+        let inverted = crate::render_notes_dry(&patch, &notes).unwrap();
+        let normal = crate::render_notes_dry(
+            &Patch {
+                invert_amp_envelope: false,
+                ..patch
+            },
+            &notes,
+        )
+        .unwrap();
+        assert_ne!(inverted.samples, normal.samples);
+        assert!(inverted.samples.iter().any(|sample| sample.abs() > 0.01));
+    }
+
+    #[test]
     fn oscillator_modes_match_offline_at_multiple_pitches() {
         for mode in [
             crate::OscillatorMode::Mix,
