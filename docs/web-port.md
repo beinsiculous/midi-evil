@@ -39,6 +39,33 @@ Re-read on 2026-11-12, after two further commits. The table above is kept as che
   - `app/sounds.rs:73,116` — two more callers of `file_dialog()` (W1);
   - `instruments.rs:132,166` — `eframe::Storage` persistence, which on the web is the browser's local storage: whether the saved state belongs there is W5's to decide.
 
+## What the effort's plan changed
+
+Written 2026-11-24, when `coordination/web/plan.md` was drafted and reviewed. The steps below are
+kept as first written; where the plan differs, the plan is what is built, and these are the
+differences.
+
+- **The order is W0, W-A1, W1, W2, W-A2, W3, W5a, W4, W5b, W6.** W-A is split: W-A1, the keyboard
+  model natively, follows W0 directly, because it needs nothing from the port and is worth having
+  on the desktop either way; W-A2, the web bridge, follows W2. W5 is split around W4: W5a is the
+  byte interfaces in the shared crates, W5b the browser's dialogs, saves and downloads.
+- **W4 is a Web Worker, not "inline or chunked".** The render is one synchronous call over
+  synchronous synthesis, so anything on the page's own thread freezes it for the length of the
+  render, and chunking between tracks does not bound one long track. A worker running the same
+  module needs no atomics and no COOP/COEP.
+- **The shipping gate is an inventory, and the nine steps are its minimum.** Every surface the web
+  build shows has passed its own keyboard-and-announced sequence, or it is not shown. The first page
+  shows the Song and Notes views, the instrument list, the transport and the file commands, and
+  holds back the Mixer, Synth, Keyboard and Pads views and the Automation panel.
+- **A screen-reader gate needs two kinds of evidence:** a transcript an agent can re-run, and a
+  person with the screen reader.
+- **The transport is not in `transport.rs`**, which holds the section range. It is drawn in
+  `app/chrome.rs`, and W0 extracts a readout module both halves share.
+- **The evidence table's counts moved again**; the plan's *The tree today* carries them, and it
+  records that all seven library crates already pass `cargo check` for `wasm32-unknown-unknown`.
+- **The wasm-bindgen CLI is installed under this repository's `target/tools/`**, not on `PATH`: the
+  engine pins a different version and its build refuses any other.
+
 ## What the site offers a wasm application
 
 The site is `insiculous_web`, cloned beside this repository in the Be Insiculous working set; the paths in this section are relative to it. Today it offers:
