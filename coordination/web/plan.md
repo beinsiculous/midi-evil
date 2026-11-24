@@ -10,7 +10,9 @@ corrected in the same commit that settles this plan (see *The record's correctio
 Milestone **MIDI Evil Web** in `beinsiculous/midi-evil`: W0 `#2`, W1 `#3`, W2 `#4`, W3 `#5`,
 W4 `#6`, W5 `#7`, W-A `#8`, W6 `#9`. Branch `jesse` throughout.
 
-**Status: SETTLED by Jesse, 2026-11-24 (v4, committed `b1d2a8f`). W0 is open.** Rounds 1 and
+**Status: SETTLED by Jesse, 2026-11-24 (v4, committed `b1d2a8f`). W0 PASSED the same day —
+`coordination/web/w0-result.md`. Next: W-A1's section is re-detailed from that result and reviewed
+before it is handed off; W1 to W6 and W-A2 likewise, each before it starts.** Rounds 1 and
 2 (`codex`, and `deepseek` standing in for `kimi`, which has no credential on bob-ross) are answered
 in `review/web/rebuttal-1.md` and `rebuttal-2.md`.
 

@@ -2,8 +2,11 @@
 
 `coordination/web/plan.md` § W0. Two halves; this file is written as each closes.
 
-**Verdict so far: the native half PASSED, 2026-11-24, on both kinds of evidence (D4). The web half
-has not started.** No verdict on the port until it has.
+**Verdict: W0 PASSED, 2026-11-24 — both halves, each on both kinds of evidence (D4). The port
+runs.** W-A1 builds the keyboard model on the mechanism under *W0-native*; W-A2 builds the web
+bridge on the mechanism under *W0-web*, which is the plan's mechanism 1 with eframe's text entry
+adopted into it. W1 to W6 are unparked, and are re-planned and re-reviewed before any starts, as
+the plan says.
 
 The spike's code is on `spike/w0-accessibility`, never merged. The probes are in
 `coordination/web/probes/`.
@@ -25,8 +28,10 @@ The spike's code is on `spike/w0-accessibility`, never merged. The probes are in
    does not speak. The description holds the roll's key help, read once on focus.
 
 D6 held: one widget with a note cursor. D5 held: one description function feeds the name and the
-visible status line. D11's bar — state that can be read again on demand — is met natively by the
-name, which is there whenever the roll is focused.
+visible status line. D11's bar — state that can be read again on demand — is met natively *for the
+roll* by its name, which is there whenever the roll is focused. It is **not** met for the
+transport, whose name is a snapshot taken on focus, and it is weakened for the roll by an outcome
+that stays in the name; both are in *What the review of this result added*.
 
 ### What Jesse heard (Orca 49.4, COSMIC, Wayland-native)
 
@@ -156,4 +161,167 @@ for W-A1's tests.
 
 ## W0-web
 
-Not started.
+**Passed: the mechanical gate in headless Chromium and Firefox, and Jesse's sitting with Orca in a
+real Firefox and a real Chromium — "yep it passes".** Mechanism 1 was enough; the DOM twin was not
+started.
+
+### The mechanism W-A2 builds on
+
+- **The canvas** is `role="application"`, named, and `aria-describedby` a visible **current**
+  element that always holds what egui's focus is on: the roll's name, the transport readout's
+  string, or a standard control's description. That element is D11's "read again on demand".
+- **A polite, atomic live region**, visually hidden, written once per frame and only while the
+  canvas holds the page's focus. A notice and the name it changed go out as **one string, notice
+  first** ("Removed. Piano roll, deleted C sharp 5 at …"): two writes to one polite region and the
+  second replaces the first before it is spoken — the native half's lesson, in the browser's form.
+  The current element is written before the live region in the same task. A repeated identical
+  announcement carries a trailing no-break space, because rewriting the same text announces
+  nothing. Nothing is announced when focus returns to the canvas; the screen reader reads its name
+  and description itself.
+- **Standard egui controls are described by egui itself.** `OutputEvent::FocusGained` *can* be read
+  inside `update` on the web: `Response::widget_info` pushes it during the pass
+  (`egui-0.35.0/src/response.rs:851-884`), `Context::output` reads the current pass
+  (`context.rs:992`), and the runner takes and drops it only after the app returns
+  (`eframe-0.35.0/src/web/app_runner.rs:283-289,372`). It carries no widget id, so the bridge pairs
+  it with `memory.focused()`.
+- **eframe's text entry is part of the mechanism, not beside it.** Focusing a `DragValue` or a
+  `TextEdit` — tempo, meter, the project and track names — moves the *page's* focus to eframe's
+  hidden `<input>`. Left as eframe makes it, that is an unnamed element outside the accessibility
+  tree: the screen reader's "where am I" reads nothing. The bridge adopts it: while egui is editing
+  text it is in the tree, `aria-label`led with the control's name, `aria-describedby` the current
+  element, and placed after the canvas; otherwise hidden and refusing focus. Committing a value is
+  announced once.
+- **Tab is released at the boundary.** eframe prevents the default of every Tab on the canvas
+  (`events.rs:265-273`, private; `WebOptions::should_prevent_default` covers only text events) and
+  egui wraps its own traversal, so the canvas is a keyboard trap in both browsers. A capture-phase
+  keydown listener on the window stops a Tab at egui's last stop, and a Shift+Tab at its first,
+  before eframe sees it; the browser then moves focus on. Remedy 1 of the plan; the same in both.
+- **Two things eframe's text entry does that nobody foresaw:** it takes focus into the canvas at
+  page load, and, being a nameless input after the page's last element, it makes Tab loop back into
+  the canvas. The bridge refuses its focus while it is hidden.
+
+### The mechanical transcript
+
+`coordination/web/probes/web-gate.sh`, headless Chromium 151 and Firefox 153, exit 0: eleven
+sequences per browser and two negative controls each. The native gate's sequence and its edges with
+the same strings as the native transcript; focus into the canvas and out again in both directions,
+through all of egui's stops; a held Right at one repeat-flagged keydown per animation frame, each
+announcement matching the cursor's note; twenty keydowns in one frame moving twenty notes with one
+announcement; leaving and returning with no announcement and no cursor movement, the current note
+readable from the canvas's description; the value box named and described where focus actually is,
+typed into and committed.
+
+**The gate's first run passed with the page's focus on the unnamed input.** Its `--expect` checked
+the current element's text and looked at the focused element only when that was the canvas. Two
+reviewers found it — one in the harness, one in the transcript's own lines. `--expect` now fails
+unless the focused element is the canvas or is named by the step, and has a name and a description
+carrying the text; and two negative controls per browser must fail, each for its own stated reason.
+
+### What the sitting was asked, and what it left for W-A2
+
+Jesse passed the half as a whole. He was asked the items below and did not answer them one by one,
+so none of them is recorded as heard in a particular way; W-A2's own sitting takes them item by
+item, and its first step is the browser-key table, on which its binding set depends (D14).
+
+- Whether Orca speaks each note once or twice: the current note reaches it as a live-region write
+  *and* as a change to the focused canvas's description.
+- Whether the repeat mark makes a repeated notice speak ("Cannot go higher." twice).
+- Whether a held key leaves stale announcements queued.
+- At the value box: whether the entry is named on arrival, and the new value spoken once on Enter.
+- The chords a browser may keep, which synthetic keys cannot show: Ctrl+Left, Ctrl+Right, F6,
+  Shift+F6, Ctrl+N, Ctrl+O, Ctrl+S, Ctrl+W, Ctrl+T, Alt+Left, Alt+Right. The synthetic table — every
+  chord of the model and every native shortcut reaches egui in both browsers; eframe prevents the
+  browser's default for the arrows, Ctrl+O, Ctrl+S, Space and every letter, and does not for Home,
+  End, Enter, Delete, F6, Ctrl+N, W, T, Z, Y — is in the transcript, every row marked synthetic.
+
+### What W-A2 starts from
+
+- **Unnamed controls read "unnamed drag value".** egui gives a slider's value box no label; the
+  tempo, the meter and the name fields are the same until W-A1 names them.
+- **Typing then an arrow leaves the description stale** ("editing 2" after Up made it 3): the
+  typed text is cached until focus moves. Found in review, not fixed in the harness.
+- **The transport readout is re-described every frame on the web.** The harness's transport is
+  frozen, so nothing showed it; a playing one would rewrite the live region each frame. The native
+  readout's cached, read-on-demand string is what the bridge must publish.
+- **`role="application"` hands every key to the page.** That is the point, and it is also why the
+  page's own keyboard notes (W6) are not optional.
+- **The bundle** is 6.4 MiB of wasm for the roll alone, about 2.2 MB gzipped, without `wasm-opt`.
+- **Playwright's accessibility snapshot is its own computation**, not the browser's tree. Chromium's
+  real tree is read over CDP for the checks that matter; Firefox offers no equivalent.
+
+### What the plan's W0-web had wrong
+
+- "Release Tab to the browser at egui's first and last widget" cannot be configured through eframe;
+  it is a listener that gets to the key before eframe does.
+- "A named, focus-synchronised element" is not a second focusable thing: it is the canvas's own
+  description. The focused element changes only for text entry, which the plan did not know about.
+- The held-key drive "twenty in a single frame" exists only as untrusted DOM events.
+
+## What the review of this result added
+
+The result was reviewed whole (codex, deepseek, gemini; `review/web/rebuttal-6.md`). Nothing in it
+overturns the verdict, which rests on a person's sitting as well as the transcripts. What it adds
+is what the two mechanisms do not yet answer. Each line is a requirement on the batch named, and is
+written into that batch's section, as a gate row where it can be one, when the batch is re-planned.
+
+**W-A1 — natively**
+
+- **Identity when continuity cannot be shown.** Two identical notes, the cursor on the second, undo
+  removes it: finding the note "by value" lands on its twin and the next Delete takes the wrong
+  one. Where the cursor's note cannot be shown to be the same note, the selection is cleared and
+  says so. Checking edit-in-place first does not cover this.
+- **The transport must be readable now, not as it was.** Read on demand cannot mean a snapshot from
+  when focus arrived: focus it stopped, press Space, wait, read again, and it says "stopped". One
+  rule for a queryable surface — re-made from live state when it is read or activated, changed
+  silently otherwise — and gate rows that read it while playing, after stopping, and twice without
+  moving focus. A way to ask for the position from inside the roll, without leaving it.
+- **An outcome is not state.** "deleted C sharp 5 at …" stays in the roll's name until the next
+  key — through Tab away and back, as the gate's own transcript shows, and the gate asserts it.
+  Outcomes go to the announcement and leave the name when focus leaves or on the next read.
+- **Held keys.** Nobody judged a held key natively and the gate has no row for one. What the
+  one-frame hold does when the name changes on every frame, or when "Cannot go higher." repeats
+  every frame, is undefined; and a held name change needs a repaint asked for, or in egui's
+  reactive mode the second frame may never come. A held-key sequence in the native gate and a
+  held key in the sitting.
+- **A screen reader started after the application.** The gate only ever enables the flag first.
+  Whether the tree appears when Orca starts or restarts later is tested, and if it does not, the
+  application recovers or says what to do.
+- **Every unnamed node on a shown surface has an owner**, including the MIDI port
+  (`midi_input.rs`, outside the batch's first file list) and egui's own scroll bars and resize
+  handle, which are named, hidden from the tree, or explicitly accepted.
+- **The nine defects of the spike are nine named gate rows**, the duplicate-note inspector drag
+  first.
+- **The native transcript is XWayland on a private bus; the sitting is Wayland-native.** Each gate
+  row says which it is, and the sitting stays a per-batch row because it is the only evidence from
+  the configuration people run.
+- **The probe refuses to be dangerous.** No key is sent unless the probe is inside the private bus,
+  and it will not start one without the in-memory settings backend — both incidents of this spike
+  happened outside those conditions.
+
+**W-A2 and after — in the browser**
+
+- **Once or twice is settled before anything is built on it.** The current note reaches a screen
+  reader as a live-region write and as the focused canvas's description changing. W-A2 opens with
+  a sitting on exactly that, and the fallback is decided now: if both are spoken, the live region
+  carries notices only and the description carries state.
+- **Browser-owned chords are unbound, not merely unadvertised, and leaving is guarded.** Alt+Left
+  is bound to cycling the sound and is the browser's Back; Ctrl+W closes the tab; F6 is the
+  browser's own way to its address bar. On the web such chords are not bound at all, region
+  movement gets a chord a browser leaves alone — found by a person, since synthetic keys cannot
+  show it — and the page registers `beforeunload` while the document is dirty. New and Open get an
+  in-application, keyboard-operable, announced discard prompt (W5b's dialogs).
+- **The Tab boundary is computed against a changing set of stops** — a menu open, the About window,
+  a panel appearing, a value box at the first stop — and tested against each; and the plan's
+  second remedy, a visible, focusable "leave the editor" control, is built as a standing backstop
+  rather than kept as an untried fallback, because a stale boundary is a keyboard trap.
+- **The repeat mark has a stated rule** that survives a third identical notice, with a gate row.
+- **Chromium's real tree is asserted, not printed**: the focused node's name and description over
+  CDP, with its own negative control. Firefox's rows are marked as Playwright's computation, and
+  its real tree is covered by the sitting, stated per batch.
+- **The wasm boundary of the device and dialog code** is planned with the batch that first compiles
+  it: the MIDI port (Web MIDI is absent in Firefox and permission-gated in Chromium) gets a named,
+  keyboard-operable web state or is held back under D12; `rfd::MessageDialog` has no browser form.
+- **eframe's private internals are load-bearing** — the hidden input's shape, the Tab handling
+  cited above by line. The web crate pins eframe and egui (D8), and an upgrade re-runs the web
+  gate before anything else.
+

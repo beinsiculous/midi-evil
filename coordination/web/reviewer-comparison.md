@@ -24,11 +24,22 @@ credential configured"). Deepseek stood in, as the `roles` skill allows.
 | 5 | spike prototype (diff) | deepseek | 9 | 9 | 0 | 0 | found codex's three and six more, among them "`last_outcome` survives external changes, so the roll's spoken name can report an outcome the user did not just trigger" | 12:08 |
 | 6 | probe v3 (diff) | gemini | 6 | 4 | 2 | 0 | "`before_step()` samples focused name before `sender.wait_for_focus()`" — two refuted by the transcript: announcements are listened for, and `--press` does pump events | 8:21 |
 | 6 | probe v3 (diff) | deepseek | 7 | 6 | 0 | 1 | "The final \"Clean overlaps\" gate edge passes even when Clean overlaps does nothing … every expectation passes and the script prints \"every sequence passed.\"" — the gate's one vacuous step; the complaint that step order changed was rebutted, the gate being its only caller | 9:56 |
+| 7 | web harness (diff) | codex | 2 | 1 | 1 | 0 | "Tab from the transport through the Zoom slider to its numeric value … eframe then transfers DOM focus to its text-agent input. `quiet_text_agent` has marked that input `aria-hidden`" — the web mechanism's real hole; its other finding, a missing lockfile, was the planner's own omission from the review diff | 1:41 |
+| 7 | web harness (diff) | deepseek | 7 | 6 | 1 | 0 | the same hole, with the transcript line that showed it (`focus=input egui=other`), and "`other_description` retains the previous control's text" | 13:46 |
+| 8 | web probe (diff) | gemini | 8 | 5 | 3 | 0 | "the script continues to execute all probe sequences against an inactive port" — three refuted against the file or by the run: the `playwright/test` import works, the nvm glob is not quoted, the server is Python 3.12 | 6:07 |
+| 8 | web probe (diff) | deepseek | 7 | 7 | 0 | 0 | "The web gate exits 0 while page focus is on the hidden, unnamed input, because `--expect` skips the canvas description check whenever the canvas is not the active element" — a false pass demonstrated from the gate's own transcript | 12:00 |
+| 9 | web harness, fixed (diff) | codex | 3 | 2 | 1 | 0 | "type `2`, then press Up … `typed_text` remains `Some(\"2\")` … Current still reports \"editing 2\"" | 1:53 |
+| 9 | web harness, fixed (diff) | deepseek | 4 | 1 | 1 | 2 | "`Focused::Readout` publishes `transport_readout::describe(transport)` afresh each pass … announced continuously while focused during playback" — two rebutted as a throwaway branch's own business (native clippy on the spike, a rename fallback) | 11:31 |
+| 10 | web probe, fixed (diff) | gemini | 6 | 3 | 1 | 2 | "`DeadlineExceeded` exits with status 1, masking hung browsers as passed negative controls" | 10:28 |
+| 10 | web probe, fixed (diff) | deepseek | 6 | 5 | 0 | 1 | "`--expect` asserts only that the focused element has *a* name, so a wrong (or constant) accessible name on the adopted text entry is certified" | 10:19 |
+| 11 | W0 result (document) | codex | 3 | 3 | 0 | 0 | "A user focuses the transport while stopped, starts playback with Space, waits, and requests the focused element's description again … The user therefore hears \"stopped\" and the old position while playback is running." | 1:12 |
+| 11 | W0 result (document) | deepseek | 15 | 15 | 0 | 0 | "A transient outcome is baked into the persistent name/description, and the gate asserts the stale string" — and the unload guard: Alt+Left is bound by the application and is the browser's Back | 8:23 |
+| 11 | W0 result (document) | gemini | 7 | 5 | 1 | 1 | "If an operation produces an announcement with no subsequent event or animation running, frame 2 never executes, leaving the accessible name stale" — its claim that committing a value drops focus to the body was refuted by the gate; its verdict, that W0 passed on synthetic tests, rebutted: a person sat it | 2:42 |
 
-Totals so far: codex 12 findings, 12 real; deepseek 63 findings, 61 real, one refuted by a run, one
-half and one whole rebutted on policy; gemini 20 findings, 15 real, three refuted, two rebutted on
-policy. Codex is narrow, fast and has not yet been wrong — both of the plan's structural errors and
-the spike's two real regressions were its, in a fifth of deepseek's time. Deepseek finds the most,
-almost nothing false, and found the gate's one vacuous step. Gemini reads shell and control flow —
-the trap race, the stderr filter and the sampled-too-early name were its — and is the one that
-asserts things a single run refutes.
+Totals so far: codex 20 findings, 18 real, two refuted (both the same lockfile the planner had left
+out of the diff it was given); deepseek 102 findings, 95 real, three refuted, the rest rebutted on
+policy; gemini 41 findings, 28 real, eight refuted, five rebutted on policy. The web mechanism's
+one real hole was found by codex in under two minutes and by deepseek with the evidence for it;
+deepseek alone saw that the gate had passed it. Codex stays the narrow, fast, accurate one, deepseek
+the thorough one, and gemini the one whose claims need checking against the file before anything is
+done about them — a third of its findings on the web probe did not survive that.

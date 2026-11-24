@@ -117,3 +117,125 @@ join an instance the person has open nor be joined by one they start. On exit it
 application and the registry it started and removes the directory. When the probe fails, or the
 application dies during the run, the application's log and the session's are printed before they
 are removed — a panic is the first thing a gate needs to see.
+
+## `web-probe.mjs` and `web-gate.sh` — the web harness in Chromium and Firefox
+
+The web half of W0 (plan § W0-web) runs the spike's piano roll in a browser: a scratch crate,
+`spike/roll-web/` on the `spike/w0-accessibility` branch, that includes the spike's
+`piano_roll.rs`, `theme.rs`, `description.rs` and `transport_readout.rs` by `#[path]` and runs them
+on `eframe::WebRunner`. Its page carries:
+
+- the canvas: `role="application"`, named "MIDI Evil editor", described by the next element;
+- `#midi-evil-current`: the description of whatever egui has focused, in the strings the native
+  accessibility nodes carry;
+- `#midi-evil-live`: a polite, atomic live region that receives each change;
+- `#midi-evil-text-agent`: eframe's own hidden text entry, adopted. While egui edits text — a value
+  box reached by Tab is enough — eframe puts the page's focus there, not on the canvas, so the
+  entry is named for the control being edited and described by `#midi-evil-current`, as the canvas
+  is. It is in the accessibility tree only while egui is editing text and out of the Tab order
+  always, and it refuses any focus that arrives while it is hidden (eframe's load-time autofocus
+  among them).
+
+Build it in the spike worktree:
+
+```sh
+spike/roll-web/build.sh      # release wasm + this repository's pinned wasm-bindgen, into dist/
+```
+
+`build.sh` uses the CLI under the main checkout's `target/tools/bin/` (found through
+`git worktree list`) and refuses one whose version is not the lock's, or a lock with no
+wasm-bindgen entry; never the `wasm-bindgen` on `PATH`, which is the engine's pin. It builds with
+an explicit `--target-dir`, binds into a staging directory, and swaps that with `dist/` in one
+`renameat2(RENAME_EXCHANGE)` only when everything succeeded, so each *request* a person serving `dist/` makes
+gets the old bundle or the new one; a page load is several requests, so reload after a rebuild.
+`web-gate.sh` serves its own copy, taken when it starts. The old bundle is kept as
+`dist.previous/`.
+
+The page takes these in its query string: `?fixture=empty` (a one-bar pattern with no notes, used
+by one part), `?fixture=full` (the same bar with a note on each beat, used by two), `?edge=value`
+(a value box as egui's first stop, so leaving the canvas backwards from the text entry can be
+tested), `?agent=eframe` (eframe's text entry left as eframe made it — unnamed, a Tab stop at the
+end of the page, and autofocused at load — to show what the adoption fixes). A failed start is
+written into `#midi-evil-current`.
+
+`web-gate.sh` builds nothing: it serves the spike worktree's `spike/roll-web/dist/`
+(`MIDI_EVIL_WEB_BUNDLE` names another) on `127.0.0.1`, runs every sequence of the web gate through
+`web-probe.mjs` in headless Chromium and then headless Firefox, each in a fresh browser, then two
+negative controls per browser, then the browser-key table, stops the server however it exits, and
+exits 0 only if every sequence held and every negative control failed. Run from the repository
+root:
+
+```sh
+coordination/web/probes/web-gate.sh > review/web/w0/web-gate-transcript.txt
+node coordination/web/probes/web-probe.mjs --url http://127.0.0.1:PORT/ --browser firefox \
+    --key Tab --key Tab --expect "Piano roll" --key ArrowRight --expect "C 5"
+```
+
+Playwright is the site's: the probe resolves it from the working set's
+`insiculous_web/node_modules` (`PLAYWRIGHT_FROM` names another `package.json`), with Playwright's
+own Chromium and Firefox under `~/.cache/ms-playwright`. It needs Node 24; `web-gate.sh` finds one
+under `~/.nvm` when the `node` on `PATH` is not (`NODE` overrides). Both browsers run headless,
+always; Chromium's WebGL comes from SwiftShader (`--use-angle=swiftshader
+--enable-unsafe-swiftshader`), Firefox's from its software path (`webgl.force-enabled`).
+
+After every step the probe prints where the page's focus is (with that element's `aria-label`,
+and whether it is inside `aria-hidden`), egui's focus (the canvas's `data-egui-focus`), the
+cursor's place in walk order, the current description, every write the live region received during
+the step, Playwright's `ariaSnapshot` of `#editor-neighbourhood` — the link before the canvas, the
+canvas, the text entry while it is exposed, the current element, the live region, the link after —
+and, in Chromium, the canvas's node and the focused node as the browser computes them
+(`Accessibility.getFullAXTree`: role, name, description, focus). Firefox has no such protocol;
+there, as in Chromium, the expectations use Playwright's own computation. The steps and
+expectations are listed at the top of `web-probe.mjs`.
+
+**What the probe holds, and why.**
+
+- **`--expect` cannot pass where nothing can be read.** It checks the current element's text and
+  then the element that has the page's focus: that element must have an accessible name and its
+  accessible description must contain the text. The element must be the canvas unless the same
+  step names it with `--expect-focus` (an id, or `role:NAME`). The gate's first transcript passed
+  with the page's focus on eframe's hidden, unnamed text entry because the old `--expect` only
+  checked the canvas when the canvas happened to be focused; two negative controls per browser now
+  show the probe failing on that case — `--expect` at the value box with no `--expect-focus`, and
+  `?agent=eframe`'s unnamed entry named by its role. A control passes only when the probe
+  exits 1 *and* prints the message it exists to show; a step that outlives its deadline exits 3,
+  so a hang never stands in for a failed expectation. `--expect-name` asserts the focused
+  element's accessible name itself — `--expect` only requires that there be one.
+- **Semantics first.** Every page load checks the canvas's role (application) and name, its
+  `aria-describedby`, and the live region's `aria-live="polite"` and `aria-atomic="true"`; in
+  Chromium also that the browser's tree has a node that is live polite and atomic.
+- **Announcements are mutation records.** A `MutationObserver` on the live region records every
+  record it is handed, not one read of the text per callback, so a write replaced within one task
+  is still counted and a write per key in a burst is counted per key. No-break spaces (the bridge's
+  mark on a repeated announcement) are normalised before matching and shown as "repeat-marked".
+- **Keys are Playwright's, delivered to the page.** They pass the browser's own shortcut handling,
+  so a chord the browser keeps (Ctrl+N, T, W, Alt+Left, F6 among them) is received here and may
+  not be in a real browser; those rows of the key table say *needs a person*. The key table puts
+  focus on the roll before each chord and says so in the row if it could not.
+- **A held key, and its cadence.** `--hold` runs in the page: one `requestAnimationFrame` loop that
+  dispatches one `keydown` per frame on the canvas — the first plain, the rest `repeat: true` —
+  and, at the start of each next frame, records the cursor's place, the current description and
+  the live-region writes since the last frame. The run then requires the cursor to have moved one
+  note per frame and the last write of each frame to be the cursor's note. At the 60 Hz the
+  headless browsers run, that is one keydown every 16.7 ms — faster than a typical desktop key
+  repeat of 25 to 33 a second — and eframe answers each by the next frame. `--burst` dispatches the keydowns in one
+  task, so they land in one egui frame. Both are untrusted DOM events, which eframe's listener does
+  not distinguish.
+- **Deadlines.** Every call into the browser has one (fifteen seconds; thirty for a load), and the
+  run has one (`WEB_PROBE_DEADLINE_SECONDS`, default 240): a page that stops answering is a failed
+  step, the browser is closed and the exit status is not 0. `web-gate.sh` runs each probe under
+  `timeout` (`WEB_PROBE_TIMEOUT_SECONDS`, default 300; SIGTERM, which Playwright answers by closing
+  its browser, then SIGKILL fifteen seconds later).
+- **The server.** `python3`'s `http.server`, bound by the server itself on a free port of
+  `127.0.0.1` (no port is chosen and released first), with `.wasm` served as `application/wasm`
+  whatever the machine's MIME table says. The gate starts nothing until the server is alive and
+  answers with this bundle — the page's `midi-evil-harness` sentinel and the wasm's content type —
+  and stops at once if it does not.
+- **The page opens with nothing focused, and Tab leaves the canvas at egui's ends.** eframe
+  prevents the default of every Tab; the harness stops a Tab at the window, before eframe sees it,
+  when egui's focus is on its last stop (Shift+Tab: its first), so the browser moves focus on —
+  from the text entry it first puts focus on the canvas, so the browser leaves from the canvas's
+  place in either direction. egui keeps its own focus while the page's is elsewhere, and the first
+  stop the canvas gives is the roll. egui drops focus on Escape and on Enter in a text edit; the
+  harness gives it back to the same control in the next pass, which is what announces a committed
+  value.
