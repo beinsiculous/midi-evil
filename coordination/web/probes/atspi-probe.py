@@ -164,16 +164,30 @@ def name_of(accessible):
         return None
 
 
-def find_by_name(application, name, interface_getter, interface_label):
-    """The node with this name that has the interface; says how many matched and why not."""
-    matches = [node for _path, node in walk(application) if name_of(node) == name]
-    if not matches:
-        raise ProbeError(f"no node named {name!r}")
-    usable = [node for node in matches if interface_getter(node) is not None]
+def find_by_name(application, name, interface_getter, interface_label, prefix_must_be_unique):
+    """The node with this name that has the interface; says how many matched and why not.
+
+    A usable node with exactly this name wins; failing that, the usable nodes whose name begins
+    with it, because some names carry state ("Piano roll, C 4, bar 1 beat 1, ...") and change with
+    every key. A prefix that several usable nodes share is refused where acting on the wrong one
+    would go unnoticed.
+    """
+    named = [(node, name_of(node) or "") for _path, node in walk(application)]
+    exact = [node for node, node_name in named if node_name == name]
+    beginning = [node for node, node_name in named if node_name.startswith(name)]
+    if not beginning:
+        raise ProbeError(f"no node named {name!r} or with a name beginning with it")
+    usable = [node for node in exact if interface_getter(node) is not None]
     if not usable:
-        raise ProbeError(f"{len(matches)} node(s) named {name!r}, none with {interface_label}")
-    if len(matches) > 1:
-        print(f"{len(matches)} nodes named {name!r}, {len(usable)} with {interface_label}; "
+        usable = [node for node in beginning if interface_getter(node) is not None]
+        if not usable:
+            raise ProbeError(f"{len(beginning)} node(s) named {name!r} or beginning with it, "
+                             f"none with {interface_label}")
+        if prefix_must_be_unique and len(usable) > 1:
+            raise ProbeError(f"{len(usable)} nodes with {interface_label} have a name beginning "
+                             f"{name!r}; give the whole name")
+    if len(usable) > 1:
+        print(f"{len(usable)} nodes named {name!r} with {interface_label}; "
               f"using the first: {describe_if_present(usable[0])}")
     return usable[0]
 
@@ -183,6 +197,14 @@ def focused_nodes(application):
     return [
         (path, node) for path, node in walk(application) if has_state(node, Atspi.StateType.FOCUSED)
     ]
+
+
+def deepest_focused(application):
+    """The deepest focused node, or None."""
+    focused = focused_nodes(application)
+    if not focused:
+        return None
+    return max(focused, key=lambda pair: len(pair[0]))[1]
 
 
 def print_focus(application, heading):
@@ -207,6 +229,8 @@ class EventRecorder:
     def __init__(self, application):
         self.process_id = application.get_process_id()
         self.lines = []
+        self.announcements = []
+        self.last_step_announcements = []
         self.listener = Atspi.EventListener.new(self.record)
         for event_type in LISTENED_EVENT_TYPES:
             self.listener.register(event_type)
@@ -223,6 +247,8 @@ class EventRecorder:
         payload = event.any_data
         if isinstance(payload, Atspi.Accessible):
             payload = "accessible " + describe_if_present(payload)
+        if event.type == "object:announcement":
+            self.announcements.append(str(payload))
         self.lines.append(
             f"{event.type} detail1={event.detail1} detail2={event.detail2} "
             f"payload={payload!r} source: {describe_if_present(event.source)}"
@@ -230,10 +256,12 @@ class EventRecorder:
 
     def clear(self):
         self.lines = []
+        self.announcements = []
 
     def print_and_clear(self):
         for line in self.lines:
             print("  event " + line)
+        self.last_step_announcements = self.announcements
         self.clear()
 
 
@@ -458,7 +486,8 @@ class WindowKeySender:
 
 
 def perform_action(application, name, recorder):
-    target = find_by_name(application, name, lambda node: node.get_action_iface(), "an action")
+    target = find_by_name(application, name, lambda node: node.get_action_iface(), "an action",
+                          prefix_must_be_unique=True)
     if not Atspi.Action.do_action(target.get_action_iface(), 0):
         raise ProbeError(f"press {name!r}: the action was refused")
     pump_events(EVENT_WINDOW_SECONDS)
@@ -473,7 +502,8 @@ def focusable_component(node):
 
 
 def give_focus(application, name, recorder):
-    target = find_by_name(application, name, focusable_component, "a focusable component")
+    target = find_by_name(application, name, focusable_component, "a focusable component",
+                          prefix_must_be_unique=False)
     if not Atspi.Component.grab_focus(target.get_component_iface()):
         raise ProbeError(f"focus {name!r}: grab_focus was refused")
     pump_events(EVENT_WINDOW_SECONDS)
@@ -481,9 +511,50 @@ def give_focus(application, name, recorder):
     recorder.print_and_clear()
 
 
+class Expectations:
+    """Checks on what the previous step left: the focused node's name and the announcements."""
+
+    def __init__(self, application, recorder):
+        self.application = application
+        self.recorder = recorder
+        self.name_before_step = None
+
+    def focused_name(self):
+        node = deepest_focused(self.application)
+        return None if node is None else name_of(node)
+
+    def before_step(self):
+        self.name_before_step = self.focused_name()
+
+    def check(self, kind, text):
+        name = self.focused_name()
+        if kind == "expect":
+            passed = name is not None and text in name
+            wanted = f"the focused name contains {text!r}"
+        elif kind == "expect_not":
+            # Nothing focused is not a pass: the check exists to show focus went somewhere else.
+            passed = name is not None and text not in name
+            wanted = f"a node is focused and its name does not contain {text!r}"
+        elif kind == "expect_same_name":
+            passed = name is not None and name == self.name_before_step
+            wanted = f"the focused name is unchanged ({self.name_before_step!r})"
+        elif kind == "expect_node":
+            passed = any(text in (name_of(node) or "") for _path, node in walk(self.application))
+            wanted = f"some node's name contains {text!r}"
+        else:
+            announcements = self.recorder.last_step_announcements
+            passed = any(text in announcement for announcement in announcements)
+            wanted = f"an announcement contains {text!r} (heard: {announcements!r})"
+        if not passed:
+            raise ProbeError(f"expected {wanted}; the focused name is {name!r}")
+        print(f"  ok: {wanted}")
+
+
 def run(arguments):
-    sender = WindowKeySender() if arguments.key else None
-    chords = [sender.parse(text) for text in arguments.key]
+    keys = [value for kind, value in arguments.steps if kind == "key"]
+    sender = WindowKeySender() if keys else None
+    # Every chord is checked before the first is sent.
+    chords = {text: sender.parse(text) for text in keys}
 
     Atspi.init()
     application = find_application(arguments.application, arguments.wait)
@@ -493,26 +564,44 @@ def run(arguments):
     if sender is not None:
         sender.attach(arguments.window_title, arguments.wait)
     recorder = EventRecorder(application)
+    expectations = Expectations(application, recorder)
 
-    for name in arguments.press:
-        perform_action(application, name, recorder)
-    if arguments.focus:
-        give_focus(application, arguments.focus, recorder)
-    if arguments.dump:
-        for path, accessible in walk(application):
-            print("  " * len(path) + describe_if_present(accessible))
-
-    for chord in chords:
-        print_focus(application, f"before {chord.text}")
-        sender.wait_for_focus(arguments.wait)
-        sender.send(chord)
-        pump_events(EVENT_WINDOW_SECONDS)
-        print_focus(application, f"after {chord.text}")
-        recorder.print_and_clear()
+    for kind, value in arguments.steps:
+        if kind == "heading":
+            print(f"== {value}")
+        elif kind == "press":
+            expectations.before_step()
+            perform_action(application, value, recorder)
+        elif kind == "focus":
+            expectations.before_step()
+            give_focus(application, value, recorder)
+        elif kind == "dump":
+            for path, accessible in walk(application):
+                print("  " * len(path) + describe_if_present(accessible))
+        elif kind == "key":
+            chord = chords[value]
+            print_focus(application, f"before {chord.text}")
+            sender.wait_for_focus(arguments.wait)
+            expectations.before_step()
+            sender.send(chord)
+            pump_events(EVENT_WINDOW_SECONDS)
+            print_focus(application, f"after {chord.text}")
+            recorder.print_and_clear()
+        else:
+            expectations.check(kind, value)
 
     if arguments.listen:
         pump_events(arguments.listen)
         recorder.print_and_clear()
+
+
+class StepAction(argparse.Action):
+    """Keeps every step option in one list, in the order given on the command line."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        steps = getattr(namespace, "steps", None) or []
+        steps.append((self.dest, True if values is None else values))
+        namespace.steps = steps
 
 
 def main():
@@ -523,16 +612,32 @@ def main():
                         help="the exact X window title that keys are sent to")
     parser.add_argument("--wait", type=float, default=15.0,
                         help="seconds to wait for the application, its window and its focus")
-    parser.add_argument("--press", action="append", default=[], metavar="NAME",
-                        help="perform the first action of the node with this name; repeatable")
-    parser.add_argument("--focus", metavar="NAME",
-                        help="give focus to the node with this name through AT-SPI")
-    parser.add_argument("--dump", action="store_true", help="print the whole tree")
-    parser.add_argument("--key", action="append", default=[], metavar="CHORD",
-                        help="deliver a chord such as Tab, shift+Tab, ctrl+Left or Enter; "
-                             "repeatable, and every chord is checked before the first is sent")
     parser.add_argument("--listen", type=float, default=0.0,
-                        help="seconds to keep printing events after everything else")
+                        help="seconds to keep printing events after the last step")
+    parser.set_defaults(steps=[])
+    steps = parser.add_argument_group(
+        "steps", "run in the order given; every --expect checks what the last --press, --focus or "
+                 "--key left")
+    steps.add_argument("--heading", action=StepAction, metavar="TEXT",
+                       help="print a heading line into the transcript")
+    steps.add_argument("--press", action=StepAction, metavar="NAME",
+                       help="perform the first action of the node with this name "
+                            "(or, failing an exact match, a name beginning with it)")
+    steps.add_argument("--focus", action=StepAction, metavar="NAME",
+                       help="give focus to the node with this name through AT-SPI")
+    steps.add_argument("--dump", action=StepAction, nargs=0, help="print the whole tree")
+    steps.add_argument("--key", action=StepAction, metavar="CHORD",
+                       help="deliver a chord such as Tab, shift+Tab, ctrl+Left, F6 or Enter")
+    steps.add_argument("--expect", action=StepAction, metavar="TEXT",
+                       help="fail unless the focused node's name contains TEXT")
+    steps.add_argument("--expect-not", action=StepAction, metavar="TEXT",
+                       help="fail if nothing is focused or the focused node's name contains TEXT")
+    steps.add_argument("--expect-node", action=StepAction, metavar="TEXT",
+                       help="fail unless some node, focused or not, has a name containing TEXT")
+    steps.add_argument("--expect-same-name", action=StepAction, nargs=0,
+                       help="fail unless the focused node's name is what it was before the step")
+    steps.add_argument("--expect-announcement", action=StepAction, metavar="TEXT",
+                       help="fail unless an object:announcement during the step contains TEXT")
     try:
         run(parser.parse_args())
     except ProbeError as error:

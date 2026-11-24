@@ -245,8 +245,10 @@ reachable*.
      ask only whether the key was pressed this frame; Delete removes the selected note when the roll *has
      focus*, not when it is hovered, and moves the cursor to the next note, else the previous, else
      to none — and an empty roll says it is empty;
-   - the roll gets a role and a fixed name ("Piano roll") — it is an anonymous `unknown` node
-     today — and takes both arrow axes with egui's focus-lock filter, without which an arrow key
+   - the roll gets a role and a name that begins "Piano roll" — it is an anonymous `unknown` node
+     today — and **takes focus when clicked**, which egui does only for text fields: without it a
+     pointer selection is something no key can act on;
+   - it takes both arrow axes with egui's focus-lock filter, without which an arrow key
      moves focus off it; Tab stays unfiltered;
    - **F6 and Shift+F6 move focus between the regions** — the toolbar, the side panel, the editor —
      because the roll is about sixty Tab stops into a flat tree of ninety ungrouped nodes, and a
@@ -255,7 +257,13 @@ reachable*.
    - D5's description for a note and for the transport, and their exposure by the two means step 1
      found on the bus: the roll's *description* carries the cursor's note (readable at any time,
      and its change is an event), each edit also goes to a separate polite live node (which emits
-     `object:announcement`), and the transport is read
+     `object:announcement`). **Heard by Jesse, 2026-11-24, Orca 49.4:** a change to the focused
+     roll's *name* is spoken on every key ("Piano roll, step 1", "Piano roll, step 2"); the
+     description's change and the live node's announcement, raised by the same key, were not heard.
+     So the cursor's note goes in the roll's name, after "Piano roll", and that is the mechanism;
+     whether the live node speaks when the name does *not* change in the same frame — the "no room"
+     and "already the last note" messages need exactly that — is the prototype's first check. The
+     transport is read
      **on demand** — one focusable, named readout giving state, tempo and position — never
      announced on repaint, and present at every window width. The tempo control gets its name.
    These chords avoid every native key under *The tree today*; D14's browser pass is W0-web's.
