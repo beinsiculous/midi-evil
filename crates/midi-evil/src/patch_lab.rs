@@ -1261,6 +1261,8 @@ fn show_lfo(ui: &mut Ui, lfo: &mut Lfo, index: usize, lfo_count: usize) {
                 ui.selectable_value(&mut lfo.waveform, LfoWaveform::SawUp, "Saw up");
                 ui.selectable_value(&mut lfo.waveform, LfoWaveform::Triangle, "Triangle");
                 ui.selectable_value(&mut lfo.waveform, LfoWaveform::Square, "Square");
+                ui.selectable_value(&mut lfo.waveform, LfoWaveform::RandomStep, "Random step");
+                ui.selectable_value(&mut lfo.waveform, LfoWaveform::RandomRamp, "Random ramp");
             });
     });
     ui.horizontal_wrapped(|ui| {
@@ -1283,6 +1285,14 @@ fn show_lfo(ui: &mut Ui, lfo: &mut Lfo, index: usize, lfo_count: usize) {
             lfo.beats_per_cycle.is_none(),
             DragValue::new(&mut lfo.rate_hz).range(0.0..=100.0),
         );
+        ui.add(
+            DragValue::new(&mut lfo.fade_in_seconds)
+                .range(0.0..=60.0)
+                .speed(0.05)
+                .prefix("Fade-in ")
+                .suffix(" s"),
+        )
+        .on_hover_text("Fade this LFO in after each note starts; zero is immediate");
         match lfo.destination {
             LfoDestination::Pitch => {
                 ui.label("Depth cents");

@@ -505,6 +505,36 @@ mod tests {
     }
 
     #[test]
+    fn random_and_fading_lfos_match_offline_at_multiple_pitches() {
+        for waveform in [
+            crate::LfoWaveform::RandomStep,
+            crate::LfoWaveform::RandomRamp,
+        ] {
+            for pitch in [48, 60, 72] {
+                let patch = Patch {
+                    duration_seconds: 0.2,
+                    lfo: Some(crate::Lfo {
+                        rate_hz: 11.0,
+                        waveform,
+                        destination: crate::LfoDestination::Amplitude,
+                        amplitude_depth: 0.75,
+                        fade_in_seconds: 0.1,
+                        ..crate::Lfo::default()
+                    }),
+                    envelope: crate::Envelope {
+                        attack_seconds: 0.0,
+                        decay_seconds: 0.0,
+                        sustain_level: 1.0,
+                        release_seconds: 0.005,
+                    },
+                    ..Patch::default()
+                };
+                assert_offline_matches_live(patch, &[test_note(pitch, 0.0, 0.2)]);
+            }
+        }
+    }
+
+    #[test]
     fn all_basic_waveforms_match_offline_at_multiple_pitches_and_sync_modes() {
         for waveform in Waveform::BASIC {
             for synced in [false, true] {

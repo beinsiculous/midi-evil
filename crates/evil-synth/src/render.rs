@@ -694,12 +694,14 @@ pub(crate) struct Modulation {
 
 pub(crate) struct ModulationState {
     lfo_phases: Vec<f32>,
+    lfo_cycles: Vec<u64>,
 }
 
 impl ModulationState {
     pub(crate) fn new(patch: &Patch) -> Self {
         Self {
             lfo_phases: vec![0.0; patch.lfo_count()],
+            lfo_cycles: vec![0; patch.lfo_count()],
         }
     }
 
@@ -718,7 +720,13 @@ impl ModulationState {
             if lfo.destination == LfoDestination::LfoRate
                 && let Some(target) = lfo.target_lfo
             {
-                let value = lfo_value(lfo, self.lfo_phases[index]);
+                let value = modulated_lfo_value(
+                    lfo,
+                    self.lfo_phases[index],
+                    self.lfo_cycles[index],
+                    patch.seed,
+                    index,
+                ) * lfo_fade_in(lfo, time);
                 rate_multipliers[target] += depth * lfo.lfo_rate_depth * value;
             }
         }
@@ -743,11 +751,20 @@ impl ModulationState {
                 bandlimited_amplitude_lfo_value(
                     lfo,
                     self.lfo_phases[index],
+                    self.lfo_cycles[index],
+                    patch.seed,
+                    index,
                     phase_step * (lfo.amplitude_transition_seconds * sample_rate as f32),
                 )
             } else {
-                lfo_value(lfo, self.lfo_phases[index])
-            };
+                modulated_lfo_value(
+                    lfo,
+                    self.lfo_phases[index],
+                    self.lfo_cycles[index],
+                    patch.seed,
+                    index,
+                )
+            } * lfo_fade_in(lfo, time);
             match lfo.destination {
                 LfoDestination::Pitch => modulation.pitch_cents += lfo.depth_cents * value,
                 LfoDestination::PulseWidth => {
@@ -770,7 +787,10 @@ impl ModulationState {
                 }
                 LfoDestination::LfoRate => {}
             }
-            self.lfo_phases[index] = (self.lfo_phases[index] + phase_step).fract();
+            let next_phase = self.lfo_phases[index] + phase_step;
+            self.lfo_cycles[index] =
+                self.lfo_cycles[index].wrapping_add(next_phase.floor().max(0.0) as u64);
+            self.lfo_phases[index] = next_phase.fract();
         }
         modulation.pitch_cents *= depth;
         modulation.pulse_width *= depth;
@@ -783,7 +803,7 @@ impl ModulationState {
     }
 }
 
-fn lfo_value(lfo: &Lfo, phase: f32) -> f32 {
+fn modulated_lfo_value(lfo: &Lfo, phase: f32, cycle: u64, seed: u32, index: usize) -> f32 {
     match lfo.waveform {
         LfoWaveform::Sine => (2.0 * std::f32::consts::PI * phase).sin(),
         LfoWaveform::SawDown => 1.0 - 2.0 * phase,
@@ -796,11 +816,42 @@ fn lfo_value(lfo: &Lfo, phase: f32) -> f32 {
                 -1.0
             }
         }
+        LfoWaveform::RandomStep => random_lfo_value(seed, index, cycle),
+        LfoWaveform::RandomRamp => {
+            let current = random_lfo_value(seed, index, cycle);
+            let next = random_lfo_value(seed, index, cycle.wrapping_add(1));
+            current + (next - current) * phase
+        }
     }
 }
 
-fn bandlimited_amplitude_lfo_value(lfo: &Lfo, phase: f32, phase_step: f32) -> f32 {
-    let value = lfo_value(lfo, phase);
+fn random_lfo_value(seed: u32, index: usize, cycle: u64) -> f32 {
+    let mut value = u64::from(seed)
+        ^ (index as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+        ^ cycle.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^= value >> 31;
+    (value >> 40) as f32 / 8_388_607.5 - 1.0
+}
+
+fn lfo_fade_in(lfo: &Lfo, time: f32) -> f32 {
+    if lfo.fade_in_seconds > 0.0 {
+        (time / lfo.fade_in_seconds).clamp(0.0, 1.0)
+    } else {
+        1.0
+    }
+}
+
+fn bandlimited_amplitude_lfo_value(
+    lfo: &Lfo,
+    phase: f32,
+    cycle: u64,
+    seed: u32,
+    index: usize,
+    phase_step: f32,
+) -> f32 {
+    let value = modulated_lfo_value(lfo, phase, cycle, seed, index);
     match lfo.waveform {
         LfoWaveform::SawDown => value + crate::oscillator::poly_blep(phase, phase_step),
         LfoWaveform::SawUp => value - crate::oscillator::poly_blep(phase, phase_step),
@@ -808,7 +859,10 @@ fn bandlimited_amplitude_lfo_value(lfo: &Lfo, phase: f32, phase_step: f32) -> f3
             value + crate::oscillator::poly_blep(phase, phase_step)
                 - crate::oscillator::poly_blep((phase + 0.5).fract(), phase_step)
         }
-        LfoWaveform::Sine | LfoWaveform::Triangle => value,
+        LfoWaveform::Sine
+        | LfoWaveform::Triangle
+        | LfoWaveform::RandomStep
+        | LfoWaveform::RandomRamp => value,
     }
 }
 
@@ -950,11 +1004,11 @@ mod tests {
             ..lfo.clone()
         });
         let phase_step = lfo.rate_hz / 48_000.0 * 2.0;
-        let corrected = bandlimited_amplitude_lfo_value(&lfo, 0.0, phase_step);
+        let corrected = bandlimited_amplitude_lfo_value(&lfo, 0.0, 0, patch.seed, 0, phase_step);
         assert!(corrected.abs() < 0.000_001);
         assert_eq!(
             corrected,
-            bandlimited_amplitude_lfo_value(&lfo, 0.0, phase_step)
+            bandlimited_amplitude_lfo_value(&lfo, 0.0, 0, patch.seed, 0, phase_step)
         );
         let mut smoothed_state = ModulationState::new(&patch);
         let first = smoothed_state.next(&patch, 48_000, 0.0, 1.0, 1.0, 2.0);
@@ -962,6 +1016,101 @@ mod tests {
         let repeated = repeated_state.next(&patch, 48_000, 0.0, 1.0, 1.0, 2.0);
         assert_eq!(first.amplitude, repeated.amplitude);
         assert!(first.amplitude.abs() < 0.000_001);
+    }
+
+    #[test]
+    fn lfo_fade_in_scales_modulation_from_note_on() {
+        let patch = Patch {
+            lfo: Some(Lfo {
+                waveform: LfoWaveform::SawDown,
+                amplitude_depth: 0.8,
+                destination: LfoDestination::Amplitude,
+                fade_in_seconds: 0.5,
+                ..Lfo::default()
+            }),
+            ..Patch::default()
+        };
+        for (time, expected) in [(0.0, 0.0), (0.25, 0.4), (0.5, 0.8), (2.0, 0.8)] {
+            let mut state = ModulationState::new(&patch);
+            let modulation = state.next(&patch, 48_000, time, 1.0, 1.0, 2.0);
+            assert_eq!(modulation.amplitude, expected);
+        }
+        let immediate = Patch {
+            lfo: Some(Lfo {
+                fade_in_seconds: 0.0,
+                ..patch.lfo.clone().unwrap()
+            }),
+            ..patch
+        };
+        let mut state = ModulationState::new(&immediate);
+        assert_eq!(
+            state.next(&immediate, 48_000, 0.0, 1.0, 1.0, 2.0).amplitude,
+            0.8
+        );
+    }
+
+    #[test]
+    fn random_lfos_hold_or_interpolate_seeded_cycle_values() {
+        let patch = Patch {
+            seed: 42,
+            lfo: Some(Lfo {
+                rate_hz: 1.0,
+                waveform: LfoWaveform::RandomStep,
+                destination: LfoDestination::Amplitude,
+                amplitude_depth: 1.0,
+                ..Lfo::default()
+            }),
+            ..Patch::default()
+        };
+        let stepped: Vec<_> = {
+            let mut state = ModulationState::new(&patch);
+            (0..5)
+                .map(|frame| {
+                    state
+                        .next(&patch, 4, frame as f32 / 4.0, 1.0, 1.0, 1.0)
+                        .amplitude
+                })
+                .collect()
+        };
+        assert!(stepped[..4].iter().all(|value| *value == stepped[0]));
+        assert_ne!(stepped[0], stepped[4]);
+
+        let ramped = Patch {
+            lfo: Some(Lfo {
+                waveform: LfoWaveform::RandomRamp,
+                ..patch.lfo.clone().unwrap()
+            }),
+            ..patch.clone()
+        };
+        let ramped: Vec<_> = {
+            let mut state = ModulationState::new(&ramped);
+            (0..5)
+                .map(|frame| {
+                    state
+                        .next(&ramped, 4, frame as f32 / 4.0, 1.0, 1.0, 1.0)
+                        .amplitude
+                })
+                .collect()
+        };
+        assert_eq!(ramped[2], (ramped[0] + ramped[4]) * 0.5);
+        assert!(ramped.windows(2).any(|pair| pair[0] != pair[1]));
+
+        let reseeded = Patch {
+            seed: patch.seed + 1,
+            ..patch.clone()
+        };
+        let mut original_state = ModulationState::new(&patch);
+        let mut changed_state = ModulationState::new(&reseeded);
+        let mut repeated_state = ModulationState::new(&reseeded);
+        let original = original_state.next(&patch, 4, 0.0, 1.0, 1.0, 1.0);
+        let changed = changed_state.next(&reseeded, 4, 0.0, 1.0, 1.0, 1.0);
+        assert_ne!(original.amplitude, changed.amplitude);
+        assert_eq!(
+            changed.amplitude,
+            repeated_state
+                .next(&reseeded, 4, 0.0, 1.0, 1.0, 1.0)
+                .amplitude
+        );
     }
 
     #[test]

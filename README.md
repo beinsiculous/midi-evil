@@ -211,7 +211,7 @@ Use **Open Evil Synth** on a track or the **Synth** tab to open the instrument e
 
 - **Voice & Filter:** 36 basic waveforms, frequency sweeps, detune, pulse width, mix/sync/ring modes, poly/mono/legato voices, unison, velocity response/filter tracking, glide/accent, modal partials with pitch-dependent gain and one-shot decay, independent amplitude/filter ADSRs, and LP/BP/HP filters.
 - **Samples:** WAV/AIFF import, playback bounds, loops, key zones, and keyboard slicing. The Samples toolbar records the microphone or resamples the transport section into Osc A.
-- **Modulation:** two auxiliary envelopes with signed routes, plus up to eight LFO lanes with free or tempo-synced rates, selectable modulation targets, and amplitude-transition smoothing.
+- **Modulation:** two auxiliary envelopes with signed routes, plus up to eight LFO lanes with hertz or tempo-synced rates, sine/square/saw/triangle/random-step/random-ramp waveforms, per-note fade-in, selectable modulation targets, and amplitude-transition smoothing. Random lanes use the patch seed and match exactly between offline rendering and live playback; legacy patches default to immediate fade-in.
 - **Insert FX:** waveshaper followed by mono, stereo-cross, or ping-pong delay. The piano-roll automation controller menu names their six CC lanes (20–25).
 
 A three-octave keyboard stays at the bottom while the controls scroll. Play by mouse, computer keys, or connected MIDI; adjust octave, velocity, and sustain, or use **All notes off / Escape**. Voice edits apply to the next note, and filter/effect edits update live. The separate **Keyboard** page shares the same draft and adds XY pads and a pitch wheel.

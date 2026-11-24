@@ -393,6 +393,8 @@ impl Patch {
                     .beats_per_cycle
                     .is_some_and(|beats| !beats.is_finite() || !(0.001..=64.0).contains(&beats))
                 || !lfo.depth_cents.is_finite()
+                || !lfo.fade_in_seconds.is_finite()
+                || !(0.0..=MAX_DURATION_SECONDS).contains(&lfo.fade_in_seconds)
                 || !lfo.pulse_width_depth.is_finite()
                 || !(-0.99..=0.99).contains(&lfo.pulse_width_depth)
                 || !lfo.sync_ratio_depth.is_finite()
@@ -574,6 +576,8 @@ mod tests {
                 rate_hz: 6.0,
                 beats_per_cycle: Some(0.25),
                 depth_cents: 25.0,
+                waveform: crate::LfoWaveform::RandomRamp,
+                fade_in_seconds: 1.25,
                 ..Lfo::default()
             }),
             modulation: vec![Lfo {
@@ -612,6 +616,22 @@ mod tests {
         assert_eq!(patch.waveshaper, None);
         assert!(!patch.to_json_pretty().unwrap().contains("aux_envelope_2"));
         assert_eq!(patch.oscillators[0].sample, None);
+    }
+
+    #[test]
+    fn legacy_lfo_json_defaults_to_immediate_and_rejects_invalid_fade_in() {
+        let patch = Patch::from_json(r#"{"lfo": {"depth_cents": 20.0}}"#).unwrap();
+        assert_eq!(patch.lfo.unwrap().fade_in_seconds, 0.0);
+        for fade_in_seconds in [-0.1, 60.1, f32::NAN] {
+            let patch = Patch {
+                lfo: Some(Lfo {
+                    fade_in_seconds,
+                    ..Lfo::default()
+                }),
+                ..Patch::default()
+            };
+            assert!(patch.validate().is_err());
+        }
     }
 
     #[test]

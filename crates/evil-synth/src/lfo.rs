@@ -23,6 +23,8 @@ pub enum LfoWaveform {
     SawUp,
     Triangle,
     Square,
+    RandomStep,
+    RandomRamp,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -34,6 +36,8 @@ pub struct Lfo {
     pub depth_cents: f32,
     pub destination: LfoDestination,
     pub waveform: LfoWaveform,
+    /// Seconds over which this lane fades in after note-on; zero is immediate.
+    pub fade_in_seconds: f32,
     pub pulse_width_depth: f32,
     pub sync_ratio_depth: f32,
     /// Filter cutoff modulation in octaves.
@@ -59,6 +63,7 @@ impl Default for Lfo {
             depth_cents: 0.0,
             destination: LfoDestination::Pitch,
             waveform: LfoWaveform::Sine,
+            fade_in_seconds: 0.0,
             pulse_width_depth: 0.5,
             sync_ratio_depth: 0.5,
             filter_cutoff_depth: 1.0,
