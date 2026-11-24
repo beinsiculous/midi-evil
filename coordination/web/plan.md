@@ -82,7 +82,11 @@ through review after W0's result. Settling this plan authorises W0 and nothing a
   discards the update on the web (`src/web/app_runner.rs:403`, checked 2026-11-24).
 
 - **D8 — The eframe version does not move during this effort** unless a batch's gate cannot be met
-  on 0.35; a bump is its own batch with the native suite as its gate.
+  on 0.35; a bump is its own batch, and its gate is the native suite, the native gate **and the web
+  gate in both browsers** — W0-web's until W-A2's production gate exists, that one after, since the
+  spike's harness goes when W6 ships — the web mechanism leans on eframe's private internals (its hidden text
+  entry, its Tab handling, when it takes the frame's output), and a bump that breaks them must not
+  be found out at W-A2.
 
 - **D9 — Every batch re-verifies its own section against the tree before it starts**, as its own
   commit. Line numbers below are as of 2026-11-24, `jesse` at `252990b`.
@@ -141,7 +145,10 @@ through review after W0's result. Settling this plan authorises W0 and nothing a
   keyboard model is therefore designed so that **every command is reachable without a
   browser-owned chord** — through the menus and through chords the browser leaves alone — and the
   help text is generated per surface, so the web page never advertises a chord that opens a
-  browser window. Which chords a browser keeps cannot be learned from Playwright, whose synthetic keys go
+  browser window. **A chord a browser keeps is not bound at all in
+  the web build** — compiled out, with a row asserting it does nothing — and the path that
+  replaces it is named: Alt+Left/Right cycles a track's sound natively and is the browser's Back.
+  Which chords a browser keeps cannot be learned from Playwright, whose synthetic keys go
   to the page past the browser's own handling: those rows of the table are Jesse's observation in a
   real browser, each row marked with how it was obtained. W-A2 owns the web binding set.
 
@@ -357,42 +364,274 @@ site's `/midi-evil/` sentence is corrected. W-A1 is then Jesse's separate call.
 
 ## W-A1 — the keyboard model, natively (`#8`, first half)
 
-On W0's mechanism and its closing keyboard model. Re-detailed after W0's result (D9); the shape:
+**Status: SETTLED by Jesse, 2026-11-24, re-detailed from `coordination/web/w0-result.md`.** Line
+numbers are `jesse` at `fc2713a`. The result's two sections of requirements — what the spike's
+review found, and what the result's own review added — are this section's inputs; where one becomes
+a gate row it is named **R-n** below so nothing is carried as prose only.
 
-- D5's description functions in one module, unit-tested as strings, the shared-pattern case
-  included;
-- the roll's cursor and edits as W0 left them, rewritten for production, every edit a tested
-  function of `(sequence, cursor, key)` with W0's edges as cases — the pointer path and the key path
-  call the same edits;
-- the arranger on the same cursor shape (parts in time order per track, tracks by Up/Down);
-- the instrument list and the transport readout named and readable; the regions grouped and named,
-  with F6 between them;
-- every control W0's result listed as unnamed **in the modules this batch owns** gets a name; the
-  rest of that list is carried, by module, into D12's inventory;
-- **Delete has one owner, the focused editor.** Moving only the roll's Delete to focus would leave
-  the automation lane and the mixer lane deleting on hover from the same keypress — one key, two
-  deletions. All three sites move to focus in this batch (`piano_roll.rs:373`, `automation.rs:396`,
-  `mixer_automation.rs:286`), though the two lanes stay held back from the web;
-- the cursor's identity rule (D6), with select → Clean overlaps → edit and select → undo → edit as
-  integration tests;
-- every command reachable from the menus by keyboard (D14), and the keyboard notes in the
-  application's own help, generated per surface.
+Native only: nothing here compiles for `wasm32` or touches the site. Three batches, one out at a
+time, each built by Opus from a handoff, reviewed (`deepseek` for `kimi` while kimi has no
+credential on bob-ross, `codex` for the screen, `gemini` for the probe), and committed before the
+next is handed off. Each batch's gate is the mechanical transcript **and** a sitting (D4): the
+probe's rows run under XWayland on a private bus and say so; Jesse's sitting is Wayland-native and
+is the only evidence from the configuration people run.
 
-**Files:** `piano_roll.rs`, `arranger.rs`, `instruments.rs`, `app/chrome.rs`, `app.rs`, the
-description and transport-readout modules, and the Delete line in `automation.rs` and
-`mixer_automation.rs`.
+### The design, which all three batches share
 
-**Gate:** natively, keyboard-only and with Orca, both kinds of evidence, the probe extended to
-each: the record's nine-step sequence; and one sequence per surface D12 shows that the nine steps do
-not reach — *Song:* move between tracks and parts, hear a part's placement, move a part, open it in
-the roll; *the track panel:* rename, mute and re-assign a track's instrument; *files:* open an
-existing project and hear that it loaded. A surface whose sequence does not pass is moved to D12's
-held-back list before the batch reports done; the native suite, clippy and fmt; `compat/` verified
-on Iroh, since this batch does not touch the shared crates but the rule is the repository's.
+- **One module says things.** `speech.rs` (new): `describe_note`, `describe_part`, `describe_track`,
+  `describe_transport` — pure functions of the model and a stated origin (D5) — and nothing else.
+  Unit-tested as strings, the shared-pattern and 6/8 cases included.
+- **One module speaks them.** `announcer.rs` (new) owns the two channels W0 proved and the rule
+  between them, so no widget hand-rolls it:
+  - a focused widget's **name** is state: what the cursor is on *now*, and nothing else. **An
+    outcome never goes in a name** (R-5);
+  - an **outcome** — "Removed.", "Nothing after this one.", "Added." — goes to the polite live node.
+    When an outcome and a name change come from one key, the outcome goes out in that frame and the
+    name's change in the next, **with a repaint requested**, since in egui's reactive mode the next
+    frame otherwise may not come (R-7);
+  - **a held key says where it came to rest, once.** A name that changes on every repeat is twenty
+    interrupted utterances, or a queue that is still reading an earlier note when the person
+    presses Delete on a later one. While a key is repeating, the focused name is not republished;
+    when the hold ends, the resting item's name is published once. The visible status line keeps
+    up throughout. An outcome identical to the one just announced within the same hold is not
+    repeated. (W0's sitting did not judge a held key; W-A1a's does, and may overturn this for a
+    bounded rate instead.) A hold ends on the key's release, **on the widget losing focus, or on any key event
+    that is not a repeat** — a release that happens in another window never arrives (R-7).
+- **One shape for a custom editor.** A custom-painted editor is one focusable widget with a role, a
+  name that begins with what it is, a cursor, a focus-lock filter on both arrow axes with handled
+  keys **consumed** (R-2), focus on click, and Tab never taken. The roll and the arranger are both
+  this; the edits are pure functions of `(model, cursor, key)` returning the new cursor and an
+  outcome, and the pointer path calls the same edits.
+- **A cursor is an identity, not an index — and identity is kept by whoever changes the list, not
+  guessed afterwards.** Notes and parts have no ids in the model, and two rounds of review showed
+  that no comparison of the list before and after can tell a note from its twin, an edit in place
+  from a different track arriving at the same index, or a moved note undone. So every way the
+  edited sequence can change is one of five kinds, and each says what happened to the cursor:
+  1. **The editor's own edits** — a key, a toolbar button, a pointer gesture, the inspector's
+     fields — are functions that return the new cursor. No reconciliation.
+  2. **Undo and redo restore the cursor with the project.** `EditorHistory` (`history.rs`) keeps
+     whole `Project` snapshots; each gains the editor's selection as it was — view, track, part,
+     cursor — and restoring a snapshot restores that selection. The selection stored with a
+     snapshot is the one captured **at the start of the frame, beside `previous_project`**
+     (`finish_project_frame`, `app.rs:854-875`) — the selection that belonged to that project, not
+     the one the edit left behind; the state being left is stored with *its* selection, so redo
+     returns to it. Undo during a take goes the same way: the take's `recording_snapshot`
+     (`app.rs:259-278`) carries the selection captured when the take began. Undoing a move puts the cursor
+     back on the note where it was; undoing the insertion of a twin puts it where it was before
+     the twin existed (R-6, R-9); undoing a duplicated track cannot leave the cursor on whichever
+     track now has that index (R-15).
+  3. **A change of what is being edited** — another track, part or pattern selected, a document
+     opened or replaced, an arranger command that changes which sequence the roll shows — resets
+     the cursor to none. The cursor carries its context (document generation, track, part,
+     pattern) and is never compared across a different one.
+  4. **A whole-sequence operation the editor starts** — Quantize, the transposes and Clean overlaps
+     with no selection, Paste — keeps the count or grows it, and may re-sort. The cursor follows
+     its note only when the note is unique by value before and occurs once after; failing that,
+     and only when the count is unchanged, when it is unique by start and pitch on both sides
+     (Clean overlaps shortens the notes it re-sorts); otherwise it is cleared.
+  5. **Anything else** — a take adding notes under the editor — is treated as kind 4.
+  Whenever the cursor is cleared by anything but the person's own selection, the roll says "The
+  selection was reset." It never silently points at a different note.
+  **The toolbar's buttons that edit one note** — Earlier, Later, Shorter, Longer, Delete — act on
+  the cursor and are disabled without one; they do **not** inherit the older buttons' convention
+  that no selection means every note, which would turn a second press into an edit of the whole
+  track.
+- **Keys are dispatched once, in the order they arrived.** Today `StudioApp::ui` runs the global
+  `shortcuts()` before any editor is drawn, so Delete then Ctrl+Z arriving in one frame is undone
+  first and deleted second: the wrong result, from fast hands or one slow frame. Key events are
+  walked once per frame in order, each going to the focused editor if it takes that chord and to
+  the global commands if not, each consumed by whoever handles it. Counting presses per key cannot
+  do this; W0 already found it cannot tell Right from Ctrl+Right.
+- **Escape clears the cursor, and says what that means.** The older toolbar commands — Quantize,
+  the transposes, Copy — act on the selected note, or on every note when none is selected, and a
+  keyboard that can only ever select makes the second meaning unreachable. With a cursor, Escape
+  clears it and the roll says "No note selected; Quantize, transpose and Copy apply to all notes";
+  without one, Escape is egui's own.
+- **Commands refuse what recording forbids.** The arranger's pointer controls already stop
+  structural edits during a take (`allow_structural_edits`, `app.rs:1495`, `arranger.rs:22`),
+  because the recorder holds its target by index. That check moves to the shared command boundary,
+  so a key or a button cannot do what a click may not; a refused command is announced.
+- **Regions.** Toolbar, side panel, editor: each a named group in the accessibility tree, so the
+  ninety flat nodes become three sets, and **F6 / Shift+F6** move between them. A widget's region
+  is known from the panel it was built in, never from its rectangle (R-3), and a region's stop
+  that no longer exists falls back to that region's first focusable widget (R-8).
+- **Delete has one owner: the focused editor.** `piano_roll.rs:373`, `automation.rs:394` and
+  `mixer_automation.rs:284` all gate Delete on *hover* today; all three move to focus, so one
+  keypress can never delete in two places (R-4). Moving the predicate alone would break the lanes:
+  they are `click_and_drag` painters that never take focus, so a pointer user who clicks a point
+  and presses Delete would delete nothing — or a note, if the roll still held focus. Both lanes
+  therefore **take focus when a point is clicked or dragged** and consume the Delete they handle.
+  That much of the custom-editor shape, and no more: their keyboard *editing* stays held back.
+- **Every edit has a command that is not a chord.** D14 says every command must be reachable
+  without a chord a browser may keep, and Ctrl+Left/Right is such a chord. The roll's toolbar
+  already has Quantize, the transposes, Clean overlaps, Copy and Paste; it gains Earlier, Later,
+  Shorter, Longer, Add and Delete, each calling the same edit as its chord.
 
-**Leaves out:** anything `wasm32`; the Mixer, Synth, Keyboard and Pads views and the Automation
-panel — beyond the Delete line above — each of which is held back from the web build under D12 and
-filed as its own issue, in the milestone, before the batch reports done.
+### W-A1a — the roll, the announcer, the regions
+
+**Files:** `speech.rs`, `announcer.rs`, `regions.rs` (new); `piano_roll.rs` (687 lines — the cursor
+and the edits go to a new `piano_roll/cursor.rs` and `piano_roll/edits.rs`, so no file passes 600);
+`app.rs` (1,754 lines: only the F6 handling, the region wiring and the `mod` lines; anything more
+is moved out, not added); `app/chrome.rs` for the panels' groups; `automation.rs`,
+`mixer_automation.rs` for the Delete line; `coordination/web/probes/atspi-probe.py`,
+`native-gate.sh`, `README.md`.
+
+**Builds:** the roll as W0 left its keyboard model (the table in the result), on the design above;
+the key help as the roll's description, complete — Home, End and the octave chords included, and
+"Command" where the platform's command key is not Control (R-10); an edit in a shared pattern says
+its reach; a way to hear the transport's position **from inside the roll** without leaving it (the
+chord is the batch's to propose, checked against *The tree today*'s taken keys, and reported).
+
+**The probe refuses to be dangerous, and so does its launcher.** `run-probe.sh` has already set
+the screen-reader flag, started a registry and launched the application before Python runs, so a
+check only in the probe would refuse after the damage. The launcher's inner entry verifies, before
+its first bus call or child process, that its session bus is the one `dbus-run-session` gave it,
+that its runtime directory is the private one, and that the settings backend is the in-memory one;
+the probe checks the same again before it sends a key. The two incidents of W0 were a launcher
+whose environment had slipped. A gate row invokes the inner entry with the desktop's environment
+and asserts the refusal — and that the desktop's flag and its settings file were not touched.
+
+**Gate rows** (each in `native-gate.sh`, each also a unit or integration test where it can be):
+
+| row | what it shows |
+|---|---|
+| W0's sequence and its five edges, less the transport | carried over, with the outcomes now in announcements and absent from names; the transport's step joins in W-A1b, which re-runs the whole sequence |
+| R-1 | two identical notes; select one; change its velocity in the inspector over several frames — the selection never moves to the twin |
+| R-2 | F6 to the roll and an arrow **in the very next frame**: the cursor moves and focus stays on the roll |
+| R-3 | a bass part (notes around pitch 36): F6 from the roll reaches the toolbar, Shift+F6 returns |
+| R-4 | roll focused, pointer over the automation lane with a point selected, Delete: the note goes and the point stays. And the reverse, for each lane: click a point, Delete: that point goes and no note does |
+| R-5 | Delete, Tab, Shift+Tab: the roll's name is the cursor's note with no "deleted" in it |
+| R-6 | select the last note, undo the edit that added it: "The selection was reset." is announced |
+| R-7 | Right held across twenty notes: **one** name change, for the resting note, after the release, and none during the hold; Up held at pitch 127 announces "Cannot go higher." once per hold, and again after a release; a held name change is never left unrepainted. The probe sends repeats and then an explicit release |
+| R-8 | delete the last track from the Notes view: F6's editor stop is the "+ Add a track" button |
+| R-9 | two identical notes; select the first; add a twin after it (the cursor moves to the twin); undo: the cursor is back on the first, and Delete removes that one |
+| R-15 | two tracks with one different note each; duplicate the first, select the copy's note, undo the duplication: the cursor is not on the second track's note, and Delete removes nothing of it |
+| R-16 | cursor on the first of three notes; Ctrl+Right past the second; Ctrl+Z: the cursor is on the moved-back note and its name says so |
+| R-17 | the Clean overlaps edge, fixture stated: the person moves C 5 onto B 4's start with Ctrl+Right — the editor's own edit — and then presses Clean overlaps, which re-sorts the two and changes neither: C 5 is unique by value before and after, and the cursor follows it. And a same-pitch overlap that Clean shortens, its start unchanged: the cursor follows by start and pitch |
+| R-18 | Delete then Ctrl+Z delivered in one frame leaves the note present; Ctrl+Z then Delete in one frame deletes; Right then Delete in one frame deletes the note moved to |
+| R-19 | navigate to a note, Escape: the cursor is cleared and the announcement says operations apply to all notes; Quantize then changes every note; Escape again leaves focus as egui does |
+| R-20 | start a take with the cursor on a note, Ctrl+Z during it: the cursor is where it was when the take began, or the roll says the selection was reset |
+| R-10 | the roll's description names every chord in the model |
+| R-14 | with the roll focused, every edit made from its toolbar button alone — Earlier, Later, Shorter, Longer, Add, Delete — each announced as its chord is; Later pressed twice across a neighbouring note moves the same note twice; with no cursor the one-note buttons are disabled |
+
+**Sitting:** the roll's sequence; a held Right and a held Up at the top; R-5 by ear.
+
+**Leaves out:** the arranger, the transport's own readout, names for controls outside the roll.
+
+### W-A1b — the transport, and a name for everything on a shown surface
+
+**Files:** `transport_readout.rs` (new); `app/chrome.rs` (744 lines — the toolbar's transport block
+moves into the new module, which brings it under 600); `app/sounds.rs`; `midi_input.rs`;
+`instruments.rs`; the probe and gate.
+
+**Builds:**
+
+- **The transport readout**: one focusable, named status in the toolbar, present at every window
+  width, giving state, tempo, meter and position, the position in bars and beats as well as time.
+  It must be true whenever it is read and silent between reads (R-11), and **which mechanism gives
+  both is not known**: W0 heard a focused node's name change spoken on every key, on the roll's
+  role, and never tried a name that changes on a timer. So the batch opens with a proof, heard by
+  Jesse before anything is built on it — a focused status node whose name changes once a second:
+  - *if Orca stays silent*, the name is simply kept current, and a screen reader's own
+    read-current-object is always right;
+  - *if Orca speaks each change*, the name stays fixed ("Transport"), the live reading is the
+    node's description and numeric value kept current, and an explicit read — arriving, **Enter**
+    on it, the roll's chord — announces it. Never Space: Space is the transport's own play and
+    stop everywhere (`app.rs:429`), so a read gesture on Space would stop the song to tell you
+    where it was. The proof then also says what Orca's
+    read-current-object returns for that node, and if it is stale the readout's own help names the
+    gesture that is not.
+  The result of the proof is written into this section before the rest of the batch is handed off.
+- **A name for every control on the Song and Notes views, the toolbar and the side panel** — the
+  fifteen anonymous nodes of W0's baseline and any since. By module — `app/chrome.rs`: About, Save,
+  the project name, tempo, meter, START BAR, LOOP END, the track name, the note inspector's four
+  values; `app/sounds.rs`: SOUND; `midi_input.rs`: the MIDI port. Each `DragValue` and `TextEdit`
+  gets its label **as its accessible label**, not as a neighbouring text node, because on the web
+  that label is what names eframe's text entry (W0-web). egui's own scroll bars and the panel's
+  resize handle are named, or taken out of the Tab order and the tree (R-12). If egui 0.35 allows
+  neither, the batch stops there and reports it: a silent Tab stop on a shown surface is Jesse's
+  ruling, as a written waiver naming each stop, not the batch's to accept. The window's title is
+  exposed.
+- **The instrument list** readable and operable: which sound a track has, how many there are,
+  Alt+Left/Right's cycling announced by the announcer rather than by a status label nobody hears.
+- **A screen reader started after the application** (R-13): the batch finds out whether the tree
+  appears when `ScreenReaderEnabled` turns true after launch — the probe can flip it on its private
+  bus. If it does, a gate row shows it. If it does not, and the remedy is inside eframe, which D8
+  freezes, the application says what to do where a person who cannot see it will still find it —
+  the README and the site's page, since a silent window cannot speak — and the row asserts the
+  tree stays absent, so a later eframe that fixes it is noticed.
+
+**Gate rows:** W0's whole sequence, the transport's step now included. R-21 — with the readout
+focused: change the tempo, read; Ctrl+N, read: each reading is the new project's, with no move of
+focus between. R-11 — read the transport
+stopped (Enter), press Space, wait, read again with Enter without moving focus: it says playing and
+a later position, and the song is still playing; Space; read again: stopped; and **between the reads, with focus resting on it while it plays, no
+announcement and no spoken name change** for five seconds. (The probe's private
+session has no audio device to open; the row uses the application's existing null-device path or a
+clock stub the batch names — playback's *sound* is not what the row is about.) R-12 — a tree dump
+of each shown view with **no focusable node unnamed**, asserted by the probe, not read by eye.
+R-13 — the application started with the flag off, the flag turned on, the tree present.
+
+**Sitting:** the transport read stopped and playing; Tab through the toolbar and the side panel
+hearing a name at every stop; a tempo typed and committed.
+
+**Leaves out:** the Mixer, Synth, Keyboard and Pads views and the Automation panel, beyond the
+Delete line — held back from the web build under D12, each its own issue in the milestone, filed
+by the planner before W-A1 reports done.
+
+### W-A1c — the arranger, the files, and the nine steps
+
+**Files:** `arranger.rs` (536 lines — the cursor and edits to `arranger/cursor.rs`); `app.rs` and
+`app/chrome.rs` for the file commands' announcements and the help; the probe and gate.
+
+**Builds:**
+
+- **The arranger as a custom editor** on the shared shape: one focusable widget named "Song", a
+  cursor over (track, part) — Up/Down between tracks, Left/Right between a track's parts in time
+  order, Home/End — whose name says the track, its sound, the part's pattern, its placement in song
+  bars and how many parts share the pattern; Ctrl+Left/Right move the part by a bar; Enter opens it
+  in the roll and moves focus there; Delete removes the part. A track with a unique timeline says
+  so. The ruler's click-to-place-the-playhead (`arranger.rs:114-135`) gets a key path.
+- **The track panel** by keyboard: add a synth or a drum track, rename, mute, choose its sound —
+  each with an announced outcome.
+- **The file commands**: New, Open, Save and Save As reachable from the menu by keyboard, each
+  announcing what happened ("Saved song.evil", "Opened …, 4 tracks", "Discarded" or not). The
+  native dialogs are the desktop's own.
+- **An inventory, not a sample.** A surface passing one sequence does not pass its other controls:
+  the arranger alone has Unique timeline, Loop part, Make unique and Merge to timeline, whose
+  outcomes go to a status line nobody hears. The batch lists **every control, menu item, window
+  and toggle reachable on the shown surfaces** — the Song and Notes views, the toolbar, the side
+  panel, the Project menu, the About window, the sound library — from a tree dump of each, not
+  from `workspace::View`, which cannot see a window, a menu or the Automation toggle. Each line
+  ends one of three ways: it has an announced outcome and a gate row; it opens a held-back surface
+  and is hidden in the web build, with its absence asserted in W6; or it is a named, standard
+  control whose activation changes nothing to announce. A tree dump cannot see what has no node:
+  the roll's drag-to-resize, the arranger's drag-to-move, the ruler's click. So the list is
+  reconciled against every `Sense::click`, `Sense::drag` and `ui.interact` site in the shown
+  views' modules, and each pointer gesture found there has a key path named beside it or is a
+  line of its own that fails. The list lands in `w-a1-result.md` and is
+  what W6's inventory gate is checked against (D12).
+- **The keyboard notes** in the application's help, generated from one table per surface, so W-A2
+  can produce the web's from the same table with the browser's chords left out (D14).
+
+**Gate:** the record's nine-step sequence end to end — new project, add an instrument, discover the
+instruments, add a note, select it and hear pitch and timing, change it, delete it, read the
+transport, save — and D12's per-surface sequences: *Song* — move between tracks and parts, hear a
+placement, move a part, open it in the roll; *the track panel* — rename, mute, re-assign a sound;
+*files* — open an existing project and hear that it loaded. The probe cannot drive the desktop's file dialog — it is another window, and the
+probe's keys go to the application's own. So the mechanical file steps avoid it: the application
+already opens a project named on its command line, and Save on a project that has a path writes
+there without a dialog. The gate's rows are therefore *open by launch argument and hear that it
+loaded*; *edit, Ctrl+S, hear "Saved …"*; *relaunch on the saved file and find the edit* — in the
+probe's private runtime directory. What stays outside any transcript is the dialog itself: Open
+from the menu, and Save As on a new project. **Those two steps are the sitting's alone under Jesse's
+written waiver (D4), granted 2026-11-24** and recorded under *What is asked of Jesse*. A surface whose sequence does not pass is moved to D12's held-back
+list before the batch reports done.
+
+**Sitting:** the nine steps, start to finish, Wayland-native, with Orca.
+
+**Then, for all three:** the native suite, clippy and fmt; `compat/` verified on Iroh; the nine
+steps' transcript and what Jesse heard added to a `coordination/web/w-a1-result.md`.
 
 ## The later batches — constraints, not yet sections
 
@@ -407,7 +646,12 @@ this file after W0's result, and none starts before that.
 - **W-A2 (`#8`, second half)** — W0's web mechanism in `crates/evil-web` and the library, fed by
   D5; the focus boundary; the web binding set and per-surface help (D14). Gate: W0-web's gate in the
   real crate, both browsers, with its own Orca sitting — the scratch harness proved the mechanism,
-  not this crate.
+  not this crate — **and W-A1's rows R-1 to R-17 as a matrix written into W-A2's section**: for each
+  row, what drives it natively, in Chromium over CDP, and in Firefox, where the real tree is not
+  readable and a row may be the sitting's alone, said in advance and waived in writing where D4
+  needs it. The rows that turn on F6 are re-stated on whatever region chord a person finds a
+  browser leaves alone. D11's "same bar" means the same rows wherever a driver exists and a named
+  human row where none does; W6 re-runs the matrix before its inventory.
 - **W3 (`#5`)** — all three device-open sites gesture-gated, and the gate is **one gesture per
   site**: click Play, press a pad, press a piano key, each audible in Chromium and Firefox. (The
   pads are held back from the first page under D12; their site is still gated and tested, so
@@ -426,6 +670,33 @@ this file after W0's result, and none starts before that.
   rule. Gate: the record's round-trips, plus edits, a MIDI take, a replaced document and
   overlapping saves while a completion is pending; and the end-to-end render and recovery, picked
   file to download.
+- **Raised in W-A1's review and owed to these sections when each is written** — none settled
+  here: *W1* — the library split moves `speech.rs`, `announcer.rs` and the rest of W-A1's
+  modules with every other module, so `evil-web` reads D5's strings from the library and never
+  copies them. *W2* — `target/tools` is ignored, so CI and a fresh checkout have no CLI; the build
+  script installs the lock's version there when it is absent **or is any other version**. *W3* — the MIDI port sits on a shown surface, and Web MIDI is absent in
+  Firefox and permission-gated in Chromium: it gets named, announced states for unsupported, denied
+  and granted, each with a row. Gating a pad and a piano key means reaching surfaces D12 hides; either the gate is Play alone and the others are gated when first
+  shown, or the test route is itself something W6 asserts absent. *W4* — the worker is very likely a **second wasm artifact**, built from the
+  render crates with its own entry and glue, because the application's module binds to a window
+  and a document a worker does not have; a smoke test settles it before the section is written,
+  and D10's "the same wasm module" is corrected with it. The frame-time bound and
+  the maximum render length are numbers its section states, with the copy-or-transfer of the PCM
+  and the worker's start-up time inside the gate, and a render over the limit an announced refusal
+  rather than an error; cancellation is terminate-and-respawn or a checked generation, with a row
+  for cancelling at the last moment.
+  *W5a* — the path-based wrappers do not exist on `wasm32`, so a missed conversion fails to compile
+  rather than at Play. *W5b* — `beforeunload` while the document is unsaved or a save is in flight, and a
+  keyboard-operable, announced discard prompt for New and Open, both in its scope and gate and
+  asserted again in W6; how a probe opens and saves a file in a browser at all, since the file
+  pickers are browser UI no driver operates: a test-only open-from-bytes seam that W6 asserts is
+  not reachable by a visitor, or sitting rows with their waiver; a failed or partial write always
+  ends the in-flight state, with a retry row; the same file open in two tabs; and whether answering "yes, the file was kept" may
+  clear the unsaved state at all, or a download is only ever "exported, unverified" — D13's own
+  open question, and Jesse's to rule. *W-A2* — text reaches the page only as `textContent` and
+  attribute values, with a row for a track named with `<`, `&`, a newline and a direction override.
+  *W6* — the bundle's URLs change with its bytes, or a returning visitor's cached glue meets a new
+  wasm.
 - **W6 (`#9`)** — D12's inventory gate, the nine-step sequence in the browser with both kinds of
   evidence, and `insiculous_web`'s `npm run verify`.
 
@@ -442,6 +713,11 @@ gate is the inventory, with the nine steps as its minimum (D12); the transport's
    chunking) and **D12** (the first page holds back the patch lab, pads, mixer and automation) he
    ruled on 2026-11-24, as recommended; round 1's twenty dispositions stand with them.
 2. `kimi` logged in again on bob-ross, so the next round has its default reviewer.
-3. Five Orca sittings over the effort: W0-native, W0-web (with the browser-owned chords), W-A1,
-   W-A2, W6 — each short, each booked when its batch reaches it.
+3. Orca sittings, each short, each booked when its batch reaches it: W0-native and W0-web (done);
+   **four in W-A1** — one per batch, and the transport proof that opens W-A1b; W-A2 (which opens
+   with the once-or-twice question and the browser-owned chords); W6. W3's audible checks and
+   W5b's dialogs are counted when their sections are written.
+5. **A written waiver for W-A1c (D4):** Open from the menu and Save As on a new project pass
+   through the desktop's file dialog, which the probe cannot drive; those two steps are judged at
+   the sitting alone. **Granted by Jesse, 2026-11-24: "settled, yes on the waiver".**
 4. The ruling if a half of W0 ends anything but passed.
