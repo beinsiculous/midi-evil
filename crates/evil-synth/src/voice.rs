@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::filter::FilterState;
 use crate::oscillator::OscillatorState;
-use crate::render::Modulation;
+use crate::render::{DcBlocker, Modulation};
 use crate::{OscillatorMode, Patch};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +40,7 @@ struct AuxModulation {
 pub(crate) struct VoiceState {
     oscillators: Vec<Vec<OscillatorState>>,
     filter: FilterState,
+    dc_blocker: DcBlocker,
     sync_phases: Vec<f32>,
     modal_phases: Vec<f32>,
     note_pitch: u8,
@@ -71,6 +72,7 @@ impl VoiceState {
                 })
                 .collect(),
             filter: FilterState::default(),
+            dc_blocker: DcBlocker::default(),
             sync_phases: vec![0.0; count],
             modal_phases: vec![0.0; patch.modal_partials.len()],
             note_pitch,
@@ -129,7 +131,17 @@ impl VoiceState {
         let oscillator_mix = (modulation.oscillator_mix + aux.oscillator_mix).clamp(-1.0, 1.0);
         let pulse_width = modulation.pulse_width + aux.pulse_width;
         let sync_ratio = patch.uses_sync().then(|| {
-            (patch.sync_ratio() + modulation.sync_ratio + aux.sync_ratio).clamp(0.01, 16.0)
+            let offset = modulation.sync_ratio + aux.sync_ratio;
+            let ratio = if patch
+                .sync
+                .as_ref()
+                .is_some_and(|sync| sync.modulation_octaves)
+            {
+                patch.sync_ratio() * 2.0_f32.powf(offset)
+            } else {
+                patch.sync_ratio() + offset
+            };
+            ratio.clamp(0.01, 16.0)
         });
         let count = self.oscillators.len();
         let mut sample = 0.0;
@@ -258,6 +270,17 @@ impl VoiceState {
                 modulation.filter_resonance + aux.filter_resonance,
             );
         }
+        if let Some(dc_block_hz) = patch
+            .sync
+            .as_ref()
+            .filter(|_| patch.uses_sync())
+            .map(|sync| sync.dc_block_hz)
+            .filter(|cutoff_hz| *cutoff_hz > 0.0)
+        {
+            sample = self
+                .dc_blocker
+                .process_with_cutoff(sample, sample_rate, dc_block_hz);
+        }
         let amplitude = (1.0 + modulation.amplitude + aux.amplitude).clamp(0.0, 1.0);
         sample * (amp_envelope * patch.gain * amplitude * controls.pressure * controls.expression)
     }
@@ -336,7 +359,10 @@ mod tests {
         };
         let synced = Patch {
             oscillator_mode: OscillatorMode::Sync,
-            sync: Some(OscillatorSync { ratio: 2.0 }),
+            sync: Some(OscillatorSync {
+                ratio: 2.0,
+                ..OscillatorSync::default()
+            }),
             ..patch.clone()
         };
         let mut plain_state = VoiceState::new(&patch, 69);
@@ -348,6 +374,115 @@ mod tests {
                 plain_state.sample(&patch, time, 1.0, controls())
             );
         }
+    }
+
+    #[test]
+    fn octave_sync_modulation_scales_exponentially_and_dc_block_settles_collapsed_sync() {
+        let base = Patch {
+            sample_rate: 8_000,
+            gain: 1.0,
+            duration_seconds: 1.0,
+            oscillator_mode: OscillatorMode::Sync,
+            oscillators: vec![Oscillator {
+                waveform: Waveform::Square,
+                ..Oscillator::default()
+            }],
+            envelope: Envelope {
+                attack_seconds: 0.0,
+                decay_seconds: 0.0,
+                sustain_level: 1.0,
+                release_seconds: 0.0,
+            },
+            ..Patch::default()
+        };
+        for (octave_offset, linear_ratio) in [(1.0, 2.0), (-1.0, 0.5)] {
+            let octave_patch = Patch {
+                sync: Some(OscillatorSync {
+                    ratio: 1.0,
+                    modulation_octaves: true,
+                    dc_block_hz: 0.0,
+                }),
+                ..base.clone()
+            };
+            let linear_patch = Patch {
+                sync: Some(OscillatorSync {
+                    ratio: linear_ratio,
+                    modulation_octaves: false,
+                    dc_block_hz: 0.0,
+                }),
+                ..base.clone()
+            };
+            let mut octave_state = VoiceState::new(&octave_patch, 69);
+            let mut linear_state = VoiceState::new(&linear_patch, 69);
+            for frame in 0..128 {
+                let time = frame as f32 / 8_000.0;
+                assert_eq!(
+                    octave_state.sample(
+                        &octave_patch,
+                        time,
+                        1.0,
+                        VoiceControls {
+                            modulation: Modulation {
+                                sync_ratio: octave_offset,
+                                ..Modulation::default()
+                            },
+                            ..controls()
+                        },
+                    ),
+                    linear_state.sample(&linear_patch, time, 1.0, controls())
+                );
+            }
+        }
+
+        let unblocked_patch = Patch {
+            sync: Some(OscillatorSync {
+                ratio: 1.0,
+                modulation_octaves: true,
+                dc_block_hz: 0.0,
+            }),
+            ..base.clone()
+        };
+        let blocked_patch = Patch {
+            sync: Some(OscillatorSync {
+                ratio: 1.0,
+                modulation_octaves: true,
+                dc_block_hz: 30.0,
+            }),
+            ..base
+        };
+        let mut unblocked = VoiceState::new(&unblocked_patch, 69);
+        let mut blocked = VoiceState::new(&blocked_patch, 69);
+        let mut unblocked_mean = 0.0_f32;
+        let mut blocked_mean = 0.0_f32;
+        for frame in 0..600 {
+            let time = frame as f32 / 8_000.0;
+            let collapsed_controls = VoiceControls {
+                modulation: Modulation {
+                    sync_ratio: -1.5,
+                    ..Modulation::default()
+                },
+                ..controls()
+            };
+            let raw = unblocked.sample(&unblocked_patch, time, 1.0, collapsed_controls);
+            let clean = blocked.sample(
+                &blocked_patch,
+                time,
+                1.0,
+                VoiceControls {
+                    modulation: Modulation {
+                        sync_ratio: -1.5,
+                        ..Modulation::default()
+                    },
+                    ..controls()
+                },
+            );
+            if frame >= 400 {
+                unblocked_mean += raw;
+                blocked_mean += clean;
+            }
+        }
+        assert!((unblocked_mean / 200.0).abs() > 0.5);
+        assert!((blocked_mean / 200.0).abs() < 0.05);
     }
 
     fn controls() -> VoiceControls {

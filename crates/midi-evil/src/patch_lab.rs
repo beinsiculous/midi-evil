@@ -459,6 +459,19 @@ fn show_voice(ui: &mut Ui, patch: &mut Patch) {
         ui.heading("Oscillator sync");
         let sync = patch.sync.get_or_insert_with(Default::default);
         ui.add(egui::Slider::new(&mut sync.ratio, 0.01..=16.0).text("Base ratio"));
+        ui.horizontal_wrapped(|ui| {
+            ui.checkbox(&mut sync.modulation_octaves, "Octave sync modulation");
+            ui.add(
+                DragValue::new(&mut sync.dc_block_hz)
+                    .range(0.0..=200.0)
+                    .speed(0.5)
+                    .prefix("Sync DC block ")
+                    .suffix(" Hz"),
+            )
+            .on_hover_text(
+                "High-pass filter per voice before the envelope to clean up collapsed sync waveforms; zero disables it",
+            );
+        });
     }
 
     ui.heading("Unison");

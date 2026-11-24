@@ -62,6 +62,8 @@ pub struct Delay {
     pub beats_per_cycle: Option<f32>,
     /// Optional upper bound for fixed or beat-synced delay time; `None` preserves legacy behavior.
     pub maximum_time_seconds: Option<f32>,
+    /// Right-channel delay length relative to the left channel in stereo modes; 1.0 keeps symmetric taps.
+    pub right_time_ratio: f32,
     /// Additional rendered tail in seconds; zero retains the default 16-tap allocation.
     pub tail_seconds: f32,
 }
@@ -75,6 +77,7 @@ impl Default for Delay {
             mode: DelayMode::Mono,
             beats_per_cycle: None,
             maximum_time_seconds: None,
+            right_time_ratio: 1.0,
             tail_seconds: 0.0,
         }
     }
@@ -95,11 +98,13 @@ impl Delay {
             || self
                 .maximum_time_seconds
                 .is_some_and(|seconds| !seconds.is_finite() || !(0.001..=2.0).contains(&seconds))
+            || !self.right_time_ratio.is_finite()
+            || !(0.05..=1.0).contains(&self.right_time_ratio)
             || !self.tail_seconds.is_finite()
             || !(0.0..=60.0).contains(&self.tail_seconds)
         {
             return Err(Error::InvalidPatch(
-                "delay requires time in (0, 2], optional maximum in 0.001..=2, feedback in 0..=0.95, mix in 0..=1, optional beats in 0.001..=64, and tail seconds in 0..=60"
+                "delay requires time in (0, 2], optional maximum in 0.001..=2, right_time_ratio in 0.05..=1, feedback in 0..=0.95, mix in 0..=1, optional beats in 0.001..=64, and tail seconds in 0..=60"
                     .to_owned(),
             ));
         }
@@ -141,12 +146,14 @@ pub(crate) fn apply_stereo_delay_with_tempo(
     let mut position = 0;
     for frame in 0..left.len() {
         let time = frame as f64 / f64::from(sample_rate);
-        let delay_frames = delay_frame_count(sample_rate, delay, tempo_bpm_at(tempo_changes, time));
-        let read = (position + left_line.len() - delay_frames) % left_line.len();
+        let [left_frames, right_frames] =
+            stereo_delay_frame_counts(sample_rate, delay, tempo_bpm_at(tempo_changes, time));
+        let read_left = (position + left_line.len() - left_frames) % left_line.len();
+        let read_right = (position + right_line.len() - right_frames) % right_line.len();
         let dry_left = left[frame];
         let dry_right = right[frame];
-        let delayed_left = left_line[read];
-        let delayed_right = right_line[read];
+        let delayed_left = left_line[read_left];
+        let delayed_right = right_line[read_right];
         let input = stereo_delay_input(
             delay.mode,
             [dry_left, dry_right],
@@ -185,6 +192,19 @@ fn apply_mono_delay(
         *sample = dry + delayed * delay.mix;
         position = (position + 1) % delay_line.len();
     }
+}
+
+pub(crate) fn stereo_delay_frame_counts(
+    sample_rate: u32,
+    delay: &Delay,
+    tempo_bpm: f32,
+) -> [usize; 2] {
+    let left = delay_frame_count(sample_rate, delay, tempo_bpm);
+    if delay.mode == DelayMode::Mono {
+        return [left, left];
+    }
+    let right = ((left as f32 * delay.right_time_ratio).round() as usize).clamp(1, left);
+    [left, right]
 }
 
 pub(crate) fn delay_frame_count(sample_rate: u32, delay: &Delay, tempo_bpm: f32) -> usize {
@@ -428,5 +448,57 @@ mod tests {
         assert_eq!(right[150], 0.25);
         assert_eq!(left[200], 0.125);
         assert_eq!(right[200], 0.0);
+    }
+
+    #[test]
+    fn asymmetric_right_time_ratio_validates_and_crosses_stereo_taps() {
+        let legacy: Delay = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.right_time_ratio, 1.0);
+
+        let asymmetric = Delay {
+            time_seconds: 0.04,
+            feedback: 0.5,
+            mix: 0.5,
+            mode: DelayMode::StereoCross,
+            right_time_ratio: 0.5,
+            ..Delay::default()
+        };
+        let json = serde_json::to_string(&asymmetric).unwrap();
+        assert_eq!(serde_json::from_str::<Delay>(&json).unwrap(), asymmetric);
+
+        for ratio in [0.05, 0.5, 1.0] {
+            assert!(
+                Delay {
+                    right_time_ratio: ratio,
+                    ..Delay::default()
+                }
+                .validate()
+                .is_ok()
+            );
+        }
+        for ratio in [0.0, 0.049, 1.01, f32::NAN] {
+            assert!(
+                Delay {
+                    right_time_ratio: ratio,
+                    ..Delay::default()
+                }
+                .validate()
+                .is_err()
+            );
+        }
+
+        let mut left = vec![1.0];
+        let mut right = vec![1.0];
+        apply_stereo_delay_with_tempo(&mut left, &mut right, 1_000, &asymmetric, &[]);
+        assert_eq!(left[20], 0.0);
+        assert_eq!(right[20], 0.5);
+        assert_eq!(left[40], 0.5);
+        assert_eq!(right[40], 0.0);
+        assert_eq!(left[60], 0.25);
+        assert_eq!(right[60], 0.25);
+        assert_eq!(left[80], 0.0);
+        assert_eq!(right[80], 0.125);
+        assert_eq!(left[100], 0.125);
+        assert_eq!(right[100], 0.0);
     }
 }
