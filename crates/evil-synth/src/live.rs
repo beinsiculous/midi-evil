@@ -16,6 +16,8 @@ pub struct LiveControls {
     pub gain: f32,
     pub pan: f32,
     pub tempo_bpm: f32,
+    /// Sequencer position in quarter-note beats at the most recent controls update.
+    pub song_beat: f64,
     pub filter: Option<Filter>,
     pub waveshaper: Option<Waveshaper>,
     pub delay: Option<Delay>,
@@ -30,6 +32,7 @@ impl LiveControls {
             gain: 0.8,
             pan: 0.0,
             tempo_bpm: 120.0,
+            song_beat: 0.0,
             filter: patch.filter.clone(),
             waveshaper: patch.waveshaper.clone(),
             delay: patch.delay.clone(),
@@ -73,6 +76,9 @@ pub struct LiveSynth {
     delay_position: usize,
     insert_processors: Vec<InsertProcessor>,
     dc: [DcBlocker; 2],
+    frame: u64,
+    beat_anchor: f64,
+    beat_anchor_frame: u64,
 }
 
 impl LiveSynth {
@@ -87,6 +93,9 @@ impl LiveSynth {
             delay_position: 0,
             insert_processors: Vec::new(),
             dc: [DcBlocker::default(), DcBlocker::default()],
+            frame: 0,
+            beat_anchor: 0.0,
+            beat_anchor_frame: 0,
         })
     }
 
@@ -95,6 +104,13 @@ impl LiveSynth {
     }
     pub fn voice_count(&self) -> usize {
         self.voices.len()
+    }
+
+    fn current_beat(&self) -> f64 {
+        let elapsed_frames = self.frame.wrapping_sub(self.beat_anchor_frame);
+        self.beat_anchor
+            + elapsed_frames as f64 * f64::from(self.controls.tempo_bpm)
+                / (60.0 * f64::from(self.patch.sample_rate))
     }
 
     /// Use an edited patch for subsequent notes, preserving held voices and tails.
@@ -122,6 +138,8 @@ impl LiveSynth {
             || !(-1.0..=1.0).contains(&controls.pan)
             || !controls.tempo_bpm.is_finite()
             || controls.tempo_bpm <= 0.0
+            || !controls.song_beat.is_finite()
+            || controls.song_beat < 0.0
         {
             return Err(Error::InvalidPatch(
                 "invalid live performance controls".to_owned(),
@@ -135,6 +153,11 @@ impl LiveSynth {
         for effect in &controls.inserts {
             effect.validate()?;
         }
+        let next_beat = if controls.song_beat != self.controls.song_beat {
+            controls.song_beat
+        } else {
+            self.current_beat()
+        };
         let mut patch = self.patch.clone();
         patch.filter.clone_from(&controls.filter);
         patch.waveshaper.clone_from(&controls.waveshaper);
@@ -159,6 +182,8 @@ impl LiveSynth {
             }
         }
         self.insert_processors.truncate(controls.inserts.len());
+        self.beat_anchor = next_beat;
+        self.beat_anchor_frame = self.frame;
         self.controls = controls;
         Ok(())
     }
@@ -240,12 +265,17 @@ impl LiveSynth {
                 self.voices.clear();
             }
         }
+        let modulation = ModulationState::at(
+            &patch,
+            self.frame as f64 / f64::from(patch.sample_rate),
+            self.current_beat(),
+        );
         self.voices.push(Voice {
             pitch,
             glide_from_semitones,
             held: true,
             state: VoiceState::new(&patch, pitch),
-            modulation: ModulationState::new(&patch),
+            modulation,
             patch,
             frame: 0,
             gate: None,
@@ -347,6 +377,7 @@ impl LiveSynth {
                 *sample = dc.process(*sample, self.patch.sample_rate);
             }
         }
+        self.frame = self.frame.wrapping_add(1);
         stereo
     }
 }
@@ -532,6 +563,68 @@ mod tests {
                 assert_offline_matches_live(patch, &[test_note(pitch, 0.0, 0.2)]);
             }
         }
+    }
+
+    #[test]
+    fn phase_synced_lfos_match_offline_for_delayed_notes() {
+        for phase_sync in [
+            crate::LfoPhaseSync::Off,
+            crate::LfoPhaseSync::Key,
+            crate::LfoPhaseSync::Beat,
+        ] {
+            let patch = Patch {
+                duration_seconds: 0.2,
+                lfo: Some(crate::Lfo {
+                    rate_hz: 3.0,
+                    beats_per_cycle: (phase_sync == crate::LfoPhaseSync::Beat).then_some(1.0),
+                    phase_sync,
+                    waveform: crate::LfoWaveform::SawUp,
+                    destination: crate::LfoDestination::Amplitude,
+                    amplitude_depth: 0.75,
+                    ..crate::Lfo::default()
+                }),
+                envelope: crate::Envelope {
+                    attack_seconds: 0.0,
+                    decay_seconds: 0.0,
+                    sustain_level: 1.0,
+                    release_seconds: 0.005,
+                },
+                ..Patch::default()
+            };
+            assert_offline_matches_live(patch, &[test_note(60, 0.25, 0.2)]);
+        }
+    }
+
+    #[test]
+    fn live_beat_phase_accepts_the_sequencer_position() {
+        let patch = Patch {
+            lfo: Some(crate::Lfo {
+                beats_per_cycle: Some(2.0),
+                phase_sync: crate::LfoPhaseSync::Beat,
+                destination: crate::LfoDestination::Amplitude,
+                amplitude_depth: 1.0,
+                ..crate::Lfo::default()
+            }),
+            ..Patch::default()
+        };
+        let mut live = LiveSynth::new(patch).unwrap();
+        let mut controls = LiveControls::for_patch(&live.patch);
+        controls.song_beat = 4.5;
+        live.set_controls(controls).unwrap();
+        live.note_on(60, 100).unwrap();
+        let voice = &mut live.voices[0];
+        let modulation = voice.modulation.next(
+            &voice.patch,
+            voice.patch.sample_rate,
+            0.0,
+            f32::INFINITY,
+            1.0,
+            2.0,
+        );
+        assert!((modulation.amplitude - 1.0).abs() < 0.0001);
+        controls = live.controls.clone();
+        controls.song_beat = -1.0;
+        assert!(live.set_controls(controls).is_err());
     }
 
     #[test]

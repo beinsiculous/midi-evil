@@ -27,12 +27,25 @@ pub enum LfoWaveform {
     RandomRamp,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LfoPhaseSync {
+    /// Run continuously from the song or performance clock.
+    Off,
+    /// Restart the waveform when a voice starts.
+    #[default]
+    Key,
+    /// Lock the waveform's rate and phase to the sequencer's beat clock.
+    Beat,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Lfo {
     pub rate_hz: f32,
-    /// Quarter-note beats per cycle when beat-synced; overrides `rate_hz`.
+    /// Quarter-note beats per cycle when tempo-synced; overrides `rate_hz`.
     pub beats_per_cycle: Option<f32>,
+    pub phase_sync: LfoPhaseSync,
     pub depth_cents: f32,
     pub destination: LfoDestination,
     pub waveform: LfoWaveform,
@@ -60,6 +73,7 @@ impl Default for Lfo {
         Self {
             rate_hz: 4.0,
             beats_per_cycle: None,
+            phase_sync: LfoPhaseSync::Key,
             depth_cents: 0.0,
             destination: LfoDestination::Pitch,
             waveform: LfoWaveform::Sine,

@@ -42,7 +42,7 @@ pub use insert_automation::{
     DELAY_FEEDBACK_CC, DELAY_MIX_CC, DELAY_TIME_CC, WAVESHAPER_CONTOUR_CC, WAVESHAPER_DRIVE_CC,
     WAVESHAPER_LEVEL_CC, controller_is_insert_automation,
 };
-pub use lfo::{Lfo, LfoDestination, LfoWaveform};
+pub use lfo::{Lfo, LfoDestination, LfoPhaseSync, LfoWaveform};
 pub use mix::{
     AnalyzedMix, ChannelMeter, METER_BLOCK_FRAMES, MixAnalysis, MonoTrack, StereoSound,
     StereoTrack, SynthMixerAutomation, mix_stereo, mix_stereo_analyzed, mix_stereo_with_sends,
