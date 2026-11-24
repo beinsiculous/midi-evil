@@ -18,5 +18,6 @@ evil-render = { path = "../evil-render", version = "0.1.0" }
 thiserror = "2"
 
 [dev-dependencies]
+evil-synth = { path = "../evil-synth", version = "0.1.0" }
 evil-imports = { path = "../evil-imports", version = "0.1.0" }
 tempfile = "3"

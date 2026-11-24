@@ -65,8 +65,10 @@ through review after W0's result. Settling this plan authorises W0 and nothing a
 - **D6 — The piano roll is one focusable widget with a note cursor, not a node per note.** The roll
   paints only what the viewport shows, so per-note nodes would make off-screen notes unreachable.
   The roll takes focus as a whole, keeps a cursor over the notes in time order, scrolls the cursor
-  into view, and exposes the cursor's note as a value that can be **read again on demand** — on
-  both surfaces (D11). **The cursor names a note, not an index.** The notes are stored in insertion
+  into view, and exposes the cursor's note so that it can be **read again on demand** — on both
+  surfaces (D11). Natively that is the roll's *description*, not its value: AccessKit's AT-SPI
+  adapter exposes only numeric values, and a string value on a custom node reaches nothing (W0
+  step 1, 2026-11-24). **The cursor names a note, not an index.** The notes are stored in insertion
   order and the selection today is an index into them (`RollState::selected_note`), while Clean
   overlaps re-sorts the vector (`evil-project/src/sequence.rs:121-132`) and undo replaces it. So the
   cursor walks the notes ordered by start, then pitch, then index; and after any change it did not
@@ -183,6 +185,11 @@ them. Each was grepped today.
   (`keyboard.rs:13-30,166-184`); the pads take Z X C V A S D F Q W E R 1–4 and Escape
   (`beats.rs:19-34,245`); Delete acts in the roll, the automation lane and the mixer lane when
   *hovered* (`piano_roll.rs:373-375`, `automation.rs:396`, `mixer_automation.rs:286`).
+- **The accessibility tree, as it is** (W0 step 1, `review/web/w0/baseline-tree.txt`): ninety
+  nodes, all direct children of one unnamed frame, sixty-one focusable, fifteen anonymous — Save,
+  the tempo, the meter, START BAR and LOOP END, the project and track names, the MIDI and SOUND
+  combo boxes among them. The playing state and the position are labels focus never reaches.
+  AccessKit builds no tree at all until the session's `ScreenReaderEnabled` is true.
 - **Toolchain on bob-ross.** `wasm32-unknown-unknown` is installed; the CLI on `PATH` is 0.2.126,
   the engine's pin (D15). Orca is at `/usr/bin/orca`; the session is Wayland; `Atspi` 2.0 imports.
 
@@ -238,14 +245,35 @@ reachable*.
      ask only whether the key was pressed this frame; Delete removes the selected note when the roll *has
      focus*, not when it is hovered, and moves the cursor to the next note, else the previous, else
      to none — and an empty roll says it is empty;
-   - D5's description for a note and for the transport, and their exposure: the roll's node carries
-     the cursor's note as its value, each edit raises an announcement, and the transport is read
+   - the roll gets a role and a name that begins "Piano roll" — it is an anonymous `unknown` node
+     today — and **takes focus when clicked**, which egui does only for text fields: without it a
+     pointer selection is something no key can act on;
+   - it takes both arrow axes with egui's focus-lock filter, without which an arrow key
+     moves focus off it; Tab stays unfiltered;
+   - **F6 and Shift+F6 move focus between the regions** — the toolbar, the side panel, the editor —
+     because the roll is about sixty Tab stops into a flat tree of ninety ungrouped nodes, and a
+     gate that reaches it only by sixty Tabs, or only through the probe's own focus call, has not
+     shown it is reachable (WCAG 2.4.1);
+   - D5's description for a note and for the transport, and their exposure by the two means step 1
+     found on the bus: the roll's *description* carries the cursor's note (readable at any time,
+     and its change is an event), each edit also goes to a separate polite live node (which emits
+     `object:announcement`). **Heard by Jesse, 2026-11-24, Orca 49.4:** a change to the focused
+     roll's *name* is spoken on every key ("Piano roll, step 1", "Piano roll, step 2"); the
+     description's change and the live node's announcement, raised by the same key, were not heard.
+     So the cursor's note goes in the roll's name, after "Piano roll", and that is the mechanism;
+     whether the live node speaks when the name does *not* change in the same frame — the "no room"
+     and "already the last note" messages need exactly that — is the prototype's first check. The
+     transport is read
      **on demand** — one focusable, named readout giving state, tempo and position — never
      announced on repaint, and present at every window width. The tempo control gets its name.
    These chords avoid every native key under *The tree today*; D14's browser pass is W0-web's.
-3. `coordination/web/probes/atspi-probe.py`: starts from the application's AT-SPI root, finds the
-   roll and the transport readout, delivers the gate's keys by step 1's method, and prints the name,
-   role, value and announcement after each.
+3. `coordination/web/probes/atspi-probe.py`, extended from step 1's: finds the roll and the
+   transport readout, reaches the roll with F6 rather than its own focus call, delivers the gate's
+   keys — modifier chords included, which step 1 left untested — and prints the name, role,
+   description and announcement after each. It runs the application under XWayland on a private
+   accessibility bus, because that is the only way found to deliver a key to this application and
+   nothing else (`XSendEvent` to its own window); Jesse's sitting runs it as the desktop does, and
+   the result names both setups.
 4. Jesse performs the gate with Orca.
 
 **Gate (native):** keyboard-only, and then with Orca — focus the roll; select an existing note and
@@ -335,7 +363,8 @@ On W0's mechanism and its closing keyboard model. Re-detailed after W0's result 
   function of `(sequence, cursor, key)` with W0's edges as cases — the pointer path and the key path
   call the same edits;
 - the arranger on the same cursor shape (parts in time order per track, tracks by Up/Down);
-- the instrument list and the transport readout named and readable;
+- the instrument list and the transport readout named and readable; the regions grouped and named,
+  with F6 between them;
 - every control W0's result listed as unnamed **in the modules this batch owns** gets a name; the
   rest of that list is carried, by module, into D12's inventory;
 - **Delete has one owner, the focused editor.** Moving only the roll's Delete to focus would leave

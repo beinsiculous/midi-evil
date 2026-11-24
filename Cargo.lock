@@ -1199,6 +1199,7 @@ dependencies = [
  "evil-performance",
  "evil-project",
  "evil-render",
+ "evil-synth",
  "midly",
  "tempfile",
  "thiserror 2.0.21",
