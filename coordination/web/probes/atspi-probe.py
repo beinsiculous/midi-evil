@@ -9,15 +9,29 @@ application and runs the probe; README.md says what the session needs.
 """
 
 import argparse
+import subprocess
 import sys
+import time
 
 import gi
 
 gi.require_version("Atspi", "2.0")
 from gi.repository import Atspi, GLib  # noqa: E402
 
+from probe_tree import (  # noqa: E402
+    children,
+    describe_if_present,
+    has_state,
+    name_of,
+    print_focus,
+    walk,
+)
+from probe_expectations import (  # noqa: E402
+    LISTENED_EVENT_TYPES,
+    Expectations,
+    is_focused_change,
+)
 from probe_support import (  # noqa: E402
-    SETTLE_SECONDS,
     ProbeError,
     ancestor_names,
     check_step_arguments,
@@ -28,90 +42,7 @@ from probe_support import (  # noqa: E402
     verify_isolation,
 )
 
-LISTENED_EVENT_TYPES = (
-    "object:announcement",
-    "object:property-change",
-    "object:state-changed:focused",
-    "object:text-changed",
-    "object:children-changed",
-    "object:active-descendant-changed",
-)
 EVENT_WINDOW_SECONDS = 0.5
-
-
-def describe(accessible):
-    """One line: role, name, description, value, text, focus states, actions and extents."""
-    parts = [accessible.get_role_name(), repr(accessible.get_name() or "")]
-    description = accessible.get_description() or ""
-    if description:
-        parts.append(f"description={description!r}")
-    value_interface = accessible.get_value_iface()
-    if value_interface is not None:
-        parts.append(f"value={Atspi.Value.get_current_value(value_interface)}")
-    text_interface = accessible.get_text_iface()
-    if text_interface is not None:
-        character_count = Atspi.Text.get_character_count(text_interface)
-        text = Atspi.Text.get_text(text_interface, 0, character_count)
-        parts.append(f"text={text!r}")
-    states = accessible.get_state_set()
-    flags = []
-    if states.contains(Atspi.StateType.FOCUSABLE):
-        flags.append("focusable")
-    if states.contains(Atspi.StateType.FOCUSED):
-        flags.append("FOCUSED")
-    if not states.contains(Atspi.StateType.ENABLED):
-        flags.append("disabled")
-    if flags:
-        parts.append("[" + " ".join(flags) + "]")
-    action_interface = accessible.get_action_iface()
-    if action_interface is not None:
-        action_names = [
-            Atspi.Action.get_localized_name(action_interface, action_index)
-            for action_index in range(Atspi.Action.get_n_actions(action_interface))
-        ]
-        if action_names:
-            parts.append("actions=" + ",".join(action_names))
-    component_interface = accessible.get_component_iface()
-    if component_interface is not None:
-        extents = Atspi.Component.get_extents(component_interface, Atspi.CoordType.WINDOW)
-        parts.append(f"at {extents.x},{extents.y} {extents.width}x{extents.height}")
-    return " ".join(parts)
-
-
-def describe_if_present(accessible):
-    # An event can name a node that the application removed before the event was read.
-    if accessible is None:
-        return "(none)"
-    try:
-        return describe(accessible)
-    except GLib.Error:
-        return "(removed)"
-
-
-def children(accessible):
-    """The node's children that still exist; a node can vanish between two calls."""
-    if accessible is None:
-        return []
-    try:
-        child_count = accessible.get_child_count()
-    except GLib.Error:
-        return []
-    found = []
-    for child_index in range(child_count):
-        try:
-            child = accessible.get_child_at_index(child_index)
-        except GLib.Error:
-            continue
-        if child is not None:
-            found.append(child)
-    return found
-
-
-def walk(accessible, path=()):
-    """Yield (path, node) depth first; the path is the chain of child indices from the root."""
-    yield path, accessible
-    for child_index, child in enumerate(children(accessible)):
-        yield from walk(child, path + (child_index,))
 
 
 def find_application(application_name, wait_seconds):
@@ -130,22 +61,6 @@ def find_application(application_name, wait_seconds):
         return None
 
     return poll(wait_seconds, attempt)
-
-
-def has_state(accessible, state):
-    if accessible is None:
-        return False
-    try:
-        return accessible.get_state_set().contains(state)
-    except GLib.Error:
-        return False
-
-
-def name_of(accessible):
-    try:
-        return accessible.get_name() or ""
-    except GLib.Error:
-        return None
 
 
 def find_by_name(application, name, interface_getter, interface_label, prefix_must_be_unique,
@@ -181,39 +96,6 @@ def find_by_name(application, name, interface_getter, interface_label, prefix_mu
     return usable[0]
 
 
-def focused_nodes(application):
-    """Every focused node with its path, shallowest first."""
-    return [
-        (path, node) for path, node in walk(application) if has_state(node, Atspi.StateType.FOCUSED)
-    ]
-
-
-def deepest_focused(application):
-    """The deepest focused node, or None."""
-    focused = focused_nodes(application)
-    if not focused:
-        return None
-    return max(focused, key=lambda pair: len(pair[0]))[1]
-
-
-def print_focus(application, heading):
-    """Print the deepest focused node; print all of them when they are not one ancestor chain."""
-    focused = focused_nodes(application)
-    if not focused:
-        print(f"{heading}: (nothing focused)")
-        return
-    paths = [path for path, _node in focused]
-    one_chain = all(
-        deeper[: len(shallower)] == shallower for shallower, deeper in zip(paths, paths[1:])
-    )
-    deepest = max(focused, key=lambda pair: len(pair[0]))[1]
-    print(f"{heading}: {describe_if_present(deepest)}")
-    if not one_chain:
-        print(f"  {len(focused)} focused nodes outside one ancestor chain:")
-        for _path, node in focused:
-            print(f"    {describe_if_present(node)}")
-
-
 class EventRecorder:
     def __init__(self, application):
         self.process_id = application.get_process_id()
@@ -224,6 +106,14 @@ class EventRecorder:
         # is what a screen reader speaks, and the status line, which repeats it, is never
         # focused.
         self.focused_name_changes = []
+        # Every change to the focused node's name, description or value, and the names that
+        # nodes without focus changed to.
+        self.focused_changes = []
+        self.unfocused_names = []
+        self.types = []
+        self.last_step_types = []
+        self.last_step_focused_changes = []
+        self.last_step_unfocused_names = []
         self.listener = Atspi.EventListener.new(self.record)
         for event_type in LISTENED_EVENT_TYPES:
             self.listener.register(event_type)
@@ -242,9 +132,12 @@ class EventRecorder:
             payload = "accessible " + describe_if_present(payload)
         if event.type == "object:announcement":
             self.announcements.append(str(payload))
-        if (event.type == "object:property-change:accessible-name"
-                and has_state(event.source, Atspi.StateType.FOCUSED)):
-            self.focused_name_changes.append(str(payload))
+        focused = has_state(event.source, Atspi.StateType.FOCUSED)
+        if event.type == "object:property-change:accessible-name":
+            (self.focused_name_changes if focused else self.unfocused_names).append(str(payload))
+        if is_focused_change(event.type, focused):
+            self.focused_changes.append(f"{event.type} {payload!r}")
+        self.types.append(event.type)
         self.lines.append(
             f"{event.type} detail1={event.detail1} detail2={event.detail2} "
             f"payload={payload!r} source: {describe_if_present(event.source)}"
@@ -252,13 +145,26 @@ class EventRecorder:
 
     def clear(self):
         self.lines = []
+        self.types = []
         self.announcements = []
         self.focused_name_changes = []
+        self.focused_changes = []
+        self.unfocused_names = []
+
+    def set_aside(self):
+        """Prints what arrived since the last step ended, apart, and forgets it, so a window
+        that opens next counts only its own events."""
+        for line in self.lines:
+            print("  event (before the next step) " + line)
+        self.clear()
 
     def print_and_clear(self):
         for line in self.lines:
             print("  event " + line)
         self.last_step_announcements = self.announcements
+        self.last_step_focused_changes = self.focused_changes
+        self.last_step_unfocused_names = self.unfocused_names
+        self.last_step_types = self.types
         self.clear()
 
     def take_focused_name_changes(self):
@@ -277,37 +183,66 @@ def perform_action(application, name, recorder, region=None):
     recorder.print_and_clear()
 
 
-def set_value_after_label(application, text, recorder):
-    """Sets the value box that belongs to the label with this name: the first node with a value
-    among the label's following siblings, before the next caption. egui lays a value box out
-    after its caption, and the inspector's boxes are not named yet. AccessKit turns the call into
-    the widget's SetValue action, as a screen reader's value change would be."""
-    label, _, value = text.rpartition(":")
-    caption = next((node for _path, node in walk(application) if name_of(node) == label), None)
-    if caption is None:
-        raise ProbeError(f"no label named {label!r}")
+def set_value(application, text, recorder):
+    """Sets the value box with this name through AT-SPI's Value interface, which AccessKit turns
+    into the widget's SetValue action, as a screen reader's value change would be. Focus does
+    not move."""
+    name, _, value = text.rpartition(":")
+    target = wait_for_node(lambda: find_by_name(
+        application, name, lambda node: node.get_value_iface(), "a value",
+        prefix_must_be_unique=True))
     try:
-        parent = caption.get_parent()
-        if parent is None:
-            raise ProbeError(f"the label {label!r} has no parent to find its value box in")
-        siblings = children(parent)
-        position = caption.get_index_in_parent()
-        target = None
-        for sibling in siblings[position + 1:]:
-            if sibling.get_value_iface() is not None:
-                target = sibling
-                break
-            if sibling.get_role_name() == "label":
-                break
-        if target is None:
-            raise ProbeError(f"no value box belongs to the label {label!r}")
         if not Atspi.Value.set_current_value(target.get_value_iface(), float(value)):
-            raise ProbeError(f"set {label!r} to {value}: the value was refused")
+            raise ProbeError(f"set {name!r} to {value}: the value was refused")
     except GLib.Error as error:
-        raise ProbeError(f"set {label!r} to {value}: {error.message}") from error
+        raise ProbeError(f"set {name!r} to {value}: {error.message}") from error
     pump_events(EVENT_WINDOW_SECONDS)
-    print(f"set the value after {label!r} to {value}")
+    print(f"set {name!r} to {value}")
     recorder.print_and_clear()
+
+
+def key_until(application, sender, chord, text, recorder, expectations, wait_seconds):
+    """Sends the chord, then again every half second, until the focused name contains the text:
+    Enter on the transport readout until a render has finished and it says playing."""
+    expectations.before_step()
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        sender.wait_for_focus(wait_seconds)
+        sender.send(chord)
+        pump_events(EVENT_WINDOW_SECONDS)
+        if text in (expectations.focused_name() or ""):
+            break
+        if time.monotonic() >= deadline:
+            recorder.print_and_clear()
+            raise ProbeError(f"{chord.text} for {wait_seconds:g} seconds and the focused name "
+                             f"never contained {text!r}; it is {expectations.focused_name()!r}")
+    print_focus(application, f"after {chord.text} until {text!r}")
+    recorder.print_and_clear()
+
+
+def enable_screen_reader_after_launch(application_name):
+    """Shows the application is absent from the accessibility bus while no screen reader is on,
+    then turns ScreenReaderEnabled on — on the private session bus that verify_isolation has
+    just checked — as a screen reader started after the application would."""
+    absent_for = 3.0
+    if find_application(application_name, absent_for) is not None:
+        raise ProbeError(f"{application_name!r} built its tree before a screen reader was on")
+    print(f"no {application_name!r} on the accessibility bus for {absent_for:g} seconds "
+          f"with ScreenReaderEnabled off")
+    command = ["gdbus", "call", "--session", "--dest", "org.a11y.Bus",
+               "--object-path", "/org/a11y/bus",
+               "--method", "org.freedesktop.DBus.Properties.Set",
+               "org.a11y.Status", "ScreenReaderEnabled", "<true>"]
+    try:
+        subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                       text=True, timeout=10)
+    except subprocess.TimeoutExpired:
+        raise ProbeError("turning ScreenReaderEnabled on: gdbus did not answer within 10 "
+                         "seconds") from None
+    except (OSError, subprocess.CalledProcessError) as error:
+        detail = getattr(error, "stderr", None) or str(error)
+        raise ProbeError(f"turning ScreenReaderEnabled on failed: {detail.strip()}") from None
+    print("ScreenReaderEnabled turned on after launch")
 
 
 def focusable_component(node):
@@ -324,96 +259,6 @@ def give_focus(application, name, recorder):
     pump_events(EVENT_WINDOW_SECONDS)
     print_focus(application, f"focus {name!r}")
     recorder.print_and_clear()
-
-
-class Expectations:
-    """Checks on what the previous step left: the focused node's name and the announcements."""
-
-    def __init__(self, application, recorder):
-        self.application = application
-        self.recorder = recorder
-        self.name_before_step = None
-        self.hold_name_changes = None
-        self.release_name_changes = None
-
-    def focused_name(self):
-        node = deepest_focused(self.application)
-        return None if node is None else name_of(node)
-
-    def before_step(self):
-        self.name_before_step = self.focused_name()
-        # A count belongs to the hold that made it: a step that is not a hold has none.
-        self.hold_name_changes = None
-        self.release_name_changes = None
-
-    def holds(self, kind, text):
-        if kind == "expect":
-            name = self.focused_name()
-            return name is not None and text in name
-        return any(text in (name_of(node) or "") for _path, node in walk(self.application))
-
-    def check(self, kind, text):
-        if kind in ("expect", "expect_node"):
-            # Something that should be there is waited for; something that should not is not.
-            poll(SETTLE_SECONDS, lambda: self.holds(kind, text) or None)
-        name = self.focused_name()
-        if kind == "expect":
-            passed = self.holds(kind, text)
-            wanted = f"the focused name contains {text!r}"
-        elif kind == "expect_not":
-            # Nothing focused is not a pass: the check exists to show focus went somewhere else.
-            passed = name is not None and text not in name
-            wanted = f"a node is focused and its name does not contain {text!r}"
-        elif kind == "expect_same_name":
-            passed = name is not None and name == self.name_before_step
-            wanted = f"the focused name is unchanged ({self.name_before_step!r})"
-        elif kind == "expect_node":
-            passed = self.holds(kind, text)
-            wanted = f"some node's name contains {text!r}"
-        elif kind == "expect_region":
-            node = deepest_focused(self.application)
-            regions = [] if node is None else ancestor_names(node)
-            passed = text in regions
-            wanted = f"the focused node is inside the region {text!r} (inside: {regions!r})"
-        elif kind in ("expect_enabled", "expect_disabled"):
-            nodes = [node for _path, node in walk(self.application) if name_of(node) == text]
-            if len(nodes) != 1:
-                raise ProbeError(f"{len(nodes)} nodes named {text!r}; the state needs exactly one")
-            enabled = has_state(nodes[0], Atspi.StateType.ENABLED) \
-                and has_state(nodes[0], Atspi.StateType.SENSITIVE)
-            passed = enabled == (kind == "expect_enabled")
-            wanted = f"{text!r} is {'enabled' if kind == 'expect_enabled' else 'disabled'}"
-        elif kind == "expect_description":
-            node = deepest_focused(self.application)
-            try:
-                description = "" if node is None else (node.get_description() or "")
-            except GLib.Error as error:
-                raise ProbeError(f"reading the focused node's description: {error.message}") \
-                    from error
-            passed = text in description
-            wanted = f"the focused node's description contains {text!r}"
-        elif kind == "expect_hold_name_changes":
-            passed = self.hold_name_changes is not None and len(self.hold_name_changes) == int(text)
-            wanted = (f"{text} focused name change(s) while the key repeated "
-                      f"(seen: {self.hold_name_changes!r})")
-        elif kind == "expect_release_name_changes":
-            passed = (self.release_name_changes is not None
-                      and len(self.release_name_changes) == int(text))
-            wanted = (f"{text} focused name change(s) after the release "
-                      f"(seen: {self.release_name_changes!r})")
-        elif kind == "expect_announcement_count":
-            announcement, _, count = text.rpartition(":")
-            heard = [item for item in self.recorder.last_step_announcements if announcement in item]
-            passed = len(heard) == int(count)
-            wanted = (f"{count} announcement(s) containing {announcement!r} "
-                      f"(heard: {self.recorder.last_step_announcements!r})")
-        else:
-            announcements = self.recorder.last_step_announcements
-            passed = any(text in announcement for announcement in announcements)
-            wanted = f"an announcement contains {text!r} (heard: {announcements!r})"
-        if not passed:
-            raise ProbeError(f"expected {wanted}; the focused name is {name!r}")
-        print(f"  ok: {wanted}")
 
 
 def hold_key(application, sender, chord, repeats, recorder, expectations, wait_seconds):
@@ -449,11 +294,14 @@ def run(arguments):
     keys = [value for kind, value in arguments.steps if kind == "key"]
     keys += [value.rpartition(":")[0] for kind, value in arguments.steps if kind == "hold"]
     keys += [chord for kind, value in arguments.steps if kind == "burst" for chord in value.split()]
+    keys += [value.partition("|")[0] for kind, value in arguments.steps if kind == "key_until"]
     sender = WindowKeySender() if keys else None
     # Every chord is checked before the first is sent.
     chords = {text: sender.parse(text) for text in keys}
 
     Atspi.init()
+    if arguments.screen_reader_after_launch:
+        enable_screen_reader_after_launch(arguments.application)
     application = find_application(arguments.application, arguments.wait)
     if application is None:
         raise ProbeError(f"no AT-SPI application named {arguments.application!r} "
@@ -478,7 +326,21 @@ def run(arguments):
             give_focus(application, value, recorder)
         elif kind == "set_value":
             expectations.before_step()
-            set_value_after_label(application, value, recorder)
+            set_value(application, value, recorder)
+        elif kind in ("pause", "expect_quiet"):
+            # A quiet period is a step of its own: what arrived before it opened is set aside,
+            # and what it raised is checked once it is over.
+            recorder.set_aside()
+            expectations.before_step()
+            pump_events(float(value))
+            print_focus(application, f"after {value} seconds")
+            recorder.print_and_clear()
+            if kind == "expect_quiet":
+                expectations.check(kind, value)
+        elif kind == "key_until":
+            chord_text, _, text = value.partition("|")
+            key_until(application, sender, chords[chord_text], text, recorder, expectations,
+                      arguments.wait)
         elif kind == "dump":
             for path, accessible in walk(application):
                 print("  " * len(path) + describe_if_present(accessible))
@@ -533,6 +395,9 @@ def main():
                         help="seconds to wait for the application, its window and its focus")
     parser.add_argument("--listen", type=float, default=0.0,
                         help="seconds to keep printing events after the last step")
+    parser.add_argument("--screen-reader-after-launch", action="store_true",
+                        help="show the application absent with ScreenReaderEnabled off, then "
+                             "turn it on (run-probe.sh leaves it off when this is given)")
     parser.set_defaults(steps=[])
     steps = parser.add_argument_group(
         "steps", "run in the order given; every --expect checks what the last --press, --focus or "
@@ -550,8 +415,27 @@ def main():
                        help="fail unless the one node named NAME is disabled")
     steps.add_argument("--focus", action=StepAction, metavar="NAME",
                        help="give focus to the node with this name through AT-SPI")
-    steps.add_argument("--set-value", action=StepAction, metavar="LABEL:VALUE",
-                       help="set the value box that follows the label LABEL to VALUE")
+    steps.add_argument("--set-value", action=StepAction, metavar="NAME:VALUE",
+                       help="set the value box named NAME to VALUE, without moving focus")
+    steps.add_argument("--pause", action=StepAction, metavar="SECONDS",
+                       help="wait, recording the application's events")
+    steps.add_argument("--key-until", action=StepAction, metavar="CHORD|TEXT",
+                       help="send CHORD every half second until the focused name contains TEXT")
+    steps.add_argument("--expect-quiet", action=StepAction, metavar="SECONDS",
+                       help="wait; fail on any announcement or any change to the focused node's "
+                            "name, description or value")
+    steps.add_argument("--expect-changed-name", action=StepAction, nargs=0,
+                       help="fail unless the focused name differs from before the step")
+    steps.add_argument("--expect-unfocused-name-change", action=StepAction, metavar="PREFIX",
+                       help="fail unless, during the step, a node without focus changed its name "
+                            "to one beginning PREFIX")
+    steps.add_argument("--expect-event", action=StepAction, metavar="TYPE",
+                       help="fail unless an event of TYPE arrived during the last step or since")
+    steps.add_argument("--expect-all-named", action=StepAction, nargs=0,
+                       help="fail if any focusable node or scroll bar has no name")
+    steps.add_argument("--expect-node-description", action=StepAction, metavar="NAME|TEXT",
+                       help="fail unless the one node named NAME has a description containing "
+                            "TEXT; with TEXT empty, unless it has none")
     steps.add_argument("--dump", action=StepAction, nargs=0, help="print the whole tree")
     steps.add_argument("--key", action=StepAction, metavar="CHORD",
                        help="deliver a chord such as Tab, shift+Tab, ctrl+Left, F6 or Enter")

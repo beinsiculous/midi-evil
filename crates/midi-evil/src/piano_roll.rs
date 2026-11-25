@@ -349,7 +349,7 @@ pub fn show(
         state.scroll_to_middle = false;
     }
 
-    scroll.show_viewport(ui, |ui, viewport| {
+    let scroll_area = scroll.show_viewport(ui, |ui, viewport| {
         let (response, full_painter) = ui.allocate_painter(size, egui::Sense::click_and_drag());
         // egui gives focus on click only to text fields; without this a pointer selection is
         // something no key can act on.
@@ -436,6 +436,7 @@ pub fn show(
             node.set_description(speech::roll_key_help(speech::platform_command_key()));
         });
     });
+    crate::accessibility::name_scroll_bars(ui.ctx(), scroll_area.id, "Piano roll");
     original_notes != sequence.notes()
 }
 

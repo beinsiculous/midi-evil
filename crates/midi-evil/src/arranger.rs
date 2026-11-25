@@ -1,6 +1,8 @@
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Stroke, vec2};
 use evil_project::{Part, Pattern, Project};
 
+use crate::accessibility::{self, Accessible};
+use crate::speech::{self, Meter, Unavailable};
 use crate::{
     piano_roll::{self, PartDragState, RollState},
     theme,
@@ -27,6 +29,7 @@ pub fn show(
         ui.heading("Arranger");
         if ui
             .add_enabled(allow_structural_edits, egui::Button::new("+ Pattern part"))
+            .unavailable_because(Unavailable::WhileRecording)
             .clicked()
         {
             let pattern_index = project.patterns.len();
@@ -56,6 +59,7 @@ pub fn show(
         }
         if ui
             .add_enabled(allow_structural_edits, egui::Button::new("Duplicate loop"))
+            .unavailable_because(Unavailable::WhileRecording)
             .clicked()
         {
             match project.duplicate_section(transport.start_tick, transport.end_tick) {
@@ -104,7 +108,8 @@ pub fn show(
         .max()
         .unwrap_or(bar * 4);
     let bars = ticks.div_ceil(bar).max(4);
-    egui::ScrollArea::vertical()
+    let meter = Meter::of(project);
+    let lanes = egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             let width = ui.available_width();
@@ -112,6 +117,7 @@ pub fn show(
             let lane_width = (width - label_width).max(40.0);
             let pixels_per_tick = lane_width / (bars * bar) as f32;
             let (ruler, painter) = ui.allocate_painter(vec2(width, 30.0), egui::Sense::click());
+            let ruler = ruler.named("Bar ruler, clicked with a pointer to loop a bar");
             painter.rect_filled(ruler.rect, 2.0, theme::RAISED);
             let section = Rect::from_min_max(
                 Pos2::new(
@@ -166,6 +172,17 @@ pub fn show(
                 };
                 let (response, painter) =
                     ui.allocate_painter(vec2(width, 94.0), egui::Sense::click());
+                let track = &project.tracks[track_index];
+                let response = response.named_as(
+                    egui::accesskit::Role::Button,
+                    speech::describe_track(
+                        track_index,
+                        &track.name,
+                        track.notes.len(),
+                        track.parts.len(),
+                        track.muted,
+                    ),
+                );
                 let rect = response.rect;
                 painter.rect_filled(
                     rect,
@@ -232,8 +249,17 @@ pub fn show(
                         ),
                     );
                     let part_id = egui::Id::new(("arrangement-part", track_index, part_index));
-                    let part_response =
-                        ui.interact(part_rect, part_id, egui::Sense::click_and_drag());
+                    let part_response = ui
+                        .interact(part_rect, part_id, egui::Sense::click_and_drag())
+                        .named_as(
+                            egui::accesskit::Role::Button,
+                            speech::describe_part(
+                                &pattern.name,
+                                part.start_tick,
+                                part.length_ticks,
+                                meter,
+                            ),
+                        );
                     painter.rect_filled(
                         part_rect,
                         3.0,
@@ -330,6 +356,7 @@ pub fn show(
                 ),
             );
         });
+    accessibility::name_scroll_bars(ui.ctx(), lanes.id, "Arranger");
     result
 }
 
@@ -363,13 +390,15 @@ fn part_inspector(
                 ui.add(
                     egui::TextEdit::singleline(&mut project.patterns[pattern_index].name)
                         .desired_width(150.0),
-                );
+                )
+                .named("Pattern name");
                 ui.label("Start");
                 if ui
                     .add_enabled(
                         allow_structural_edits,
                         egui::DragValue::new(&mut value.start_tick).range(0..=u64::MAX - 1),
                     )
+                    .named("Part start in ticks")
                     .changed()
                     && let Err(error) =
                         project.move_part(roll.selected_track, part_index, value.start_tick)
@@ -383,6 +412,7 @@ fn part_inspector(
                         egui::DragValue::new(&mut value.length_ticks)
                             .range(1..=u64::MAX - value.start_tick),
                     )
+                    .named("Part length in ticks")
                     .changed()
                     && let Err(error) =
                         project.resize_part(roll.selected_track, part_index, value.length_ticks)
@@ -396,6 +426,7 @@ fn part_inspector(
                 }
                 if ui
                     .add_enabled(allow_structural_edits, egui::Button::new("Duplicate shared"))
+                    .unavailable_because(Unavailable::WhileRecording)
                     .clicked()
                 {
                     match project.duplicate_part(roll.selected_track, part_index) {
@@ -405,6 +436,7 @@ fn part_inspector(
                 }
                 if ui
                     .add_enabled(allow_structural_edits, egui::Button::new("Make unique"))
+                    .unavailable_because(Unavailable::WhileRecording)
                     .clicked()
                 {
                     match project.make_part_unique(roll.selected_track, part_index) {
@@ -414,6 +446,7 @@ fn part_inspector(
                 }
                 if ui
                     .add_enabled(allow_structural_edits, egui::Button::new("Merge to timeline"))
+                    .unavailable_because(Unavailable::WhileRecording)
                     .clicked()
                 {
                     match project.merge_part_into_track(roll.selected_track, part_index) {
@@ -426,6 +459,7 @@ fn part_inspector(
                 }
                 if ui
                     .add_enabled(allow_structural_edits, egui::Button::new("Delete part"))
+                    .unavailable_because(Unavailable::WhileRecording)
                     .clicked()
                 {
                     match project.remove_part(roll.selected_track, part_index) {

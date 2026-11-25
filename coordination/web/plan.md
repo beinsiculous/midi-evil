@@ -498,7 +498,7 @@ below, and what it leaves the next two batches:
 - **For W-A1b: a disabled button is never reported disabled.** AccessKit's AT-SPI adapter reports
   that state only for roles that can be read-only (`accesskit_atspi_common-0.18.1/src/node.rs:350`);
   every greyed-out button in the application reaches Orca as available. W-A1b gives each disabled
-  button a description saying why — pending Jesse's ruling between that and leaving it upstream's.
+  button a description saying why. **Ruled by Jesse, 2026-11-24: "go with the descriptions".**
 - **For W-A1c:** the arranger's own `allow_structural_edits` checks move to the command boundary
   with the arranger's keys; `describe_part` and `describe_track` are written when something calls
   them.
@@ -554,7 +554,29 @@ and asserts the refusal — and that the desktop's flag and its settings file we
 
 **Leaves out:** the arranger, the transport's own readout, names for controls outside the roll.
 
-### W-A1b — the transport, and a name for everything on a shown surface
+### W-A1b — the transport, and a name for everything on a shown surface — BUILT 2026-11-24, sitting pending
+
+Built by Claude Opus 5.5 in two passes; 446 tests and the native gate at 320 expectations. What
+differed from the section below, and what it leaves W-A1c:
+
+- **The readout** is as the proof decided, the rule in `Announcer::on_demand_name`. One addition:
+  Enter on a reading that has not changed is announced, since an unchanged name says nothing.
+- **Everything could be named**, scroll bars included; no waiver was needed. Two named Tab stops do
+  nothing from the keyboard: the side panel's resize handle and the arranger's bar ruler. The ruler
+  gets its key path in W-A1c; the handle is Jesse's call.
+- **A screen reader started after the application works**: AccessKit watches the flag, and R-13
+  shows the tree appearing.
+- **The transport plays in the gate through a clock seam**, not a device: with
+  `MIDI_EVIL_SILENT_PLAYBACK` set, and only in a debug build, the real player feeds an output that
+  is pulled at the sample rate and thrown away. ALSA's null device does not keep time.
+- **`Project::timing()`** is new in `evil-project`: the tempo map with no tracks. The readout asks
+  for the playhead every frame, and a whole performance expands every pattern in the song.
+  `compat/` is still to be verified on Iroh.
+- **For W-A1c:** `describe_part` and `describe_track` now exist and the arranger's lanes and parts
+  are named buttons; its cursor, its keys and its recording guard are still W-A1c's.
+- **The gate on a desktop in use:** when the compositor will not give a new XWayland window
+  keyboard focus — which happens while a person is typing elsewhere — the probe refuses to send
+  keys and the gate fails. That is the probe working. A gate run is retried, not waived.
 
 **Files:** `transport_readout.rs` (new); `app/chrome.rs` (744 lines — the toolbar's transport block
 moves into the new module, which brings it under 600); `app/sounds.rs`; `midi_input.rs`;
@@ -564,20 +586,22 @@ moves into the new module, which brings it under 600); `app/sounds.rs`; `midi_in
 
 - **The transport readout**: one focusable, named status in the toolbar, present at every window
   width, giving state, tempo, meter and position, the position in bars and beats as well as time.
-  It must be true whenever it is read and silent between reads (R-11), and **which mechanism gives
-  both is not known**: W0 heard a focused node's name change spoken on every key, on the roll's
-  role, and never tried a name that changes on a timer. So the batch opens with a proof, heard by
-  Jesse before anything is built on it — a focused status node whose name changes once a second:
-  - *if Orca stays silent*, the name is simply kept current, and a screen reader's own
-    read-current-object is always right;
-  - *if Orca speaks each change*, the name stays fixed ("Transport"), the live reading is the
-    node's description and numeric value kept current, and an explicit read — arriving, **Enter**
-    on it, the roll's chord — announces it. Never Space: Space is the transport's own play and
-    stop everywhere (`app.rs:429`), so a read gesture on Space would stop the song to tell you
-    where it was. The proof then also says what Orca's
-    read-current-object returns for that node, and if it is stale the readout's own help names the
-    gesture that is not.
-  The result of the proof is written into this section before the rest of the batch is handed off.
+  It must be true whenever it is read and silent between reads (R-11).
+  **The proof, heard by Jesse 2026-11-24 (Orca 49.4):** a focused status node whose *name* changes
+  on a timer is spoken at every change; one whose name is fixed and whose *description and numeric
+  value* change is spoken even more. Nothing about a focused node may change on a timer. Orca's
+  own rules say the rest (`orca/ax_utilities_event.py`): a name change is presented only when its
+  source **is** the focused object; a description change when its source is the focused object
+  **or an ancestor of it**. So:
+  - **while the readout is not focused, its name is kept current** — silently, since it is not the
+    focus — so that the moment focus arrives, what is spoken is true;
+  - **while it is focused, nothing about it changes by itself.** Enter reads again: the name is
+    brought up to date once, and that change is the announcement. Its description is fixed help —
+    "Enter reads the transport again" — which is also what a screen reader's own read-current-object
+    gives, with the name as of the last read;
+  - **from the roll, `I`** announces it through the announcer, as W-A1a built;
+  - **no region's description ever changes**: a region is an ancestor of whatever is focused in it.
+  The visible position label beside it keeps counting; it is never the focus.
 - **A name for every control on the Song and Notes views, the toolbar and the side panel** — the
   fifteen anonymous nodes of W0's baseline and any since. By module — `app/chrome.rs`: About, Save,
   the project name, tempo, meter, START BAR, LOOP END, the track name, the note inspector's four
@@ -588,6 +612,12 @@ moves into the new module, which brings it under 600); `app/sounds.rs`; `midi_in
   neither, the batch stops there and reports it: a silent Tab stop on a shown surface is Jesse's
   ruling, as a written waiver naming each stop, not the batch's to accept. The window's title is
   exposed.
+- **A disabled button says why.** AccessKit's AT-SPI adapter never reports a button as disabled, so
+  Orca hears every greyed-out button as available (W-A1a). Every button on a shown surface that can
+  be disabled carries a description while it is — "Select a note first", "Nothing to undo",
+  "Not while recording" — which is also its hover text, so a sighted person reads the same reason.
+  The reasons live in `speech.rs`. Gate row R-22: each such button, in its disabled state, has a
+  non-empty description, and loses it when enabled.
 - **The instrument list** readable and operable: which sound a track has, how many there are,
   Alt+Left/Right's cycling announced by the announcer rather than by a status label nobody hears.
 - **A screen reader started after the application** (R-13): the batch finds out whether the tree
@@ -602,7 +632,8 @@ focused: change the tempo, read; Ctrl+N, read: each reading is the new project's
 focus between. R-11 — read the transport
 stopped (Enter), press Space, wait, read again with Enter without moving focus: it says playing and
 a later position, and the song is still playing; Space; read again: stopped; and **between the reads, with focus resting on it while it plays, no
-announcement and no spoken name change** for five seconds. (The probe's private
+announcement and no change to its name, description or value** for five seconds — the probe counts
+the events, and the count is zero. With focus elsewhere while it plays, its name does change. (The probe's private
 session has no audio device to open; the row uses the application's existing null-device path or a
 clock stub the batch names — playback's *sound* is not what the row is about.) R-12 — a tree dump
 of each shown view with **no focusable node unnamed**, asserted by the probe, not read by eye.

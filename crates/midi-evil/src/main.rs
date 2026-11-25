@@ -1,3 +1,4 @@
+mod accessibility;
 mod announcer;
 mod app;
 mod arranger;
@@ -64,7 +65,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
     eframe::run_native(
-        "MIDI Evil",
+        accessibility::WINDOW_TITLE,
         native_options,
         Box::new(move |context| Ok(Box::new(StudioApp::new(context, options, Some(instance))))),
     )?;

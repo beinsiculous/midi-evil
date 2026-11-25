@@ -5,6 +5,7 @@ use eframe::egui;
 use evil_project::{EventSequence, Note};
 
 use super::{EditedSequence, RollState, cursor, edits::RollCommand};
+use crate::accessibility::Accessible;
 use crate::{announcer::Announcer, speech, theme};
 
 const ONE_NOTE_BUTTONS: [(RollCommand, &str); 6] = [
@@ -103,6 +104,7 @@ pub fn show(
             if ui
                 .add_enabled(enabled, egui::Button::new(label))
                 .on_hover_text(chord_hint(command, key))
+                .unavailable_because(speech::Unavailable::NoNoteSelected)
                 .clicked()
             {
                 pressed = Some(command);

@@ -4,6 +4,7 @@ sender that delivers keys to the application's own X window with XSendEvent and 
 
 import ctypes
 import ctypes.util
+import math
 import os
 import time
 
@@ -377,13 +378,29 @@ def check_step_arguments(steps):
             if not value.split():
                 raise ProbeError(f"--burst {value!r}: give at least one chord")
         elif kind == "set_value":
-            label, _, number = value.rpartition(":")
+            name, _, number = value.rpartition(":")
             try:
                 float(number)
             except ValueError:
-                raise ProbeError(f"--set-value {value!r}: give LABEL:NUMBER") from None
-            if not label:
-                raise ProbeError(f"--set-value {value!r}: give LABEL:NUMBER")
+                raise ProbeError(f"--set-value {value!r}: give NAME:NUMBER") from None
+            if not name:
+                raise ProbeError(f"--set-value {value!r}: give NAME:NUMBER")
+        elif kind in ("pause", "expect_quiet"):
+            try:
+                seconds = float(value)
+            except ValueError:
+                seconds = math.nan
+            if not math.isfinite(seconds) or seconds <= 0:
+                raise ProbeError(f"--{kind.replace('_', '-')} {value!r}: give a finite, positive "
+                                 f"number of seconds")
+        elif kind in ("key_until", "expect_node_description"):
+            first, separator, second = value.partition("|")
+            # A description's text may be empty, to say it has none; a key's target may not.
+            if not (first and separator) or (kind == "key_until" and not second):
+                raise ProbeError(f"--{kind.replace('_', '-')} {value!r}: give FIRST|SECOND")
+        elif kind == "expect_unfocused_name_change":
+            if not value:
+                raise ProbeError("--expect-unfocused-name-change: give a non-empty prefix")
         elif kind in ("expect_hold_name_changes", "expect_release_name_changes"):
             whole_number(value, f"--{kind.replace('_', '-')} {value!r}")
         elif kind == "expect_announcement_count":

@@ -230,9 +230,9 @@ pub fn recording_tick_at_elapsed(
     end_tick: Option<u64>,
     elapsed: f64,
 ) -> Result<u64, String> {
-    let performance = project
-        .to_performance()
-        .map_err(|error| error.to_string())?;
+    // The tempo map alone: the toolbar asks for the playhead every frame, and a whole
+    // performance expands and sorts every pattern repetition in the song.
+    let performance = project.timing().map_err(|error| error.to_string())?;
     let start_seconds = performance.seconds_at(start_tick);
     if let Some(end_tick) = end_tick {
         let duration = (performance.seconds_at(end_tick) - start_seconds).max(f64::EPSILON);

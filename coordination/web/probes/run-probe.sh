@@ -47,9 +47,18 @@ verify_isolation() {
 inside_private_bus() {
     export XDG_DATA_HOME=$XDG_RUNTIME_DIR/data
     mkdir -p "$XDG_DATA_HOME"
-    gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus \
-        --method org.freedesktop.DBus.Properties.Set \
-        org.a11y.Status ScreenReaderEnabled "<true>" > /dev/null || exit 1
+    # AccessKit builds no tree until a screen reader is said to be on. The probe's
+    # --screen-reader-after-launch says so itself, once it has shown the tree absent. Matched as
+    # a whole argument: a heading that mentions it is not it.
+    local argument after_launch=
+    for argument in "$@"; do
+        [ "$argument" = --screen-reader-after-launch ] && after_launch=1
+    done
+    if [ -z "$after_launch" ]; then
+        gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus \
+            --method org.freedesktop.DBus.Properties.Set \
+            org.a11y.Status ScreenReaderEnabled "<true>" > /dev/null || exit 1
+    fi
     AT_SPI_BUS_ADDRESS=$(gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus \
         --method org.a11y.Bus.GetAddress | sed "s/^('//;s/',)$//")
     export AT_SPI_BUS_ADDRESS
@@ -61,8 +70,10 @@ inside_private_bus() {
     unset WAYLAND_DISPLAY
     # An empty ALSA configuration defines no device, so a gate that starts playback or a take
     # can never sound on the desktop, and no MIDI port of the person's is opened.
+    # MIDI_EVIL_SILENT_PLAYBACK has a debug build play on a silent clock instead of a device, so
+    # the transport can be read while it plays; a release build ignores it.
     : > "$XDG_RUNTIME_DIR/silent-asound.conf"
-    ALSA_CONFIG_PATH=$XDG_RUNTIME_DIR/silent-asound.conf \
+    ALSA_CONFIG_PATH=$XDG_RUNTIME_DIR/silent-asound.conf MIDI_EVIL_SILENT_PLAYBACK=1 \
         "$MIDI_EVIL_BINARY" "$MIDI_EVIL_FILE" > "$XDG_RUNTIME_DIR/application.log" 2>&1 &
     application=$!
     # Globals, not locals: the trap runs after this function has returned. The outer cleanup

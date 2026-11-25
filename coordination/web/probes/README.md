@@ -8,7 +8,8 @@ re-run. They are half of each gate; the other half is a person listening with Or
 `run-probe.sh` starts MIDI Evil, runs `atspi-probe.py` against it with the script's own
 arguments, stops everything it started, and exits with the probe's status. `probe_support.py`
 beside them holds what the probe stands on: its isolation check, its event pump, and the sender
-that delivers keys to the application's own X window. The probe finds the
+that delivers keys to the application's own X window; `probe_tree.py` reads the tree (one line
+per node, the walk, where focus is); `probe_expectations.py` holds the checks. The probe finds the
 application on the AT-SPI bus, then runs its steps in the order given: it performs actions on
 named nodes, delivers keys, checks what each step left, and prints the focused node and the
 application's accessibility events in the half second after each key. Run from the repository
@@ -49,10 +50,16 @@ Steps, run in command-line order:
 - `--hold CHORD:REPEATS` presses a chord, sends REPEATS further presses of its key 40 ms apart
   with no release between — winit reports each as a repeat — waits, then releases it. It records
   the focused node's name changes while the key repeated and after the release, apart.
-- `--set-value LABEL:VALUE` sets the value box that belongs to the label LABEL — the first node
-  with a value among the label's following siblings, before the next caption — through AT-SPI's
-  Value interface, which AccessKit turns into the widget's SetValue action: the
-  note inspector's boxes are reached this way while they have no names of their own.
+- `--set-value NAME:VALUE` sets the value box named NAME (`Velocity`, `Tempo in beats per
+  minute`) through AT-SPI's Value interface, which AccessKit turns into the widget's SetValue
+  action, as a screen reader's value change would be. Focus does not move.
+- `--pause SECONDS` waits, printing the application's events; `--key-until "CHORD|TEXT"` sends
+  CHORD every half second until the focused name contains TEXT (bounded by `--wait`) — Enter on
+  the transport readout until a render has finished and it says playing.
+- `--screen-reader-after-launch` (not a step: it applies to the whole run) has `run-probe.sh`
+  leave `ScreenReaderEnabled` off; the probe shows the application absent from the accessibility
+  bus for three seconds, turns the flag on — on the private bus it has just verified — and only
+  then looks for the application, as a screen reader started after the application would.
 - The expectations check what the last `--press`, `--focus` or `--key` left; several may follow
   one step. `--expect TEXT` fails the run unless the focused node's name contains TEXT;
   `--expect-not TEXT` fails if it does, **or if nothing is focused** — it exists to show focus went
@@ -71,6 +78,21 @@ Steps, run in command-line order:
   one. A failed expectation is one line on stderr and exit status 1. The new steps' arguments
   (`--hold Up:5x`, a count that is not a number) are checked with the chords, before anything
   runs, and a call the accessibility bus refuses is one line on stderr, not a traceback.
+- `--expect-quiet SECONDS` waits and fails on any announcement, or on any change to the focused
+  node's name, description or value, raised while it waited — the readout's five silent seconds.
+  `--expect-changed-name` fails unless the focused name differs from before the step;
+  `--expect-unfocused-name-change PREFIX` unless, during the step, a node without focus changed
+  its name to one beginning PREFIX. `--expect-all-named` fails if any focusable node or any
+  scroll bar has no name, and lists them. `--expect-node-description "NAME|TEXT"` fails unless
+  the one node named NAME has a description containing TEXT, or, with TEXT empty, has none —
+  which is how a disabled button's reason is checked, since its disabled state is not exposed.
+  Like `--expect`, it waits up to three seconds for what it expects to arrive.
+  `--expect-event TYPE` fails unless an event of exactly TYPE arrived during the last step or
+  since. `--pause` and `--expect-quiet` set aside, printed apart, whatever arrived before they
+  opened, so each counts only its own window; `--key-until` that runs out of time fails.
+  `probe_self_check.py` checks without an application that what `--expect-quiet` counts is what
+  the probe listens for (`object:property-change` covers the description's and the value's
+  changes), and that a description change on the focused node fails a quiet window.
 - `--heading TEXT` prints a line into the transcript; `--dump` prints each node as role, name,
   description, value, text, focus states, actions and extents in window coordinates.
 
@@ -88,13 +110,14 @@ name and is itself pressable, so a guess would press the wrong one and say it ha
 
 ## `native-gate.sh` — the native gate's mechanical half
 
-Runs the native gate of W-A1a (plan § W-A1a, *Gate rows*) and prints the transcript: first the
+Runs the native gate of W-A1a and W-A1b (plan § W-A1a and § W-A1b, *Gate rows*) and prints the
+transcript: first the
 refusal rows — the inner entry with the desktop's own environment; one row per clause of its
 check, each with every other clause satisfied so only that clause can refuse; a control with all
 of them satisfied, which must get past the check; and the probe's own check called without the
 launcher — each requiring the desktop's screen-reader flag and settings files to be unchanged;
-then W0's sequence and its five edges, less the transport; then the rows found in W0's review,
-R-1 to R-10 and R-14 to R-20, each in a fresh application. Every step a row names carries an
+then W0's sequence, the transport's step included, and its five edges; then the rows found in
+W0's review, R-1 to R-22, and the instrument list's, each in a fresh application. Every step a row names carries an
 expectation, so exit status 0 means each key did what the row says. Rows that need a project of
 their own — two identical notes, a bass part, two tracks — write it as a small `.evil` file into a
 private temporary directory, removed on exit. What keys cannot show from outside (which of two
@@ -168,7 +191,13 @@ the launcher's parent check (its own parent is the inner shell) or the ownership
 
 **It makes no sound.** The application runs with `ALSA_CONFIG_PATH` naming an empty file in the
 private runtime directory: ALSA then defines no device, so a row that starts playback or a take
-cannot sound on the desktop, and no MIDI port of the person's is opened.
+cannot sound on the desktop, and no MIDI port of the person's is opened. With no device the song
+could not play at all, and the transport could not be read playing; `MIDI_EVIL_SILENT_PLAYBACK`,
+which `run-probe.sh` sets, has a **debug** build play on a silent clock instead — the same player,
+fed to a thread that takes its samples at the rate a device would and drops them — so its
+position advances in real time. A release build never reads the variable
+(`preview.rs`, `silent_playback_requested`). ALSA's own `null` device was tried first and does not
+pace: it took two seconds of audio in three milliseconds.
 
 **It cannot touch a live MIDI Evil.** A second instance hands its file to the first and exits —
 but only through the socket in its runtime directory, and this run's is private, so it can neither

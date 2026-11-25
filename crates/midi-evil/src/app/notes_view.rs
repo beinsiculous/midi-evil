@@ -2,6 +2,7 @@
 //! editor region.
 
 use super::*;
+use crate::accessibility::Accessible;
 use crate::piano_roll::{EditedSequence, edits::RollCommand};
 use crate::regions::{self, Region};
 
@@ -79,9 +80,11 @@ impl StudioApp {
         ui.horizontal_wrapped(|ui| {
             theme::label(ui, "NOTE");
             ui.label("Pitch");
-            ui.add(egui::DragValue::new(&mut note.pitch).range(0..=127));
+            ui.add(egui::DragValue::new(&mut note.pitch).range(0..=127))
+                .named("Pitch");
             ui.label("Velocity");
-            ui.add(egui::DragValue::new(&mut note.velocity).range(1..=127));
+            ui.add(egui::DragValue::new(&mut note.velocity).range(1..=127))
+                .named("Velocity");
             ui.label("Start");
             ui.add(
                 egui::DragValue::new(&mut note.start_tick).range(
@@ -91,9 +94,11 @@ impl StudioApp {
                         .unwrap_or(u64::MAX)
                         .saturating_sub(1),
                 ),
-            );
+            )
+            .named("Start in ticks");
             ui.label("Length");
-            ui.add(egui::DragValue::new(&mut note.duration_ticks).range(1..=1_000_000));
+            ui.add(egui::DragValue::new(&mut note.duration_ticks).range(1..=1_000_000))
+                .named("Length in ticks");
             remove = ui.button("Delete note").clicked();
         });
         if remove {

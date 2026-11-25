@@ -1,8 +1,10 @@
 use std::num::NonZero;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use evil_synth::{ChannelMeter, METER_BLOCK_FRAMES, StereoSound};
+use rodio::mixer::MixerSource;
 use rodio::{DeviceSinkBuilder, DeviceSinkError, MixerDeviceSink, Player, Source};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -73,8 +75,68 @@ fn update_snapshot(snapshot: &mut MeterSnapshot, block_peak: [f32; 2]) {
     }
 }
 
+/// Where the preview's samples go: the default audio device, or nowhere at the pace a device
+/// would take them.
+enum Output {
+    Device { _sink: MixerDeviceSink },
+    Silent { _clock: SilentOutput },
+}
+
+/// Set in a debug build only, by the screen-reader probe, whose private session has no audio
+/// device: playback then runs on a clock with nothing to hear, so the transport can be read
+/// while it plays. A release build never looks at it.
+const SILENT_PLAYBACK_VARIABLE: &str = "MIDI_EVIL_SILENT_PLAYBACK";
+
+fn silent_playback_requested() -> bool {
+    cfg!(debug_assertions) && std::env::var_os(SILENT_PLAYBACK_VARIABLE).is_some()
+}
+
+const STEREO: NonZero<u16> = NonZero::<u16>::MIN.saturating_add(1);
+
+/// Takes samples from the mixer at the rate a device would and drops them, on a thread of its
+/// own, so the player's position advances in real time with nothing to hear.
+struct SilentOutput {
+    running: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl SilentOutput {
+    fn start(mut source: MixerSource) -> Self {
+        let running = Arc::new(AtomicBool::new(true));
+        let still_running = Arc::clone(&running);
+        let thread = std::thread::spawn(move || {
+            let samples_per_second =
+                u64::from(source.sample_rate().get()) * u64::from(source.channels().get());
+            let started = Instant::now();
+            let mut taken: u64 = 0;
+            while still_running.load(Ordering::Relaxed) {
+                // Counted from the start rather than per wake-up, so late wake-ups never drift.
+                let due = (started.elapsed().as_secs_f64() * samples_per_second as f64) as u64;
+                for _ in taken..due {
+                    let _ = source.next();
+                }
+                taken = taken.max(due);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+        Self {
+            running,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for SilentOutput {
+    fn drop(&mut self) {
+        self.running.store(false, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 pub struct PreviewPlayer {
-    _stream: MixerDeviceSink,
+    _output: Output,
     player: Player,
     meter: PreviewMeter,
 }
@@ -93,9 +155,24 @@ impl PreviewPlayer {
         looping: bool,
         channel_meters: Vec<(usize, ChannelMeter)>,
     ) -> Result<Self, DeviceSinkError> {
-        let mut stream = DeviceSinkBuilder::open_default_sink()?;
-        stream.log_on_drop(false);
-        let player = Player::connect_new(stream.mixer());
+        let (output, player) = if silent_playback_requested() {
+            let (mixer, source) = rodio::mixer::mixer(
+                STEREO,
+                NonZero::new(sound.sample_rate).unwrap_or(NonZero::<u32>::MIN),
+            );
+            let player = Player::connect_new(&mixer);
+            (
+                Output::Silent {
+                    _clock: SilentOutput::start(source),
+                },
+                player,
+            )
+        } else {
+            let mut stream = DeviceSinkBuilder::open_default_sink()?;
+            stream.log_on_drop(false);
+            let player = Player::connect_new(stream.mixer());
+            (Output::Device { _sink: stream }, player)
+        };
         let meter = PreviewMeter::with_channels(&channel_meters);
         player.append(StereoSource::new_with_loop_and_meters(
             sound,
@@ -104,7 +181,7 @@ impl PreviewPlayer {
             channel_meters,
         ));
         Ok(Self {
-            _stream: stream,
+            _output: output,
             player,
             meter,
         })
@@ -360,6 +437,36 @@ mod tests {
         assert_eq!(channels.len(), 1);
         assert_eq!(channels[0].0, 0);
         assert_eq!(channels[0].1.peak, expected_channels[0].1.pre_sum_peak);
+    }
+
+    #[test]
+    fn silent_playback_advances_in_real_time_and_stops_with_its_player() {
+        let (mixer, source) = rodio::mixer::mixer(STEREO, NonZero::new(48_000).unwrap());
+        let player = Player::connect_new(&mixer);
+        player.append(StereoSource::new_with_loop(
+            StereoSound {
+                left: vec![0.0; 48_000],
+                right: vec![0.0; 48_000],
+                sample_rate: 48_000,
+            },
+            false,
+            PreviewMeter::default(),
+        ));
+        let output = SilentOutput::start(source);
+        std::thread::sleep(Duration::from_millis(300));
+        let position = player.get_pos();
+        assert!(
+            position >= Duration::from_millis(150) && position <= Duration::from_millis(800),
+            "{position:?} after 300 ms"
+        );
+        drop(output);
+        let stopped_at = player.get_pos();
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(
+            player.get_pos(),
+            stopped_at,
+            "nothing pulls once it is dropped"
+        );
     }
 
     #[test]

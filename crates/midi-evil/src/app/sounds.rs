@@ -1,5 +1,7 @@
 use super::*;
+use crate::accessibility::Accessible;
 use crate::instruments::{Collection, LoadedSound, Sound, cycle};
+use crate::speech::{self, Unavailable};
 
 impl StudioApp {
     fn selected_sound(&self) -> Option<Sound> {
@@ -228,9 +230,12 @@ impl StudioApp {
             }
             match sound.load() {
                 Ok(loaded) => {
-                    if self.assign_loaded_sound(sound.clone(), loaded) && skipped > 0 {
-                        self.status
-                            .push_str(&format!(" · skipped {skipped} unavailable sound(s)"));
+                    if self.assign_loaded_sound(sound.clone(), loaded) {
+                        if skipped > 0 {
+                            self.status
+                                .push_str(&format!(" · skipped {skipped} unavailable sound(s)"));
+                        }
+                        self.announce_selected_sound();
                     }
                     return;
                 }
@@ -241,6 +246,32 @@ impl StudioApp {
             self.status = format!(
                 "No other loadable sound; {skipped} unavailable file(s). Load files or remove them from the library."
             );
+        } else {
+            self.status = speech::unavailable_reason(Unavailable::NoOtherSound).to_owned();
+        }
+        self.announcer.announce(self.status.clone());
+    }
+
+    /// Which sound the selected track has and where it is in the list Previous and Next walk,
+    /// for the sound bar's name and for the announcement after a cycle.
+    pub(super) fn describe_selected_sound(&self) -> Option<String> {
+        let current = self.selected_sound()?;
+        let choices = self
+            .sounds
+            .choices(&self.project, self.patch_base(), current.kind);
+        let position = choices.iter().position(|sound| sound.same_source(&current));
+        let name = position.map_or(current.name.as_str(), |index| choices[index].name.as_str());
+        Some(speech::describe_sound(
+            name,
+            position,
+            choices.len(),
+            current.kind.label(),
+        ))
+    }
+
+    fn announce_selected_sound(&mut self) {
+        if let Some(description) = self.describe_selected_sound() {
+            self.announcer.announce(description);
         }
     }
 
@@ -257,7 +288,7 @@ impl StudioApp {
                         theme::label(ui, "SOUND");
                         let selected_track = self.roll.selected_track;
                         let mut next_track = selected_track;
-                        egui::ComboBox::from_id_salt("sound-track")
+                        let sound_track = egui::ComboBox::from_id_salt("sound-track")
                             .width(135.0)
                             .selected_text(
                                 self.project
@@ -274,20 +305,28 @@ impl StudioApp {
                                     );
                                 }
                             });
+                        sound_track.response.named("Track whose sound is shown");
                         if next_track != selected_track {
                             self.select_sound_track(next_track);
                         }
                         ui.menu_button("+ Track", |ui| {
-                            ui.add_enabled_ui(self.recorder.is_none(), |ui| {
-                                if ui.button("Synth track").clicked() {
-                                    ui.close();
-                                    self.add_track();
-                                }
-                                if ui.button("Drum track").clicked() {
-                                    ui.close();
-                                    self.add_drum_track();
-                                }
-                            });
+                            let enabled = self.recorder.is_none();
+                            if ui
+                                .add_enabled(enabled, egui::Button::new("Synth track"))
+                                .unavailable_because(Unavailable::WhileRecording)
+                                .clicked()
+                            {
+                                ui.close();
+                                self.add_track();
+                            }
+                            if ui
+                                .add_enabled(enabled, egui::Button::new("Drum track"))
+                                .unavailable_because(Unavailable::WhileRecording)
+                                .clicked()
+                            {
+                                ui.close();
+                                self.add_drum_track();
+                            }
                         });
                         let Some(current) = self.selected_sound() else {
                             ui.label("Add a synth or drum track to load sounds.");
@@ -296,11 +335,18 @@ impl StudioApp {
                         let choices =
                             self.sounds
                                 .choices(&self.project, self.patch_base(), current.kind);
-                        let can_cycle = self.recorder.is_none()
-                            && choices.iter().any(|sound| !sound.same_source(&current));
+                        let recording = self.recorder.is_some();
+                        let no_other = !choices.iter().any(|sound| !sound.same_source(&current));
+                        let can_cycle = !recording && !no_other;
+                        let cycle_reasons = [
+                            (recording, Unavailable::WhileRecording),
+                            (no_other, Unavailable::NoOtherSound),
+                        ];
                         if ui
                             .add_enabled(can_cycle, egui::Button::new("‹ Previous"))
                             .on_hover_text("Previous sound in the filtered library · Alt+Left")
+                            .named("Previous sound")
+                            .unavailable_because_of(&cycle_reasons)
                             .clicked()
                         {
                             self.cycle_sound(true);
@@ -309,6 +355,7 @@ impl StudioApp {
                             .iter()
                             .find(|sound| sound.same_source(&current))
                             .map_or(current.name.as_str(), |sound| sound.name.as_str());
+                        let described = self.describe_selected_sound().unwrap_or_default();
                         if ui
                             .add_sized(
                                 [180.0, 30.0],
@@ -322,6 +369,7 @@ impl StudioApp {
                                 current.kind.label(),
                                 current.reference
                             ))
+                            .named(format!("Sound: {described}; opens the sound library"))
                             .clicked()
                         {
                             self.sounds.open = !self.sounds.open;
@@ -329,6 +377,8 @@ impl StudioApp {
                         if ui
                             .add_enabled(can_cycle, egui::Button::new("Next ›"))
                             .on_hover_text("Next sound in the filtered library · Alt+Right")
+                            .named("Next sound")
+                            .unavailable_because_of(&cycle_reasons)
                             .clicked()
                         {
                             self.cycle_sound(false);
@@ -338,6 +388,7 @@ impl StudioApp {
                             .on_hover_text(
                                 "Load one or more instruments; remember them in your library",
                             )
+                            .unavailable_because(Unavailable::WhileRecording)
                             .clicked()
                         {
                             self.load_sound_files();
@@ -374,16 +425,18 @@ impl StudioApp {
             .collapsible(false)
             .show(context, |ui| {
                 ui.add(egui::TextEdit::singleline(&mut self.sounds.query)
-                    .hint_text("Search sounds or file paths…").desired_width(f32::INFINITY));
+                    .hint_text("Search sounds or file paths…").desired_width(f32::INFINITY))
+                    .named("Search sounds or file paths");
                 ui.horizontal_wrapped(|ui| {
                     for (collection, title) in [(Collection::All, "All sounds"), (Collection::Factory, "Factory"), (Collection::User, "User loaded")] {
                         ui.selectable_value(&mut self.sounds.collection, collection, title);
                     }
-                    load = ui.add_enabled(self.recorder.is_none(), egui::Button::new("Load files…")).clicked();
+                    load = ui.add_enabled(self.recorder.is_none(), egui::Button::new("Load files…"))
+                        .unavailable_because(Unavailable::WhileRecording).clicked();
                 });
                 ui.separator();
                 let choices = self.sounds.choices(&self.project, self.patch_base(), current.kind);
-                egui::ScrollArea::vertical().id_salt("sound-list")
+                let list = egui::ScrollArea::vertical().id_salt("sound-list")
                     .max_height(320.0).auto_shrink([false, false])
                     .show(ui, |ui| {
                         if choices.is_empty() {
@@ -397,7 +450,8 @@ impl StudioApp {
                                 .selected(sound.same_source(&current))
                                 .min_size(egui::vec2(ui.available_width(), 36.0))
                                 .truncate())
-                                .on_hover_text(&sound.reference).clicked() {
+                                .on_hover_text(&sound.reference)
+                                .unavailable_because(Unavailable::WhileRecording).clicked() {
                                 selected = Some(sound.clone());
                             }
                             if sound.user {
@@ -409,6 +463,7 @@ impl StudioApp {
                             }
                         }
                     });
+                crate::accessibility::name_scroll_bars(ui.ctx(), list.id, "Sound list");
                 ui.separator();
                 ui.label("Select a sound to assign it. Previous / Next follows this search and collection.");
                 let instrument_index = self.project.tracks[self.roll.selected_track].instrument;

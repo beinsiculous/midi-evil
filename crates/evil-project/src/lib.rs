@@ -496,6 +496,16 @@ impl Project {
                 })
             })
             .collect();
+        Ok(Performance {
+            tracks,
+            ..self.timing()?
+        })
+    }
+
+    /// The project's meter and tempo map with no tracks: what converting between ticks and
+    /// seconds needs, without expanding a single pattern. A playhead asks for it every frame.
+    pub fn timing(&self) -> Result<Performance, Error> {
+        self.validate_timing()?;
         let mut tempo_changes = Vec::with_capacity(self.tempo_changes.len() + 1);
         tempo_changes.push(PerformanceTempoChange {
             tick: 0,
@@ -513,7 +523,7 @@ impl Project {
             beat_unit: self.beat_unit,
             ticks_per_quarter: self.ticks_per_quarter,
             tempo_changes,
-            tracks,
+            tracks: Vec::new(),
         })
     }
 
@@ -534,16 +544,10 @@ impl Project {
         }
     }
 
-    pub fn validate(&self) -> Result<(), Error> {
-        if self.format != FORMAT_NAME {
-            return Err(Error::InvalidFormat);
-        }
-        if self.version != FORMAT_VERSION {
-            return Err(Error::UnsupportedVersion(self.version));
-        }
-        if self.name.trim().is_empty() {
-            return Err(invalid("project name cannot be empty"));
-        }
+    /// What converting between ticks and seconds relies on: a tempo map in strictly increasing
+    /// order, a meter, and a tick division that is not zero. Unordered tempo changes would
+    /// underflow the subtraction between them.
+    fn validate_timing(&self) -> Result<(), Error> {
         tempo_microseconds(self.tempo_bpm)?;
         let mut previous_tick = 0;
         for change in &self.tempo_changes {
@@ -564,6 +568,20 @@ impl Project {
         if self.ticks_per_quarter == 0 {
             return Err(invalid("ticks_per_quarter must be greater than zero"));
         }
+        Ok(())
+    }
+
+    pub fn validate(&self) -> Result<(), Error> {
+        if self.format != FORMAT_NAME {
+            return Err(Error::InvalidFormat);
+        }
+        if self.version != FORMAT_VERSION {
+            return Err(Error::UnsupportedVersion(self.version));
+        }
+        if self.name.trim().is_empty() {
+            return Err(invalid("project name cannot be empty"));
+        }
+        self.validate_timing()?;
         if !(8_000..=192_000).contains(&self.sample_rate) {
             return Err(invalid("sample_rate must be between 8000 and 192000"));
         }
@@ -762,6 +780,25 @@ mod tests {
         let json = project.to_json_pretty().unwrap();
         let decoded = Project::from_json(&json).unwrap();
         let performance = decoded.to_performance().unwrap();
+        let timing = decoded.timing().unwrap();
+        assert!(timing.tracks.is_empty(), "timing expands no pattern");
+        assert_eq!(timing.tempo_changes, performance.tempo_changes);
+        assert_eq!(timing.seconds_at(1_920), performance.seconds_at(1_920));
+        let mut unordered = decoded.clone();
+        unordered.tempo_changes = vec![
+            TempoChange {
+                tick: 960,
+                bpm: 100.0,
+            },
+            TempoChange {
+                tick: 480,
+                bpm: 90.0,
+            },
+        ];
+        assert!(unordered.timing().is_err(), "unordered tempo changes");
+        let mut undivided = decoded.clone();
+        undivided.ticks_per_quarter = 0;
+        assert!(undivided.timing().is_err(), "a zero tick division");
         assert_eq!(performance.note_count(), 1);
         assert_eq!(performance.tracks[0].name, "Lead");
         let (start, duration) = performance.note_timing(&performance.tracks[0].notes[0]);

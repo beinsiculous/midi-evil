@@ -1,7 +1,8 @@
 #!/bin/bash
-# Runs the native screen-reader gate's mechanical half for W-A1a (plan § W-A1a, Gate rows): the
-# refusal row first, then W0's sequence and its five edges, then R-1 to R-10 and R-14 to R-20,
-# every sequence in a fresh application through run-probe.sh, and prints the transcript. Every
+# Runs the native screen-reader gate's mechanical half for W-A1a and W-A1b (plan § W-A1a and
+# § W-A1b, Gate rows): the refusal rows first, then W0's whole sequence, the transport's step
+# included, and its five edges, then R-1 to R-22, every sequence in a fresh application through
+# run-probe.sh, and prints the transcript. Every
 # step a row names carries an expectation, so a run that exits 0 is a run in which each key did
 # what the row says. What keys cannot show from outside — which of two identical notes a Delete
 # took, a lane point clicked with a pointer — the crate's unit and integration tests prove; those
@@ -72,6 +73,13 @@ fixture bass "Bass|36,0,480;38,480,480;40,960,480;31,1440,480"
 fixture two-tracks "one|60,0,480" "two|64,0,480"
 fixture three-notes "Three|60,0,240;62,60,240;64,960,240"
 fixture same-pitch-overlap "Overlap|60,0,960;60,480,480"
+# Sixty-four one-beat notes at 120 beats a minute: half a minute of song, long enough to read the
+# transport twice while it plays.
+long_notes=$(for beat in $(seq 0 63); do echo -n "$((60 + beat % 12)),$((beat * 480)),480;"; done)
+fixture long "Long|${long_notes%;}"
+# A clean project at 90 beats a minute, so a tempo change and a new project each read differently.
+fixture tempo "Tempo|60,0,480"
+sed -i 's/"tempo_bpm":120/"tempo_bpm":90/' "$fixtures/tempo.evil"
 # Two notes and one pitch-bend point, for the roll's Delete beside an automation lane.
 cat > "$fixtures/lane-point.evil" << 'JSON'
 {"format":"midi-evil-project","version":2,"name":"Lane point","tempo_bpm":120,"beats_per_bar":4,
@@ -85,8 +93,9 @@ JSON
 
 # F6 from nothing focused: the toolbar region, the side panel's stop (the selected track), then
 # the editor's (the roll). No --focus anywhere: the roll is reached by keys, as a person would.
-reach_roll=(--key F6 --expect-region Toolbar --key F6 --expect-region "Side panel"
-    --key F6 --expect "Piano roll" --expect-region Editor)
+# The toolbar's stop is the transport readout.
+reach_roll=(--key F6 --expect-region Toolbar --expect "Transport, stopped, "
+    --key F6 --expect-region "Side panel" --key F6 --expect "Piano roll" --expect-region Editor)
 
 ################ the refusal rows
 # The launcher's inner entry refuses before its first bus call unless every clause of its check
@@ -155,9 +164,13 @@ refusal_row "refusal clause: the runtime directory is not this run's private one
 refusal_row "refusal: the probe's own check, called without the launcher" \
     "atspi-probe: refuses to run" 1 python3 "$probes/atspi-probe.py" --dump
 
-################ W0's sequence and its five edges, less the transport
-run "W0 main sequence, with R-5: read a note, change its pitch, start and length, delete it, leave and return" \
-    --press "PIANO ROLL" "${reach_roll[@]}" \
+################ W0's sequence, the transport's step now included, and its five edges
+run "W0 main sequence, with R-5: read the transport, read a note, change its pitch, start and length, delete it, leave and return" \
+    --press "PIANO ROLL" \
+    --key F6 --expect-region Toolbar \
+    --expect "Transport, stopped, tempo 64 beats per minute, 4 4 time, bar 1 beat 1, position 0 minutes, 0 seconds" \
+    --expect-description "Enter reads the transport again" \
+    --key F6 --expect-region "Side panel" --key F6 --expect "Piano roll" --expect-region Editor \
     --key Right --expect "Piano roll, C 5, bar 1 beat 1.5, 0.25 beats, velocity 127" \
     --key Up --expect "Piano roll, C sharp 5, bar 1 beat 1.5," \
     --key ctrl+Right --expect "Piano roll, C sharp 5, bar 1 beat 1.75," \
@@ -169,7 +182,7 @@ run "W0 main sequence, with R-5: read a note, change its pitch, start and length
     --key shift+Tab --expect "Piano roll, C 5, bar 1 beat 2, " --expect-not "deleted" \
     --expect-not "Removed" \
     --key i --expect-same-name \
-    --expect-announcement "Transport, stopped, tempo 64 beats per minute, position 0 minutes"
+    --expect-announcement "Transport, stopped, tempo 64 beats per minute, 4 4 time, bar 1 beat 1, position 0 minutes, 0 seconds"
 
 run "W0 edge: Up on a note at pitch 127" \
     --press "PIANO ROLL" "${reach_roll[@]}" \
@@ -361,6 +374,83 @@ run "R-20: start a take with the cursor on a note, undo during it" \
     --press "Record" --key i --expect-announcement "Transport, recording, " \
     --key ctrl+z --expect "Piano roll, B 4, bar 1 beat 1.75" \
     --key i --expect-announcement "Transport, stopped, "
+
+################ the rows of W-A1b
+# What --expect-quiet counts, checked without an application: a description or value change on
+# the focused node fails it, and every change it counts is one the probe listens for.
+echo
+echo "################ probe self-check: what a quiet window counts  [no application]"
+if ! python3 "$probes/probe_self_check.py"; then
+    echo "################ FAILED: probe self-check"
+    failed=1
+fi
+
+# Space is the transport's everywhere a focused widget does not act on it, the readout included;
+# Enter on the readout reads it. The application plays on a silent clock here (run-probe.sh), so
+# the readout can be read while the song plays.
+run_with long "R-11: read the transport stopped, play, read it playing, five silent seconds on it, read again, stop, read; with focus elsewhere its name keeps up" \
+    --key F6 --expect "Transport, stopped, tempo 120 beats per minute" \
+    --key Enter --expect-same-name --expect-announcement "Transport, stopped, " \
+    --key space --expect-same-name \
+    --key-until "Enter|Transport, playing" --expect "Transport, playing, " \
+    --expect-quiet 5 \
+    --key Enter --expect "Transport, playing, " --expect-changed-name \
+    --key space --expect-same-name \
+    --key Enter --expect "Transport, stopped, " \
+    --key space --key-until "Enter|Transport, playing" --expect "Transport, playing, " \
+    --key Tab --expect-not "Transport" \
+    --pause 2 --expect-unfocused-name-change "Transport, playing, "
+
+# The Notes view without a cursor and with one, so the note inspector's values show; then the
+# Song view with a part selected, so its part inspector shows. Scroll bars are checked with the
+# focusable nodes, and the side panel's resize handle is one of those.
+run "R-12: no focusable node and no scroll bar unnamed, on the Notes view and the Song view" \
+    --expect-node "MIDI Evil" --expect-node "Side panel width" \
+    --press "PIANO ROLL" --expect-all-named \
+    "${reach_roll[@]}" --key Right --expect "Piano roll, C 5" --expect-node "Velocity" \
+    --expect-all-named \
+    --press "SONG" --press "+ Pattern part" --expect-node "Pattern name" --expect-all-named \
+    --dump
+
+run "R-13: a screen reader started after the application: absent until the flag turns on, then the whole tree" \
+    --screen-reader-after-launch \
+    --key F6 --expect "Transport, stopped, " --expect-all-named
+
+# Saved before New, so New has nothing to ask about: its question is a native dialog that keys
+# sent to the application's own window cannot answer.
+run_with tempo "R-21: with the readout focused, change the tempo and read; a new project, and read" \
+    --key F6 --expect "Transport, stopped, tempo 90 beats per minute" \
+    --set-value "Tempo in beats per minute:100" --expect-same-name \
+    --key Enter --expect "Transport, stopped, tempo 100 beats per minute" \
+    --key ctrl+s --key ctrl+n --expect-same-name \
+    --key Enter --expect "Transport, stopped, tempo 120 beats per minute" --expect-region Toolbar
+
+run "R-22: a disabled button says why, and says nothing once enabled (toolbar, side panel, Notes view)" \
+    --expect-node-description "Undo|Nothing to undo." \
+    --expect-node-description "Redo|Nothing to redo." \
+    --press "PIANO ROLL" --expect-node-description "Earlier|Select a note first." \
+    --expect-node-description "Delete|Select a note first." \
+    "${reach_roll[@]}" --key Right --expect "Piano roll, C 5" \
+    --expect-node-description "Earlier|" --expect-node-description "Delete|" \
+    --key ctrl+Right --expect-node-description "Undo|" \
+    --press "Record" --expect-node-description "Add a synth track|Not while recording." \
+    --expect-node-description "Track actions|Not while recording." \
+    --expect-node-description "Next sound|Not while recording." \
+    --press "Stop take" --expect-node-description "Add a synth track|" \
+    --expect-node-description "Next sound|"
+
+run "R-22 on the Song view: a selected part's buttons while recording and after" \
+    --press "+ Pattern part" --expect-node-description "Delete part|" \
+    --press "Record" --expect-node-description "Delete part|Not while recording." \
+    --expect-event "object:property-change:accessible-description" \
+    --expect-node-description "+ Pattern part|Not while recording." \
+    --press "Stop take" --expect-node-description "Delete part|"
+
+run "The instrument list: Alt+Right and Alt+Left announce the sound a track now has and its place" \
+    --expect-node "Sound: Lead, 7 of 12 synth sounds" \
+    --key F6 --key alt+Right --expect-announcement " 8 of 12 synth sounds" \
+    --expect-node "Sound: " --expect-same-name \
+    --key alt+Left --expect-announcement "Lead, 7 of 12 synth sounds"
 
 echo
 if [ "$failed" -ne 0 ]; then

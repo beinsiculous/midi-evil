@@ -7,7 +7,7 @@
 //! old note when the person acts on a new one — so while a key repeats the name rests, and the
 //! note it came to rest on is published once when the hold ends.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use eframe::egui::{self, accesskit};
 
@@ -30,6 +30,8 @@ pub struct Announcer {
     /// A name held back this frame, for an outcome or a hold, waits for a frame of its own.
     name_waiting: bool,
     announcements_made: u64,
+    /// The readouts read on demand that were focused last frame.
+    focused_readouts: HashSet<egui::Id>,
 }
 
 impl Announcer {
@@ -103,6 +105,40 @@ impl Announcer {
                 self.name_waiting = true;
             }
         } else {
+            self.published_names.insert(widget, current);
+        }
+        self.published_names
+            .get(&widget)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The name of a readout that is read on demand, the transport's, whose state changes by
+    /// itself. A focused node whose name changes on a timer is spoken at every change, so while
+    /// the readout is focused its name rests at what was last read; while it is not, the name
+    /// follows `current` silently, and focus arriving finds it true. `read` is the person asking
+    /// again: the name is brought up to date, and that change is what is heard — or, when
+    /// nothing changed and an unchanged name would say nothing, or the readout is not the focus
+    /// and its name change would be passed over, the reading is announced.
+    pub fn on_demand_name(
+        &mut self,
+        widget: egui::Id,
+        focused: bool,
+        current: String,
+        read: bool,
+    ) -> String {
+        let focus_arrived = if focused {
+            self.focused_readouts.insert(widget)
+        } else {
+            self.focused_readouts.remove(&widget);
+            false
+        };
+        let published = self.published_names.get(&widget);
+        let unpublished = published.is_none();
+        if read && (published == Some(&current) || !focused) {
+            self.announce(current.clone());
+        }
+        if !focused || focus_arrived || read || unpublished {
             self.published_names.insert(widget, current);
         }
         self.published_names
@@ -216,6 +252,53 @@ mod tests {
             announcer.take_pending_outcome().as_deref(),
             Some("Cannot go higher.")
         );
+    }
+
+    #[test]
+    fn a_read_of_a_readout_that_is_not_the_focus_is_announced() {
+        let mut announcer = Announcer::default();
+        let readout = egui::Id::new("readout");
+        announcer.on_demand_name(readout, false, "at 1".to_owned(), false);
+        let name = announcer.on_demand_name(readout, false, "at 2".to_owned(), true);
+        assert_eq!(name, "at 2");
+        assert_eq!(
+            announcer.take_pending_outcome().as_deref(),
+            Some("at 2"),
+            "a name change on a node that is not the focus is passed over, so the read is spoken"
+        );
+    }
+
+    #[test]
+    fn a_readout_follows_its_state_unfocused_rests_focused_and_is_brought_up_to_date_on_a_read() {
+        let mut announcer = Announcer::default();
+        let readout = egui::Id::new("readout");
+        let name = |announcer: &mut Announcer, focused, current: &str, read| {
+            announcer.on_demand_name(readout, focused, current.to_owned(), read)
+        };
+        assert_eq!(name(&mut announcer, false, "at 1", false), "at 1");
+        assert_eq!(name(&mut announcer, false, "at 2", false), "at 2");
+        assert_eq!(
+            name(&mut announcer, true, "at 3", false),
+            "at 3",
+            "focus arriving finds it true"
+        );
+        for later in ["at 4", "at 5", "at 6"] {
+            assert_eq!(name(&mut announcer, true, later, false), "at 3");
+        }
+        assert_eq!(announcer.take_pending_outcome(), None);
+        assert_eq!(name(&mut announcer, true, "at 7", true), "at 7");
+        assert_eq!(
+            announcer.take_pending_outcome(),
+            None,
+            "the name's change is the reading"
+        );
+        assert_eq!(name(&mut announcer, true, "at 7", true), "at 7");
+        assert_eq!(
+            announcer.take_pending_outcome().as_deref(),
+            Some("at 7"),
+            "a reading that changes nothing is announced"
+        );
+        assert_eq!(name(&mut announcer, false, "at 8", false), "at 8");
     }
 
     #[test]

@@ -1,5 +1,7 @@
 use super::*;
+use crate::accessibility::Accessible;
 use crate::regions::{self, Region};
+use crate::speech::Unavailable;
 use crate::{theme, workspace::View};
 
 impl StudioApp {
@@ -18,6 +20,7 @@ impl StudioApp {
                                 .frame(false),
                             )
                             .on_hover_text("About MIDI Evil")
+                            .named("About MIDI Evil")
                             .clicked()
                         {
                             self.show_about = true;
@@ -98,157 +101,13 @@ impl StudioApp {
                         if ui
                             .add(egui::Button::image(art::control(&self.controls, 6)))
                             .on_hover_text("Save project · Ctrl/Cmd+S")
+                            .named("Save project")
                             .clicked()
                         {
                             self.save_project();
                         }
                         ui.separator();
-                        let active = self.render_job.is_some() || self.preview.is_some();
-                        let label = if self.render_job.is_some() {
-                            "CANCEL"
-                        } else if active {
-                            "STOP"
-                        } else {
-                            "PLAY"
-                        };
-                        if ui
-                            .add_sized(
-                                [88.0, 40.0],
-                                egui::Button::image_and_text(
-                                    art::control(&self.controls, if active { 5 } else { 4 }),
-                                    label,
-                                ),
-                            )
-                            .on_hover_text("Render and play the song · Space to play/stop")
-                            .clicked()
-                        {
-                            if active {
-                                self.stop_preview();
-                            } else {
-                                self.preview_project();
-                            }
-                        }
-                        if ui
-                            .add_sized(
-                                [88.0, 40.0],
-                                egui::Button::new(if self.recorder.is_some() {
-                                    "Stop take"
-                                } else {
-                                    "Record"
-                                })
-                                .selected(self.recorder.is_some()),
-                            )
-                            .on_hover_text(
-                                "Record keyboard, pads or MIDI into the selected track/part",
-                            )
-                            .clicked()
-                        {
-                            self.toggle_recording();
-                        }
-                        egui::Frame::new()
-                            .fill(theme::BACKGROUND)
-                            .stroke(egui::Stroke::new(1.0, theme::BORDER))
-                            .corner_radius(3)
-                            .inner_margin(egui::Margin::symmetric(10, 5))
-                            .show(ui, |ui| {
-                                ui.vertical(|ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(
-                                            RichText::new(if self.recorder.is_some() {
-                                                "RECORDING"
-                                            } else if self.render_job.is_some() {
-                                                "RENDERING"
-                                            } else if active {
-                                                "PLAYING"
-                                            } else {
-                                                "READY"
-                                            })
-                                            .size(11.0)
-                                            .color(
-                                                if active { theme::GREEN } else { theme::MUTED },
-                                            ),
-                                        );
-                                        ui.label(
-                                            RichText::new(if self.dirty {
-                                                "• MODIFIED"
-                                            } else {
-                                                "• SAVED"
-                                            })
-                                            .size(11.0)
-                                            .color(theme::MUTED),
-                                        );
-                                    });
-                                    let width = (ui.ctx().content_rect().width() - 700.0)
-                                        .clamp(100.0, 280.0);
-                                    if ui
-                                        .add(
-                                            egui::TextEdit::singleline(&mut self.project.name)
-                                                .desired_width(width)
-                                                .font(egui::FontId::monospace(16.0))
-                                                .text_color(theme::IVORY)
-                                                .frame(egui::Frame::NONE),
-                                        )
-                                        .changed()
-                                    {
-                                        self.dirty = true;
-                                    }
-                                });
-                            });
-                        ui.vertical(|ui| {
-                            theme::label(ui, "TEMPO");
-                            if ui
-                                .add(
-                                    egui::DragValue::new(&mut self.project.tempo_bpm)
-                                        .range(1.0..=999.0)
-                                        .speed(0.1)
-                                        .suffix(" BPM"),
-                                )
-                                .changed()
-                            {
-                                self.dirty = true;
-                            }
-                        });
-                        ui.vertical(|ui| {
-                            theme::label(ui, "METER");
-                            if ui
-                                .add(
-                                    egui::DragValue::new(&mut self.project.beats_per_bar)
-                                        .range(1..=32)
-                                        .suffix(format!(" / {}", self.project.beat_unit)),
-                                )
-                                .changed()
-                            {
-                                self.dirty = true;
-                            }
-                        });
-                        if ui.ctx().content_rect().width() >= 1_160.0 {
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.vertical(|ui| {
-                                        let position = self
-                                            .preview
-                                            .as_ref()
-                                            .map_or(0, |player| player.position().as_millis());
-                                        ui.label(
-                                            RichText::new(format!(
-                                                "{:02}:{:02}.{:02}",
-                                                position / 60_000,
-                                                position / 1_000 % 60,
-                                                position / 10 % 100
-                                            ))
-                                            .monospace()
-                                            .size(22.0)
-                                            .color(theme::IVORY),
-                                        );
-                                        theme::label(
-                                            ui,
-                                            format!("STEREO  /  {} Hz", self.project.sample_rate),
-                                        );
-                                    });
-                                },
-                            );
-                        }
+                        self.transport_block(ui);
                     });
                 });
             });
@@ -264,11 +123,13 @@ impl StudioApp {
                         let start_changed = ui
                             .add(egui::DragValue::new(&mut start).range(1..=65_535))
                             .on_hover_text("Start playback at the beginning of this bar")
+                            .named("Start bar")
                             .changed();
                         theme::label(ui, "LOOP END");
                         let end_changed = ui
                             .add(egui::DragValue::new(&mut end).range(2..=65_536))
                             .on_hover_text("Repeat stops at the beginning of this bar")
+                            .named("Loop end bar")
                             .changed();
                         let repeat_changed = ui
                             .checkbox(&mut self.transport.repeat, "Repeat section")
@@ -330,6 +191,7 @@ impl StudioApp {
                                     .selected(self.view == view)
                                     .min_size(egui::vec2(tab_width, 30.0)),
                                 )
+                                .unavailable_because(Unavailable::NoTrack)
                                 .clicked()
                             {
                                 if view == View::Synth
@@ -349,6 +211,7 @@ impl StudioApp {
                             if ui
                                 .add_enabled(self.history.can_redo(), egui::Button::new("Redo"))
                                 .on_hover_text("Ctrl/Cmd+Y")
+                                .unavailable_because(Unavailable::NothingToRedo)
                                 .clicked()
                             {
                                 self.redo();
@@ -356,6 +219,7 @@ impl StudioApp {
                             if ui
                                 .add_enabled(self.history.can_undo(), egui::Button::new("Undo"))
                                 .on_hover_text("Ctrl/Cmd+Z")
+                                .unavailable_because(Unavailable::NothingToUndo)
                                 .clicked()
                             {
                                 self.undo();

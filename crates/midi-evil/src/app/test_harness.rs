@@ -19,6 +19,8 @@ pub(super) struct Harness {
     pub(super) frame: eframe::Frame,
     pub(super) time: f64,
     pub(super) output: egui::FullOutput,
+    /// The window's width in points; the narrowest the window allows is 900.
+    pub(super) width: f32,
 }
 
 pub(super) fn note_at(pitch: u8, start_tick: u64, duration_ticks: u64) -> evil_project::Note {
@@ -99,6 +101,7 @@ impl Harness {
             frame: eframe::Frame::_new_kittest(),
             time: 0.0,
             output: egui::FullOutput::default(),
+            width: 1440.0,
         };
         harness.run(vec![]);
         harness.run(vec![]);
@@ -139,13 +142,14 @@ impl Harness {
             app,
             frame,
             time,
+            width,
             ..
         } = self;
         self.output = context.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
-                    egui::vec2(1440.0, 900.0),
+                    egui::vec2(*width, 900.0),
                 )),
                 time: Some(*time),
                 events,
@@ -219,6 +223,17 @@ impl Harness {
             .find(|(_, node)| node.label() == Some(label))
             .cloned()
             .unwrap_or_else(|| panic!("no node named {label:?}"))
+    }
+
+    /// A node of last frame's accessibility tree, by its widget.
+    pub(super) fn node_of(&self, widget: egui::Id) -> Option<accesskit::Node> {
+        self.output
+            .platform_output
+            .accesskit_update
+            .iter()
+            .flat_map(|update| update.nodes.iter())
+            .find(|(id, _)| *id == widget.accesskit_id())
+            .map(|(_, node)| node.clone())
     }
 
     pub(super) fn enabled(&self, label: &str) -> bool {

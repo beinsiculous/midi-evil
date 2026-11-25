@@ -53,8 +53,13 @@ credential configured"). Deepseek stood in, as the `roles` skill allows.
 | 18 | W-A1a code v4 (diff) | codex | 3 | 3 | 0 | 0 | "`restore_snapshot` restores Song view, but `dispatch_keys` retains the roll eligibility and focus cached before the loop. Enter therefore adds a note even though Notes is no longer active." | 3:09 |
 | 18 | W-A1a code v4 (diff) | deepseek | 5 | 3 | 1 | 1 | the view restore, objected to for the third time and this time accepted; the replayed-pass theory refuted from egui's source | 11:06 |
 | 19 | W-A1a code v5 (diff) | codex | 2 | 2 | 0 | 0 | "`ui.scroll_to_rect(note_rect, None)` considers the full scroll viewport visible, but drawing excludes the top 26 pixels for the ruler and the left 62 pixels for the keyboard" — "Mergeable after addressing F1 and F2" | 4:18 |
+| 20 | W-A1b code v1 (diff) | codex | 2 | 2 | 0 | 0 | "Each call reaches `recording_tick_at_elapsed()`, whose `Project::to_performance()` validates the project, expands every pattern repetition, clones events, and sorts them" — every frame, twice at wide widths | 2:09 |
+| 20 | W-A1b code v1 (diff) | deepseek | 4 | 3 | 1 | 0 | the same two, and "`recording, … bar 5 beat 1, position 0 minutes, 0 seconds`" — two clocks in one sentence | 14:09 |
+| 20 | W-A1b probe v1 (diff) | gemini | 4 | 2 | 1 | 1 | "`key_until` … breaks on timeout … and returns normally without asserting that `text` was ever present" | 7:55 |
+| 20 | W-A1b probe v1 (diff) | deepseek | 8 | 5 | 3 | 0 | "`--key space --expect \"Transport, playing\" --expect-quiet 5` is enough: the `--expect` poll pumps events while waiting … `expect_quiet` then fails although the five-second window itself was silent" — its two Criticals were the missing application half it had not been shown | 10:15 |
+| 21 | W-A1b code v2 (diff) | codex | 1 | 1 | 0 | 0 | "It now calls `Project::timing()`, which accepts the unordered changes. `Performance::seconds_at(1440)` subsequently subtracts `960` from `480` in unsigned arithmetic." — in the planner's own fix | 2:27 |
 
-Totals so far: codex 47 findings, 44 real, two refuted (a lockfile left out of a diff) and one
+Totals so far (through W-A1a; W-A1b's nineteen findings are in the rows above): codex 47 findings, 44 real, two refuted (a lockfile left out of a diff) and one
 the planner's own excerpt; deepseek 178 findings, 158 real, thirteen refuted, the rest rebutted on
 policy; gemini 51 findings, 32 real, thirteen refuted. On production code the pattern sharpened:
 codex found, in three or four minutes a round, every defect that could lose a person's work — the

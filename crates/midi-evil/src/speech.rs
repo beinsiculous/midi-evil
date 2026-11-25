@@ -129,7 +129,7 @@ pub fn describe_outcome(outcome: Outcome, origin: Origin) -> Option<String> {
         (Outcome::AlreadyShortest, _) => "Cannot be shorter.".to_owned(),
         (Outcome::AlreadyLongest, _) => "Cannot be longer.".to_owned(),
         (Outcome::NoRoom, _) => "Nothing added: the pattern ends here.".to_owned(),
-        (Outcome::NoSelection, _) => "Select a note first.".to_owned(),
+        (Outcome::NoSelection, _) => unavailable_reason(Unavailable::NoNoteSelected).to_owned(),
         (Outcome::Empty, _) => "Nothing here yet.".to_owned(),
         (Outcome::Cleared, _) => {
             "No note selected; Quantize, transpose and Copy apply to all notes.".to_owned()
@@ -155,29 +155,122 @@ pub enum PlayingState {
     Recording,
 }
 
+impl PlayingState {
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Stopped => "stopped",
+            Self::Rendering => "rendering",
+            Self::Playing => "playing",
+            Self::Recording => "recording",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TransportState {
     pub playing: PlayingState,
     pub tempo_beats_per_minute: f32,
+    pub meter: Meter,
+    /// Where the playhead is in the song.
+    pub position_tick: u64,
+    /// How long the song has been playing, as the clock beside the readout shows it.
     pub position_milliseconds: u128,
 }
 
-/// "Transport, playing, tempo 120 beats per minute, position 1 minute, 5 seconds".
+/// "bar 3 beat 2": the whole beat the playhead is in, which is what a listener counts.
+pub fn bar_and_beat(tick: u64, meter: Meter) -> (u64, u64) {
+    let bar_ticks = meter.bar_ticks();
+    (
+        tick / bar_ticks + 1,
+        tick % bar_ticks / meter.beat_ticks() + 1,
+    )
+}
+
+/// "Transport, playing, tempo 120 beats per minute, 4 4 time, bar 3 beat 2, position 1 minute,
+/// 5 seconds".
 pub fn describe_transport(transport: &TransportState) -> String {
-    let playing = match transport.playing {
-        PlayingState::Stopped => "stopped",
-        PlayingState::Rendering => "rendering",
-        PlayingState::Playing => "playing",
-        PlayingState::Recording => "recording",
-    };
     let total_seconds = transport.position_milliseconds / 1_000;
     let minutes = total_seconds / 60;
     let seconds = total_seconds % 60;
+    let (bar, beat) = bar_and_beat(transport.position_tick, transport.meter);
     format!(
-        "Transport, {playing}, tempo {} beats per minute, position {minutes} {}, {seconds} {}",
+        "Transport, {}, tempo {} beats per minute, {} {} time, bar {bar} beat {beat}, \
+         position {minutes} {}, {seconds} {}",
+        transport.playing.word(),
         decimal(f64::from(transport.tempo_beats_per_minute)),
+        transport.meter.beats_per_bar,
+        transport.meter.beat_unit,
         if minutes == 1 { "minute" } else { "minutes" },
         if seconds == 1 { "second" } else { "seconds" },
+    )
+}
+
+/// The transport readout's description: fixed help, never state, because a focused node whose
+/// description changes is spoken at every change.
+pub const TRANSPORT_READOUT_HELP: &str = "Enter reads the transport again";
+
+/// Why a control is unavailable, said by its description and its hover text while it is: a
+/// screen reader is never told that a button is disabled, so the reason is how it learns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unavailable {
+    NoNoteSelected,
+    NothingToUndo,
+    NothingToRedo,
+    WhileRecording,
+    NoTrack,
+    NoOtherSound,
+}
+
+pub fn unavailable_reason(reason: Unavailable) -> &'static str {
+    match reason {
+        Unavailable::NoNoteSelected => "Select a note first.",
+        Unavailable::NothingToUndo => "Nothing to undo.",
+        Unavailable::NothingToRedo => "Nothing to redo.",
+        Unavailable::WhileRecording => "Not while recording.",
+        Unavailable::NoTrack => "Add a track first.",
+        Unavailable::NoOtherSound => "No other sound in this list.",
+    }
+}
+
+/// "Bass, 4 of 12 synth sounds": which sound a track has and where it is in the list that
+/// Previous and Next walk. A sound the list does not hold says so.
+pub fn describe_sound(name: &str, position: Option<usize>, count: usize, kind: &str) -> String {
+    let kind = kind.to_lowercase();
+    let noun = if count == 1 { "sound" } else { "sounds" };
+    match position {
+        Some(index) => format!("{name}, {} of {count} {kind} {noun}", index + 1),
+        None => format!("{name}, not one of the {count} {kind} {noun} listed"),
+    }
+}
+
+/// "Track 2, Bass, 12 unique notes, 3 parts, muted": an arranger lane.
+pub fn describe_track(
+    index: usize,
+    name: &str,
+    note_count: usize,
+    part_count: usize,
+    muted: bool,
+) -> String {
+    let notes = if note_count == 1 { "note" } else { "notes" };
+    let parts = if part_count == 1 { "part" } else { "parts" };
+    format!(
+        "Track {}, {name}, {note_count} unique {notes}, {part_count} {parts}{}",
+        index + 1,
+        if muted { ", muted" } else { "" }
+    )
+}
+
+/// "Part, Pattern 1, bar 3 beat 1, 4 beats": an arranger part, where it sits in the song.
+pub fn describe_part(
+    pattern_name: &str,
+    start_tick: u64,
+    length_ticks: u64,
+    meter: Meter,
+) -> String {
+    format!(
+        "Part, {pattern_name}, {}, {}",
+        position(start_tick, meter, Origin::Song),
+        length(length_ticks, meter)
     )
 }
 
@@ -373,22 +466,69 @@ mod tests {
     }
 
     #[test]
-    fn the_transport_says_its_state_tempo_and_position() {
+    fn the_transport_says_its_state_tempo_meter_and_position_in_bars_and_in_time() {
         let mut transport = TransportState {
             playing: PlayingState::Stopped,
             tempo_beats_per_minute: 64.0,
+            meter: COMMON_TIME,
+            position_tick: 0,
             position_milliseconds: 0,
         };
         assert_eq!(
             describe_transport(&transport),
-            "Transport, stopped, tempo 64 beats per minute, position 0 minutes, 0 seconds"
+            "Transport, stopped, tempo 64 beats per minute, 4 4 time, bar 1 beat 1, \
+             position 0 minutes, 0 seconds"
         );
         transport.playing = PlayingState::Playing;
         transport.tempo_beats_per_minute = 120.5;
+        transport.position_tick = 1_920 + 480 + 300;
         transport.position_milliseconds = 61_900;
         assert_eq!(
             describe_transport(&transport),
-            "Transport, playing, tempo 120.5 beats per minute, position 1 minute, 1 second"
+            "Transport, playing, tempo 120.5 beats per minute, 4 4 time, bar 2 beat 2, \
+             position 1 minute, 1 second"
+        );
+        transport.meter = SIX_EIGHT;
+        transport.position_tick = 1_440 + 5 * 240;
+        assert!(describe_transport(&transport).contains("6 8 time, bar 2 beat 6,"));
+    }
+
+    #[test]
+    fn every_unavailable_control_has_a_reason() {
+        for reason in [
+            Unavailable::NoNoteSelected,
+            Unavailable::NothingToUndo,
+            Unavailable::NothingToRedo,
+            Unavailable::WhileRecording,
+            Unavailable::NoTrack,
+            Unavailable::NoOtherSound,
+        ] {
+            assert!(!unavailable_reason(reason).is_empty(), "{reason:?}");
+        }
+        assert_eq!(
+            Some(unavailable_reason(Unavailable::NoNoteSelected)),
+            describe_outcome(Outcome::NoSelection, Origin::Song).as_deref(),
+            "a disabled one-note button and its chord give the same reason"
+        );
+    }
+
+    #[test]
+    fn a_sound_says_where_it_is_in_the_list_and_an_arranger_lane_and_part_say_what_they_hold() {
+        assert_eq!(
+            describe_sound("Bass", Some(3), 12, "Synth"),
+            "Bass, 4 of 12 synth sounds"
+        );
+        assert_eq!(
+            describe_sound("Mine", None, 1, "Drum kit"),
+            "Mine, not one of the 1 drum kit sound listed"
+        );
+        assert_eq!(
+            describe_track(1, "Bass", 1, 3, true),
+            "Track 2, Bass, 1 unique note, 3 parts, muted"
+        );
+        assert_eq!(
+            describe_part("Pattern 1", 1_920 * 2, 1_920, COMMON_TIME),
+            "Part, Pattern 1, bar 3 beat 1, 4 beats"
         );
     }
 

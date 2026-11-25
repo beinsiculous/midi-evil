@@ -9,7 +9,7 @@ use crate::piano_roll::{
     edits::{Outcome, RollCommand},
 };
 use crate::regions;
-use crate::speech::{self, PlayingState, TransportState};
+use crate::speech;
 
 impl StudioApp {
     pub(super) fn dispatch_keys(&mut self, context: &egui::Context) {
@@ -243,27 +243,6 @@ impl StudioApp {
             return true;
         }
         false
-    }
-
-    /// What the transport is doing now, made from live state each time it is asked for.
-    pub(super) fn transport_state(&self) -> TransportState {
-        let playing = if self.recorder.is_some() {
-            PlayingState::Recording
-        } else if self.render_job.is_some() {
-            PlayingState::Rendering
-        } else if self.preview.is_some() {
-            PlayingState::Playing
-        } else {
-            PlayingState::Stopped
-        };
-        TransportState {
-            playing,
-            tempo_beats_per_minute: self.project.tempo_bpm,
-            position_milliseconds: self
-                .preview
-                .as_ref()
-                .map_or(0, |player| player.position().as_millis()),
-        }
     }
 }
 

@@ -3,6 +3,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use eframe::egui;
 use midir::{Ignore, MidiInput as OsMidiInput, MidiInputConnection};
 
+use crate::accessibility::Accessible;
 use crate::recording::InputEvent;
 
 /// Desktop MIDI input is parsed on the callback thread and consumed by the
@@ -46,7 +47,9 @@ impl MidiInput {
                 for (index, name) in self.ports.iter().enumerate() {
                     ui.selectable_value(&mut self.selected, Some(index), name);
                 }
-            });
+            })
+            .response
+            .named("MIDI input port");
         if self.selected != previous {
             if let Some(index) = self.selected {
                 self.connect(index);
@@ -57,6 +60,7 @@ impl MidiInput {
         if ui
             .button("↻")
             .on_hover_text("Refresh MIDI inputs")
+            .named("Refresh MIDI inputs")
             .clicked()
         {
             self.refresh();

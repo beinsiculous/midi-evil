@@ -14,8 +14,11 @@ mod notes_view;
 mod recording;
 mod sounds;
 #[cfg(test)]
+mod surface_names_tests;
+#[cfg(test)]
 mod test_harness;
 mod track_rack;
+mod transport_readout;
 mod undo;
 
 use crate::{
@@ -930,38 +933,6 @@ impl StudioApp {
         }
     }
 
-    fn song_playhead_tick(&self) -> u64 {
-        if let Some(preview) = &self.preview {
-            return self.tick_at_elapsed(preview.position().as_secs_f64());
-        }
-        if self.recording_started_at.is_some() {
-            return self.recording_tick();
-        }
-        self.transport.start_tick
-    }
-
-    fn recording_tick(&self) -> u64 {
-        self.recording_tick_offset(0.0)
-    }
-
-    fn recording_tick_offset(&self, offset_seconds: f64) -> u64 {
-        let Some(started_at) = self.recording_started_at else {
-            return self.transport.start_tick;
-        };
-        self.tick_at_elapsed(started_at.elapsed().as_secs_f64() + offset_seconds)
-    }
-
-    fn tick_at_elapsed(&self, elapsed: f64) -> u64 {
-        let (_, end_tick) = self.transport.range();
-        crate::recording::recording_tick_at_elapsed(
-            &self.project,
-            self.transport.start_tick,
-            end_tick,
-            elapsed,
-        )
-        .unwrap_or(self.transport.start_tick)
-    }
-
     fn preview_project(&mut self) {
         let (start_tick, end_tick) = self.transport.range();
         self.start_render(PendingRender::Preview {
@@ -1393,6 +1364,7 @@ impl eframe::App for StudioApp {
         if let Some(path) = self.recovery.show(root.ctx()) {
             self.open_project_path(&path);
         }
+        crate::accessibility::name_window(root.ctx());
         self.announcer.end_frame(root.ctx());
         regions::end_frame(root.ctx());
         self.roll.had_focus = self

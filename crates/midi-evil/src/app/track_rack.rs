@@ -1,7 +1,9 @@
 //! The side panel: the track rack and the selected track's settings.
 
 use super::*;
+use crate::accessibility::{self, Accessible};
 use crate::regions::{self, Region};
+use crate::speech::Unavailable;
 use crate::workspace::View;
 
 impl StudioApp {
@@ -15,6 +17,11 @@ impl StudioApp {
             .show(ui, |ui| {
                 regions::group(ui, Region::SidePanel, |ui| self.track_rack(ui));
             });
+        accessibility::name_resize_handle(
+            ui.ctx(),
+            egui::Id::new("tracks"),
+            "Side panel width, dragged with a pointer",
+        );
     }
 
     fn track_rack(&mut self, ui: &mut egui::Ui) {
@@ -27,6 +34,8 @@ impl StudioApp {
                 if ui
                     .add_enabled(self.recorder.is_none(), egui::Button::new("+"))
                     .on_hover_text("Add synth track")
+                    .named("Add a synth track")
+                    .unavailable_because(Unavailable::WhileRecording)
                     .clicked()
                 {
                     self.add_track();
@@ -34,6 +43,8 @@ impl StudioApp {
                 if ui
                     .add_enabled(self.recorder.is_none(), egui::Button::new("+KIT"))
                     .on_hover_text("Add a Maxwell drum-kit track")
+                    .named("Add a Maxwell drum-kit track")
+                    .unavailable_because(Unavailable::WhileRecording)
                     .clicked()
                 {
                     self.add_drum_track();
@@ -41,7 +52,7 @@ impl StudioApp {
             });
         });
         ui.separator();
-        egui::ScrollArea::vertical()
+        let rack = egui::ScrollArea::vertical()
             .id_salt("track-rack")
             .max_height((ui.available_height() * 0.4).max(90.0))
             .auto_shrink([false, true])
@@ -97,6 +108,7 @@ impl StudioApp {
                     ));
                 }
             });
+        accessibility::name_scroll_bars(ui.ctx(), rack.id, "Track rack");
         if !self.project.tracks.is_empty() {
             ui.horizontal(|ui| {
                 ui.add_enabled_ui(self.recorder.is_none(), |ui| {
@@ -118,8 +130,10 @@ impl StudioApp {
                             ui.close();
                             self.remove_selected_track();
                         }
-                    });
-                });
+                    })
+                    .response
+                    .unavailable_because(Unavailable::WhileRecording)
+                })
             });
         }
         ui.add_space(8.0);
@@ -127,7 +141,7 @@ impl StudioApp {
         let mut open_patch = false;
         let mut open_pads = false;
         let mut synth_page = None;
-        egui::ScrollArea::vertical()
+        let settings = egui::ScrollArea::vertical()
             .id_salt("track-settings")
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -136,7 +150,8 @@ impl StudioApp {
                     theme::label(ui, "SELECTED TRACK");
                     ui.add(
                         egui::TextEdit::singleline(&mut track.name).desired_width(f32::INFINITY),
-                    );
+                    )
+                    .named("Track name");
                     ui.add_space(4.0);
                     theme::label(ui, "INSTRUMENT");
                     if ui
@@ -197,7 +212,8 @@ impl StudioApp {
                                 egui::DragValue::new(&mut instrument.pitch_bend_range_semitones)
                                     .range(0.01..=24.0)
                                     .suffix(" st"),
-                            );
+                            )
+                            .named("Bend range in semitones");
                         });
                         ui.label(format!(
                             "{} bends · {} pressure events",
@@ -213,6 +229,7 @@ impl StudioApp {
                     );
                 }
             });
+        accessibility::name_scroll_bars(ui.ctx(), settings.id, "Selected track settings");
         if let Some(page) = synth_page {
             self.view = View::Synth;
             if self

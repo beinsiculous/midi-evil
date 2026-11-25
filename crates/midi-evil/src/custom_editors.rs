@@ -1,8 +1,9 @@
-//! The application's own custom-painted editors — the piano roll, the automation and mixer lanes.
-//! A focused editor of this kind takes its keys from the application's key dispatch and leaves
-//! Space to the transport, where egui's own widgets — a button, a checkbox — act on Space
-//! themselves. Each editor names itself here while it is drawn; the next frame's key dispatch,
-//! which runs before anything is drawn, reads what the frame before recorded.
+//! The application's own custom-painted widgets — the piano roll, the automation and mixer lanes,
+//! the transport readout. A focused widget of this kind takes its keys from the application's
+//! key dispatch and leaves Space to the transport, where egui's own widgets — a button, a
+//! checkbox — act on Space themselves. Each names itself here while it is drawn; the next
+//! frame's key dispatch, which runs before anything is drawn, reads what the frame before
+//! recorded.
 
 use eframe::egui;
 
