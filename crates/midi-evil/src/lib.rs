@@ -21,6 +21,11 @@ mod keyboard;
 mod launch;
 mod live_player;
 mod midi_input;
+#[cfg(not(target_arch = "wasm32"))]
+mod midi_ports;
+#[cfg(target_arch = "wasm32")]
+#[path = "midi_ports_unavailable.rs"]
+mod midi_ports;
 mod mixer;
 mod mixer_automation;
 mod patch_lab;

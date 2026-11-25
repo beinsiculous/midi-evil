@@ -1,9 +1,9 @@
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use eframe::egui;
-use midir::{Ignore, MidiInput as OsMidiInput, MidiInputConnection};
 
 use crate::accessibility::Accessible;
+use crate::midi_ports;
 use crate::recording::InputEvent;
 
 /// Desktop MIDI input is parsed on the callback thread and consumed by the
@@ -11,7 +11,7 @@ use crate::recording::InputEvent;
 pub struct MidiInput {
     ports: Vec<String>,
     selected: Option<usize>,
-    connection: Option<MidiInputConnection<()>>,
+    connection: Option<midi_ports::Connection>,
     sender: Sender<InputEvent>,
     receiver: Receiver<InputEvent>,
     message: String,
@@ -84,7 +84,7 @@ impl MidiInput {
     }
 
     fn refresh(&mut self) {
-        match port_names() {
+        match midi_ports::port_names() {
             Ok(ports) => {
                 self.ports = ports;
                 if self
@@ -100,7 +100,13 @@ impl MidiInput {
 
     fn connect(&mut self, index: usize) {
         self.disconnect();
-        match connect(index, self.sender.clone()) {
+        let sender = self.sender.clone();
+        let forward = move |bytes: &[u8]| {
+            if let Some(event) = parse_message(bytes) {
+                let _ = sender.send(event);
+            }
+        };
+        match midi_ports::connect(index, forward) {
             Ok((connection, name)) => {
                 self.connection = Some(connection);
                 self.selected = Some(index);
@@ -109,41 +115,6 @@ impl MidiInput {
             Err(error) => self.message = error,
         }
     }
-}
-
-fn port_names() -> Result<Vec<String>, String> {
-    let input = OsMidiInput::new("MIDI Evil input discovery").map_err(|error| error.to_string())?;
-    input
-        .ports()
-        .iter()
-        .map(|port| input.port_name(port).map_err(|error| error.to_string()))
-        .collect()
-}
-
-fn connect(
-    index: usize,
-    sender: Sender<InputEvent>,
-) -> Result<(MidiInputConnection<()>, String), String> {
-    let mut input = OsMidiInput::new("MIDI Evil recording").map_err(|error| error.to_string())?;
-    input.ignore(Ignore::None);
-    let ports = input.ports();
-    let port = ports
-        .get(index)
-        .ok_or_else(|| "The selected MIDI input is no longer available".to_owned())?;
-    let name = input.port_name(port).map_err(|error| error.to_string())?;
-    let connection = input
-        .connect(
-            port,
-            "midi-evil-input",
-            move |_timestamp, bytes, _| {
-                if let Some(event) = parse_message(bytes) {
-                    let _ = sender.send(event);
-                }
-            },
-            (),
-        )
-        .map_err(|error| error.to_string())?;
-    Ok((connection, name))
 }
 
 fn parse_message(bytes: &[u8]) -> Option<InputEvent> {

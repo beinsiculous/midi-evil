@@ -7,6 +7,7 @@ members = [
     "crates/evil-performance",
     "crates/evil-project",
     "crates/evil-render",
+    "crates/evil-web",
     "crates/midi-evil",
 ]
 exclude = ["crates/oracle", "crates/evil-porting"]
@@ -20,3 +21,11 @@ license = "MIT"
 repository = "https://github.com/beinsiculous/midi-evil"
 homepage = "https://github.com/beinsiculous/midi-evil"
 include = ["src/**", "examples/**", "Cargo.toml", "README.md", "LICENSE"]
+
+# The browser bundle's build. Without `inherits = "release"` a custom profile starts from `dev`,
+# and the bundle would be measured and run with debug assertions in it.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "s"
+lto = true
+strip = "debuginfo"

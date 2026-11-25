@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- An empty icon, so the browser asks the server for nothing but this page and its bundle. -->
+<link rel="icon" href="data:,">
+<title>MIDI Evil build check</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #131119; color: #eee7d7; font: 16px/1.5 system-ui, sans-serif; }
+  p { margin: 0; padding: 8px 16px; }
+  #midi-evil-canvas { display: block; width: 100%; height: calc(100vh - 40px); }
+</style>
+</head>
+<body>
+<p>This page checks that the browser build starts. It is not the page MIDI Evil ships on.</p>
+<canvas id="midi-evil-canvas"></canvas>
+<script type="module">
+  // A module that cannot be fetched or compiled is reported the way the entry reports its own
+  // failure to start, rather than left to whichever channel the browser picks for a rejection.
+  import init from "./evil_web.js";
+  try {
+    await init();
+  } catch (error) {
+    console.error(`MIDI Evil did not start: ${error}`);
+  }
+</script>
+</body>
+</html>

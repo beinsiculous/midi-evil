@@ -865,7 +865,28 @@ The record's step, re-surveyed on `a15dc49` after W-A1 moved most of what it nam
 **Leaves out:** the three device-open sites (W3); the threads (W4); the path-based interfaces of
 the shared crates (W5a); the browser's own dialogs (W5b).
 
-## W2 — the web crate and its gates (`#4`) — settled 2026-11-25
+## W2 — the web crate and its gates (`#4`) — BUILT 2026-11-25
+
+Built by Claude Opus 5.5 in two passes; 510 tests, the native gate at 455 expectations, and the
+application drawing in Chromium and in Firefox. What differed from the section below:
+
+- **The application started on its first run**, in both browsers, with no error and no panic.
+  The one seam is not for a failure: constructing the application asked the browser for MIDI
+  access, with sysex, on page load, and said nothing. `midi_ports` is now a pair like
+  `sample_recorder`'s — on `wasm32`, no ports and no request — and the toolbar reads as it does
+  natively with nothing plugged in. Web MIDI is still W3's.
+- **The wasm is 5.92 MiB raw, 2.40 MiB gzipped; the budget in `build_wasm.sh` is 7 MiB.** The
+  size is checked before the swap, so a build over budget leaves the last good bundle.
+- **The entry installs its own logger.** eframe's writes an error as a console warning, which no
+  smoke could tell from a warning; `evil-web`'s keeps an error an error.
+- **The smoke has ten negative controls**, five in each browser: an empty wasm, a wrong canvas
+  id, an error logged while the canvas draws, a page that asks for MIDI, and a page that never
+  finishes loading. A run takes under two minutes.
+- **Playwright is found beside the repository's main checkout**, through `git worktree list`,
+  because a worktree does not sit beside the site.
+- **CI** is `.github/workflows/wasm-check.yml`, running `scripts/check_wasm.sh` and nothing else.
+  Its first run is checked after the push; W-A2 waits on it.
+
 
 The record's step, on `0b1c213`, after W1 made the application a library that compiles for
 `wasm32`.

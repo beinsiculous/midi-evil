@@ -1,0 +1,36 @@
+# The browser build's compile gate: keeps the application and its web entry compiling, linting
+# clean and linking for wasm32-unknown-unknown, so a native change cannot silently break the
+# browser build.
+#
+# The gate is scripts/check_wasm.sh, run verbatim, so this workflow and the local command cannot
+# drift; the script's header says what it leaves out and why. This workflow deliberately builds
+# no bundle, installs no wasm-bindgen CLI and opens no browser: those are scripts/build_wasm.sh
+# and the smoke test, run where a browser is.
+name: wasm check
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: wasm-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  wasm-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      # The repository has no rust-toolchain file, so the target is asked for here.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: wasm gate (check, clippy, link)
+        run: scripts/check_wasm.sh
