@@ -82,11 +82,17 @@ fn mixer_content(
                             )
                             .on_hover_text("Stereo position: left −1 / center 0 / right +1");
                             ui.monospace(format!("{:+.2}", instrument.pan));
-                            for bus in 0..SEND_COUNT {
-                                ui.add(
-                                    egui::Slider::new(&mut instrument.send_gains[bus], 0.0..=1.0)
-                                        .text(if bus == 0 { "Send A" } else { "Send B" }),
-                                );
+                            for (bus, send_gain) in instrument
+                                .send_gains
+                                .iter_mut()
+                                .enumerate()
+                                .take(SEND_COUNT)
+                            {
+                                ui.add(egui::Slider::new(send_gain, 0.0..=1.0).text(if bus == 0 {
+                                    "Send A"
+                                } else {
+                                    "Send B"
+                                }));
                             }
                             ui.separator();
                             fader(ui, &mut instrument.gain);
