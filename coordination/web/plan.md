@@ -885,7 +885,9 @@ application drawing in Chromium and in Firefox. What differed from the section b
 - **Playwright is found beside the repository's main checkout**, through `git worktree list`,
   because a worktree does not sit beside the site.
 - **CI** is `.github/workflows/wasm-check.yml`, running `scripts/check_wasm.sh` and nothing else.
-  Its first run is checked after the push; W-A2 waits on it.
+  Its first run, on `d9f02d6`, was red: GitHub's stable (1.100) is newer than bob-ross's
+  (1.94) and its clippy adds two lints. Fixed in `7c7c316`, whose run is green. The workflow is
+  still unpinned; this is what that costs, and it is revisited if it happens again.
 
 
 The record's step, on `0b1c213`, after W1 made the application a library that compiles for
