@@ -554,7 +554,7 @@ and asserts the refusal — and that the desktop's flag and its settings file we
 
 **Leaves out:** the arranger, the transport's own readout, names for controls outside the roll.
 
-### W-A1b — the transport, and a name for everything on a shown surface — BUILT 2026-11-24, sitting pending
+### W-A1b — the transport, and a name for everything on a shown surface — DONE 2026-11-24
 
 Built by Claude Opus 5.5 in two passes; 446 tests and the native gate at 320 expectations. What
 differed from the section below, and what it leaves W-A1c:
@@ -646,7 +646,7 @@ hearing a name at every stop; a tempo typed and committed.
 Delete line — held back from the web build under D12, each its own issue in the milestone, filed
 by the planner before W-A1 reports done.
 
-### W-A1c — the arranger, the files, and the nine steps — BUILT 2026-11-25, sitting pending
+### W-A1c — the arranger, the files, and the nine steps — DONE 2026-11-25
 
 Built by Claude Opus 5.5 in two passes; 502 tests and the native gate at 455
 expectations. What differed from the section below:
