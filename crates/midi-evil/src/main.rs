@@ -1,74 +1,14 @@
-mod accessibility;
-mod announcer;
-mod app;
-mod arranger;
-mod art;
-mod automation;
-mod beats;
-mod beats_player;
-mod custom_editors;
-mod effect_ui;
-mod history;
-mod instance;
-mod instruments;
-mod key_help;
-mod keyboard;
-mod launch;
-mod live_player;
-mod midi_input;
-mod mixer;
-mod mixer_automation;
-mod patch_lab;
-mod piano_roll;
-mod preview;
-mod recording;
-mod recovery;
-mod regions;
-mod render_job;
-mod sample_recorder;
-mod speech;
-mod theme;
-mod transport;
-mod workspace;
-
-use std::process::ExitCode;
-
-use app::StudioApp;
-use instance::{InstanceStart, SingleInstance};
-use launch::LaunchOptions;
-
-fn main() -> ExitCode {
-    match run() {
-        Ok(()) => ExitCode::SUCCESS,
+#[cfg(not(target_arch = "wasm32"))]
+fn main() -> std::process::ExitCode {
+    match midi_evil::run_native() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
-            ExitCode::FAILURE
+            std::process::ExitCode::FAILURE
         }
     }
 }
 
-fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let options = LaunchOptions::parse()?;
-    if options.help {
-        println!(
-            "midi-evil [--project <dir>] [--track <name>] [--track-index <n>] <file.mid|project.evil>"
-        );
-        return Ok(());
-    }
-    let instance = match SingleInstance::start(&options)? {
-        InstanceStart::Primary(instance) => instance,
-        InstanceStart::Secondary => return Ok(()),
-    };
-    let native_options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size([1440.0, 900.0])
-            .with_min_inner_size([900.0, 600.0]),
-        ..Default::default()
-    };
-    eframe::run_native(
-        accessibility::WINDOW_TITLE,
-        native_options,
-        Box::new(move |context| Ok(Box::new(StudioApp::new(context, options, Some(instance))))),
-    )?;
-    Ok(())
-}
+/// A browser build starts from the library, not from a `main`.
+#[cfg(target_arch = "wasm32")]
+fn main() {}

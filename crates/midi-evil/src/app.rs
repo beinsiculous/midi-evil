@@ -5,6 +5,8 @@ use eframe::egui::{self, RichText, TextureHandle};
 mod chrome;
 #[cfg(test)]
 mod command_outcome_tests;
+#[cfg(test)]
+mod dialog_tests;
 mod drafts;
 mod files;
 #[cfg(test)]
@@ -39,6 +41,7 @@ use evil_project::{Instrument, InstrumentSource, Project, Track};
 use crate::announcer::Announcer;
 use crate::art;
 use crate::automation::{self, AutomationState};
+use crate::dialogs::Dialogs;
 use crate::history::{EditorHistory, Snapshot};
 use crate::instance::SingleInstance;
 use crate::instruments::{portable_file_reference, rebase_project_sources};
@@ -90,7 +93,7 @@ pub struct StudioApp {
     beats: crate::beats::BeatsPage,
     beats_binding: Option<(usize, String)>,
     recorder: Option<crate::recording::Recorder>,
-    recording_started_at: Option<std::time::Instant>,
+    recording_started_at: Option<web_time::Instant>,
     recording_snapshot: Option<Snapshot<undo::EditorSelection>>,
     record_quantize: bool,
     midi_input: crate::midi_input::MidiInput,
@@ -107,6 +110,7 @@ pub struct StudioApp {
     song: crate::arranger::SongState,
     track_name_before_edit: Option<(usize, String)>,
     show_key_help: bool,
+    dialogs: Box<dyn Dialogs>,
 }
 
 enum PendingRender {
@@ -146,15 +150,18 @@ impl StudioApp {
         context: &eframe::CreationContext<'_>,
         options: LaunchOptions,
         instance: Option<SingleInstance>,
+        dialogs: Box<dyn Dialogs>,
     ) -> Self {
-        Self::create(&context.egui_ctx, context.storage, options, instance)
+        let egui_context = &context.egui_ctx;
+        Self::with_dialogs(egui_context, context.storage, options, instance, dialogs)
     }
 
-    fn create(
+    fn with_dialogs(
         context: &egui::Context,
         storage: Option<&dyn eframe::Storage>,
         options: LaunchOptions,
         instance: Option<SingleInstance>,
+        dialogs: Box<dyn Dialogs>,
     ) -> Self {
         theme::install(context);
         let mut app = Self {
@@ -208,6 +215,7 @@ impl StudioApp {
             song: crate::arranger::SongState::default(),
             track_name_before_edit: None,
             show_key_help: false,
+            dialogs,
         };
         if let Err(error) = app.add_track_quietly() {
             app.status = format!("Could not add a track: {error}");
@@ -217,7 +225,7 @@ impl StudioApp {
         app
     }
 
-    pub fn open_launch(&mut self, options: LaunchOptions) {
+    pub(crate) fn open_launch(&mut self, options: LaunchOptions) {
         if let Some(project) = options.project {
             self.project_base = Some(project);
         }
@@ -464,7 +472,7 @@ impl StudioApp {
                         if lab.page == patch_lab::PatchPage::Samples || lab.recording_active() {
                             self.sample_capture_controls(ui, &mut lab);
                         }
-                        patch_lab::show(ui, &mut lab)
+                        patch_lab::show(ui, &mut lab, self.dialogs.as_mut())
                     })
                     .inner
                 })
@@ -912,7 +920,7 @@ impl eframe::App for StudioApp {
         self.about_window(root.ctx());
         self.sound_browser(root.ctx());
         self.key_help_window(root.ctx());
-        if let Some(path) = self.recovery.show(root.ctx()) {
+        if let Some(path) = self.recovery.show(root.ctx(), self.dialogs.as_mut()) {
             self.open_project_path(&path);
         }
         if let Some(outcome) = self.recovery.take_outcome() {
@@ -971,7 +979,9 @@ impl StudioApp {
             View::Keyboard => self.keyboard_panel(ui),
             View::Pads => {
                 self.sync_beats_instrument();
-                let hits = self.beats.show(ui, self.project.tempo_bpm);
+                let hits = self
+                    .beats
+                    .show(ui, self.project.tempo_bpm, self.dialogs.as_mut());
                 self.link_saved_beats_bank();
                 self.record_pad_hits(&hits);
             }

@@ -21,19 +21,22 @@ readme = "README.md"
 [dependencies]
 eframe = { version = "0.35", default-features = false, features = ["accesskit", "default_fonts", "glow", "persistence", "x11", "wayland"] }
 png = "0.18"
-rfd = "0.17"
 midir = "0.11"
 cpal = "0.18"
 dasp_sample = "0.11"
 rodio = { version = "0.23", default-features = false, features = ["playback"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+web-time = "1.1"
 evil-exports = { path = "../evil-exports", version = "0.1.0" }
 evil-imports = { path = "../evil-imports", version = "0.1.0" }
 evil-beats = { path = "../evil-beats", version = "0.1.0" }
 evil-project = { path = "../evil-project", version = "0.1.0" }
 evil-render = { path = "../evil-render", version = "0.1.0" }
 evil-synth = { path = "../evil-synth", version = "0.1.0" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rfd = "0.17"
 
 [dev-dependencies]
 hound = "3"

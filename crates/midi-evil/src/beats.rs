@@ -1,9 +1,10 @@
 //! Maxwell's pad instrument with portable banks and song-instrument linking.
-use std::{path::PathBuf, time::Instant};
+use std::path::PathBuf;
 
 use eframe::egui::{self, Key, Rect, RichText, TextureHandle, vec2};
 use evil_beats::{DrumFilter, DrumKit, DrumPad, PAD_COUNT, SampleDirection};
 use evil_synth::InsertEffect;
+use web_time::Instant;
 
 mod bank;
 mod drawing;
@@ -11,6 +12,7 @@ use drawing::{paint_pad, waveform};
 
 use crate::{
     beats_player::BeatsPlayer,
+    dialogs::Dialogs,
     effect_ui::{self, EffectType},
     theme,
 };
@@ -234,11 +236,16 @@ impl BeatsPage {
         }
     }
 
-    pub fn save(&mut self) {
-        self.action(Action::Save);
+    pub fn save(&mut self, dialogs: &mut dyn Dialogs) {
+        self.action(Action::Save, dialogs);
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, tempo: f32) -> Vec<PadHit> {
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        tempo: f32,
+        dialogs: &mut dyn Dialogs,
+    ) -> Vec<PadHit> {
         self.tempo_bpm = tempo;
         let mut hits = Vec::new();
         let wall_now = Instant::now();
@@ -544,7 +551,7 @@ impl BeatsPage {
             }));
         }
         if let Some(action) = action {
-            self.action(action);
+            self.action(action, dialogs);
         }
         hits
     }

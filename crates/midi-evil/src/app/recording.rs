@@ -32,7 +32,7 @@ impl StudioApp {
             self.transport.end_tick,
             grid,
         ));
-        self.recording_started_at = Some(std::time::Instant::now());
+        self.recording_started_at = Some(web_time::Instant::now());
         self.report(match target {
             RecordingTarget::Track(_) => {
                 "Recording the unique timeline with the independent recording clock."
@@ -78,7 +78,7 @@ impl StudioApp {
         }) else {
             return;
         };
-        let now = std::time::Instant::now();
+        let now = web_time::Instant::now();
         for hit in hits {
             let offset_seconds = hit.at.checked_duration_since(now).map_or_else(
                 || -now.duration_since(hit.at).as_secs_f64(),

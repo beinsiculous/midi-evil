@@ -729,7 +729,26 @@ list before the batch reports done.
 **Then, for all three:** the native suite, clippy and fmt; `compat/` verified on Iroh; the nine
 steps' transcript and what Jesse heard added to a `coordination/web/w-a1-result.md`.
 
-## W1 — compile-safe seams, native behaviour unchanged (`#3`) — settled 2026-11-25
+## W1 — compile-safe seams, native behaviour unchanged (`#3`) — BUILT 2026-11-25
+
+Built by Claude Opus 5.5 in one pass; 510 tests and the native gate at 455 expectations. What
+differed from the section below:
+
+- **The `wasm32` lint is scoped to the application.** As written, `cargo clippy -p midi-evil
+  --target wasm32-unknown-unknown` also lints the path dependencies, and `evil-project`'s atomic
+  save trips `drop_non_drop` there, where a file has nothing to drop. W1 may not touch a shared
+  crate, so its gate is the same command with `--no-deps`. The shared crates' own `wasm32` lint
+  is W5a's, which changes them anyway.
+- **The `wasm32` dialogs are `impl Dialogs for ()`**, not a named type: nothing constructs a
+  `StudioApp` there yet, and a private named type would be dead code.
+- **Each site still reads as a builder.** A crate-private `FileDialog` mirrors the calls the
+  sites made, and asks through the trait; the trait's methods take plain types, so no request
+  type is public. No site asks with a title.
+- **All twenty-three uses are reached by the harness** and their requests asserted; the eleven
+  that stop the keyboard and the beats are tested holding a note, the pedal, a bend and a pad.
+- **The inventory** now has 68 announced lines and three failing items: Refresh MIDI inputs
+  (W3's), the side panel's width handle, and moving a window by its title bar.
+
 
 The record's step, re-surveyed on `a15dc49` after W-A1 moved most of what it names.
 
@@ -835,7 +854,7 @@ The record's step, re-surveyed on `a15dc49` after W-A1 moved most of what it nam
 - The native suite, clippy and fmt; the native gate, every sequence, since the split moves every
   module the gate drives.
 - `cargo check -p midi-evil --target wasm32-unknown-unknown` compiles — library and binary —
-  and `cargo clippy -p midi-evil --target wasm32-unknown-unknown -- -D warnings` is clean. A
+  and `cargo clippy -p midi-evil --no-deps --target wasm32-unknown-unknown -- -D warnings` is clean. A
   public function naming a private type, or a stub leaving an argument unused, fails here.
 - `cargo tree -p midi-evil --target wasm32-unknown-unknown` shows no `rfd`.
 - `git grep -n 'rfd::' crates/midi-evil/src` finds only `dialogs/native.rs`.
@@ -898,7 +917,7 @@ this file after W0's result, and none starts before that.
   and the worker's start-up time inside the gate, and a render over the limit an announced refusal
   rather than an error; cancellation is terminate-and-respawn or a checked generation, with a row
   for cancelling at the last moment.
-  *W5a* — the path-based wrappers do not exist on `wasm32`, so a missed conversion fails to compile
+  *W5a* — its gate lints the shared crates for `wasm32` with `-D warnings`, which W1 could not (`evil-project`'s `drop(file)` in the atomic save is the one known failure); the path-based wrappers do not exist on `wasm32`, so a missed conversion fails to compile
   rather than at Play. *W5b* — `beforeunload` while the document is unsaved or a save is in flight, and a
   keyboard-operable, announced discard prompt for New and Open, both in its scope and gate and
   asserted again in W6; how a probe opens and saves a file in a browser at all, since the file

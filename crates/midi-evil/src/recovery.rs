@@ -3,6 +3,7 @@ use std::{path::PathBuf, sync::mpsc};
 use eframe::egui;
 
 use crate::accessibility::Accessible;
+use crate::dialogs::{Dialogs, FileDialog};
 
 /// The recovery worker writes a separate draft; opening it is an explicit document action.
 pub struct RecoveryWindow {
@@ -35,7 +36,7 @@ impl Default for RecoveryWindow {
 }
 
 impl RecoveryWindow {
-    pub fn show(&mut self, context: &egui::Context) -> Option<PathBuf> {
+    pub fn show(&mut self, context: &egui::Context, dialogs: &mut dyn Dialogs) -> Option<PathBuf> {
         if let Some(worker) = &self.worker {
             let result = match worker.try_recv() {
                 Ok(result) => Some(result),
@@ -73,7 +74,7 @@ impl RecoveryWindow {
                     ui.separator();
                     ui.add_enabled_ui(self.worker.is_none(), |ui| {
                         if ui.button("Choose WAV…").clicked()
-                            && let Some(path) = rfd::FileDialog::new().add_filter("WAV audio", &["wav"]).pick_file() {
+                            && let Some(path) = FileDialog::new(dialogs).add_filter("WAV audio", &["wav"]).pick_file() {
                             self.outcome = Some(format!("Chose {}.", path.display()));
                             self.source = Some(path);
                             self.report = None;
@@ -90,7 +91,7 @@ impl RecoveryWindow {
                                 for grid in [1, 2, 4, 8, 16, 32] { ui.selectable_value(&mut self.grid, grid, format!("1/{grid}")); }
                             });
                         if ui.add_enabled(self.source.is_some(), egui::Button::new("Create .evil draft…")).clicked()
-                            && let Some(output) = rfd::FileDialog::new().add_filter("MIDI Evil project", &["evil"])
+                            && let Some(output) = FileDialog::new(dialogs).add_filter("MIDI Evil project", &["evil"])
                                 .set_file_name("recovered-rhythm.evil").save_file() {
                             let source = self.source.clone().unwrap();
                             let tempo = (!self.detect_tempo).then_some(self.tempo_bpm);

@@ -1,7 +1,15 @@
-use std::fs;
-use std::io::{Read, Result as IoResult};
-use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Path, PathBuf};
+//! One window per person: a second launch hands its options to the running copy over a Unix
+//! socket and exits. Off Unix there is no socket, so every launch is primary and nothing is
+//! ever received — which makes the crate compile there; it does not keep two copies apart.
+
+use std::io::Result as IoResult;
+#[cfg(unix)]
+use std::{
+    fs,
+    io::Read,
+    os::unix::net::{UnixListener, UnixStream},
+    path::{Path, PathBuf},
+};
 
 use crate::launch::LaunchOptions;
 
@@ -10,11 +18,27 @@ pub enum InstanceStart {
     Secondary,
 }
 
+#[cfg(unix)]
 pub struct SingleInstance {
     listener: UnixListener,
     path: PathBuf,
 }
 
+#[cfg(not(unix))]
+pub struct SingleInstance;
+
+#[cfg(not(unix))]
+impl SingleInstance {
+    pub fn start(_options: &LaunchOptions) -> IoResult<InstanceStart> {
+        Ok(InstanceStart::Primary(Self))
+    }
+
+    pub fn try_recv(&self) -> IoResult<Option<LaunchOptions>> {
+        Ok(None)
+    }
+}
+
+#[cfg(unix)]
 impl SingleInstance {
     pub fn start(options: &LaunchOptions) -> IoResult<InstanceStart> {
         Self::start_at(options, socket_path())
@@ -47,12 +71,14 @@ impl SingleInstance {
     }
 }
 
+#[cfg(unix)]
 impl Drop for SingleInstance {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
     }
 }
 
+#[cfg(unix)]
 fn forward(path: &Path, options: &LaunchOptions) -> IoResult<()> {
     let mut stream = UnixStream::connect(path)?;
     serde_json::to_writer(&mut stream, options)
@@ -60,6 +86,7 @@ fn forward(path: &Path, options: &LaunchOptions) -> IoResult<()> {
     stream.shutdown(std::net::Shutdown::Write)
 }
 
+#[cfg(unix)]
 fn socket_path() -> PathBuf {
     let directory = std::env::var_os("XDG_RUNTIME_DIR")
         .or_else(|| std::env::var_os("TMPDIR"))
@@ -78,7 +105,7 @@ fn socket_path() -> PathBuf {
     PathBuf::from(directory).join(format!("midi-evil-{user}.sock"))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

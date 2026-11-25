@@ -1,8 +1,10 @@
 //! The file commands — New, Open, Save, Save As, Import MIDI, Relink MIDI, Export MIDI and the
 //! WAV renders. Each says what happened through the one report: what was opened or saved, what
-//! was discarded, and what a cancelled dialog left as it was. The dialogs are the desktop's own.
+//! was discarded, and what a cancelled dialog left as it was. The dialogs are the application's
+//! one `Dialogs`, the desktop's own when it runs.
 
 use super::*;
+use crate::dialogs::FileDialog;
 
 /// "song.evil": a file as it is spoken, without the folder it is in.
 fn file_name(path: &Path) -> String {
@@ -51,12 +53,10 @@ impl StudioApp {
         }
         self.stop_keyboard();
         self.beats.stop();
-        let answer = rfd::MessageDialog::new()
-            .set_title("Unsaved changes")
-            .set_description("Discard unsaved changes?")
-            .set_buttons(rfd::MessageButtons::YesNo)
-            .show();
-        if answer == rfd::MessageDialogResult::Yes {
+        if self
+            .dialogs
+            .confirm("Unsaved changes", "Discard unsaved changes?")
+        {
             Discard::Discarded
         } else {
             Discard::Kept
@@ -351,15 +351,15 @@ impl StudioApp {
         }
     }
 
-    pub(super) fn file_dialog(&mut self) -> rfd::FileDialog {
+    pub(super) fn file_dialog(&mut self) -> FileDialog<'_> {
         // Native dialogs block UI note-off processing until they close.
         self.stop_keyboard();
         self.beats.stop();
-        let mut dialog = rfd::FileDialog::new();
-        if let Some(project) = &self.project_base {
-            dialog = dialog.set_directory(project);
+        let dialog = FileDialog::new(self.dialogs.as_mut());
+        match &self.project_base {
+            Some(project) => dialog.set_directory(project),
+            None => dialog,
         }
-        dialog
     }
 
     fn wav_output(&mut self, default_name: &str) -> Option<PathBuf> {

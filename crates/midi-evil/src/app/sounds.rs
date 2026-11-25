@@ -28,11 +28,10 @@ impl StudioApp {
         }
         self.stop_keyboard();
         self.beats.stop();
-        rfd::MessageDialog::new()
-            .set_title("Unsaved instrument edits")
-            .set_description("Replace the current sound draft? Save it in Synth or Pads first to keep your edits.")
-            .set_buttons(rfd::MessageButtons::YesNo)
-            .show() == rfd::MessageDialogResult::Yes
+        self.dialogs.confirm(
+            "Unsaved instrument edits",
+            "Replace the current sound draft? Save it in Synth or Pads first to keep your edits.",
+        )
     }
 
     /// The one place the selected track changes, from whichever control asks: refused, and

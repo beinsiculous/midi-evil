@@ -1,11 +1,12 @@
 use std::num::NonZero;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use evil_synth::{ChannelMeter, METER_BLOCK_FRAMES, StereoSound};
 use rodio::mixer::MixerSource;
 use rodio::{DeviceSinkBuilder, DeviceSinkError, MixerDeviceSink, Player, Source};
+use web_time::Instant;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct MeterSnapshot {

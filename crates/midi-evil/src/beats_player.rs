@@ -1,11 +1,12 @@
 use std::{
     num::NonZero,
     sync::mpsc::{self, Receiver, Sender, TryRecvError},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use evil_beats::{BUS_COUNT, DrumBus, DrumKit, DrumMachine, PreparedPad};
 use rodio::{DeviceSinkBuilder, MixerDeviceSink, Player, Source};
+use web_time::Instant;
 
 enum Command {
     Pad(usize, Option<PreparedPad>),

@@ -89,11 +89,10 @@ impl StudioApp {
         }
         self.stop_keyboard();
         self.beats.stop();
-        rfd::MessageDialog::new()
-            .set_title("Unsaved instrument drafts")
-            .set_description("This undo or redo changes the project's instruments. Discard unsaved instrument drafts? Save them first to keep your edits.")
-            .set_buttons(rfd::MessageButtons::YesNo)
-            .show() == rfd::MessageDialogResult::Yes
+        self.dialogs.confirm(
+            "Unsaved instrument drafts",
+            "This undo or redo changes the project's instruments. Discard unsaved instrument drafts? Save them first to keep your edits.",
+        )
     }
 
     pub(super) fn history_preserves_sound_drafts(&self, target: Option<&Project>) -> bool {

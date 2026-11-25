@@ -108,7 +108,7 @@ has answered is shown by a test of the command's second half, and a cancelled di
 | Recover rhythm from WAV… | A | "The Recover rhythm from WAV window is open; Tab reaches it." — gate *Windows and the Project menu* |
 | Save (Ctrl+S) | A | "Saved saved.evil." — gate *Nine steps, 9*; on a new project it is Save As |
 | Save as… | A | the dialog is the sitting's alone (waiver); what follows it is `save_to`, the same as Save |
-| Relink MIDI… (only with a linked MIDI file) | **F** | opens the desktop's file dialog and reports "Relinked MIDI to …" or "The MIDI link is unchanged.", but no test or row reaches past the dialog |
+| Relink MIDI… (only with a linked MIDI file) | A | past its file dialog, answered by the harness: "Relinked MIDI to bach-invention-02-renamed.mid." or "The MIDI link is unchanged.", and the next save writes the new link — `relink_midi_reaches_past_its_dialog_and_the_next_save_writes_the_new_link` |
 | Export MIDI… | A | as Standard MIDI… |
 | Render WAV… | A | as Stereo WAV… |
 | Render section WAV… | A | as Section WAV… |
@@ -217,11 +217,11 @@ has answered is shown by a test of the command's second half, and a cancelled di
 |---|---|---|---|
 | Recover rhythm from WAV, title bar, … | title bar | **F** | named; failing line 6 |
 | Close window | button | S | |
-| Choose WAV… | button | **F** | the desktop's file dialog, then "Chose …" reported; nothing reaches past the dialog |
+| Choose WAV… | button | A | past its file dialog, answered by the harness: "Chose …" — `choose_wav_and_create_draft_reach_past_their_dialogs_and_the_draft_opens` |
 | Detect tempo automatically | check box | S | |
 | Draft tempo in beats per minute | value box | S | newly named |
 | Quantize grid | combo box | S | |
-| Create .evil draft… | button | **F** | the desktop's save dialog, then "Analyzing the audio…" and "Draft created: …" reported; nothing reaches past the dialog |
+| Create .evil draft… | button | A | past its save dialog, answered by the harness: "Analyzing the audio and creating the draft…", then, once the worker has finished, "Draft created: 15 notes at …" — the same test |
 | Open recovered draft | button | A | as Open: "Opened recovered-rhythm.evil, 1 track." — through `open_project_path` |
 
 ## Pointer gestures
@@ -258,28 +258,27 @@ once.
 
 | ending | lines |
 |---|---|
-| A — announced, with a row or a test | 65 |
+| A — announced, with a row or a test | 68 |
 | H — opens a held-back surface | 9 |
 | S — a named standard control | 40 |
-| F — failing | 8 |
+| F — failing | 5 |
 
 ## Every failing line
 
 1. **Refresh MIDI inputs** (toolbar) — refreshes silently; its "MIDI support could not be
    initialized" label is not announced. Owed to W3, whose section gives the port announced states.
-2. **Relink MIDI…** (Project menu) — reports, but only past a file dialog, and no test reaches
-   past it.
+2. **Relink MIDI…** (Project menu) — **A** since W1: the harness answers its dialog.
 3. **Side panel width, dragged with a pointer** — a Tab stop with no key path; Jesse's call since
    W-A1b.
-4. **Choose WAV…** (Recover rhythm window) — reports, but only past a file dialog.
-5. **Create .evil draft…** (Recover rhythm window) — reports, but only past a save dialog.
+4. **Choose WAV…** (Recover rhythm window) — **A** since W1: the harness answers its dialog.
+5. **Create .evil draft…** (Recover rhythm window) — **A** since W1: the harness answers its
+   dialog and waits for the recovery's worker.
 6. **Moving a window by its title bar** (the sound library, Keyboard notes, Recover rhythm from
    WAV: three title-bar lines above) — a pointer's drag with no key path. Tolerable, I think: no
    window has to be moved to be used, and each opens where its content can be reached by Tab; the
    bar is a named Tab stop, so it is not silent. It is still a failing line by this inventory's
    rule, and the web build either hides these windows or gives them no drag.
 
-Lines 2, 4 and 5 are announced; what they lack is mechanical evidence past their dialog. Each
-becomes **A** the way the export row's commands and Load files… did: split the command at its
-dialog and test the half that follows it. Six failing items, eight failing table lines (item 6
-is three).
+Lines 2, 4 and 5 were announced and lacked only mechanical evidence past their dialog; W1's
+scripted dialogs gave it, so each is **A** and keeps its number here. Three failing items, five
+failing table lines (item 6 is three).

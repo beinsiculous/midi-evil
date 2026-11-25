@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use crate::dialogs::{Dialogs, FileDialog};
 use crate::{effect_ui, sample_recorder::SampleRecorder, theme};
 use eframe::egui::{self, ComboBox, DragValue, Ui};
 
@@ -174,7 +175,7 @@ pub fn tabs(ui: &mut Ui, lab: &mut PatchLab) {
     });
 }
 
-pub fn show(ui: &mut Ui, lab: &mut PatchLab) -> Option<String> {
+pub fn show(ui: &mut Ui, lab: &mut PatchLab, dialogs: &mut dyn Dialogs) -> Option<String> {
     let mut message = None;
     let patch = &mut lab.patch;
     egui::CollapsingHeader::new("PRESET / OUTPUT")
@@ -207,7 +208,7 @@ pub fn show(ui: &mut Ui, lab: &mut PatchLab) -> Option<String> {
         }
         PatchPage::Samples => {
             theme::section(ui, "SAMPLE OSCILLATOR / KEY MAPPING", theme::RED, |ui| {
-                message = show_samples(ui, patch, &mut lab.slicing);
+                message = show_samples(ui, patch, &mut lab.slicing, dialogs);
             })
         }
         PatchPage::Modulation => {
@@ -547,7 +548,12 @@ fn show_voice(ui: &mut Ui, patch: &mut Patch) {
     show_modal_partials(ui, patch);
 }
 
-fn show_samples(ui: &mut Ui, patch: &mut Patch, slicing: &mut SliceControls) -> Option<String> {
+fn show_samples(
+    ui: &mut Ui,
+    patch: &mut Patch,
+    slicing: &mut SliceControls,
+    dialogs: &mut dyn Dialogs,
+) -> Option<String> {
     let mut message = None;
     ui.label("Load WAV / AIFF, record the microphone, or resample the song section into Osc A.");
     ui.label(
@@ -569,7 +575,7 @@ fn show_samples(ui: &mut Ui, patch: &mut Patch, slicing: &mut SliceControls) -> 
                     "Load sample audio"
                 };
                 if ui.button(button).clicked()
-                    && let Some(path) = rfd::FileDialog::new()
+                    && let Some(path) = FileDialog::new(dialogs)
                         .add_filter("WAV / AIFF audio", &["wav", "aif", "aiff", "aifc"])
                         .pick_file()
                 {
@@ -580,7 +586,7 @@ fn show_samples(ui: &mut Ui, patch: &mut Patch, slicing: &mut SliceControls) -> 
                 }
             }
             if oscillator.waveform == Waveform::Sample
-                && let Some(update) = show_sample_mapping(ui, oscillator, index, slicing)
+                && let Some(update) = show_sample_mapping(ui, oscillator, index, slicing, dialogs)
             {
                 message = Some(update);
             }
@@ -614,6 +620,7 @@ fn show_sample_mapping(
     oscillator: &mut Oscillator,
     oscillator_index: usize,
     slicing: &mut SliceControls,
+    dialogs: &mut dyn Dialogs,
 ) -> Option<String> {
     let mut message = None;
     if oscillator.sample_zones.is_empty() {
@@ -701,7 +708,7 @@ fn show_sample_mapping(
                 });
                 ui.horizontal_wrapped(|ui| {
                     if ui.button("Load / replace zone WAV").clicked()
-                        && let Some(path) = rfd::FileDialog::new()
+                        && let Some(path) = FileDialog::new(dialogs)
                             .add_filter("WAV / AIFF audio", &["wav", "aif", "aiff", "aifc"])
                             .pick_file()
                     {

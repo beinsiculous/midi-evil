@@ -1,19 +1,18 @@
 use super::{Action, BeatsPage, SampleUndo, kit_peaks};
+use crate::dialogs::{Dialogs, FileDialog};
 use evil_beats::{DrumHit, DrumKit, DrumPad, KitPad};
 
 impl BeatsPage {
-    pub(super) fn action(&mut self, action: Action) {
+    pub(super) fn action(&mut self, action: Action, dialogs: &mut dyn Dialogs) {
         self.stop();
         let result: Result<(), String> = (|| {
             match action {
                 Action::New | Action::Starter | Action::Open => {
                     if self.dirty
-                        && rfd::MessageDialog::new()
-                            .set_title("Unsaved drum bank")
-                            .set_description("Replace this bank and discard its unsaved changes?")
-                            .set_buttons(rfd::MessageButtons::YesNo)
-                            .show()
-                            != rfd::MessageDialogResult::Yes
+                        && !dialogs.confirm(
+                            "Unsaved drum bank",
+                            "Replace this bank and discard its unsaved changes?",
+                        )
                     {
                         return Ok(());
                     }
@@ -23,7 +22,7 @@ impl BeatsPage {
                             (evil_beats::maxwell_kit().map_err(|e| e.to_string())?, None)
                         }
                         _ => {
-                            let Some(path) = rfd::FileDialog::new()
+                            let Some(path) = FileDialog::new(dialogs)
                                 .add_filter("Evil drum bank", &["evilkit"])
                                 .pick_file()
                             else {
@@ -46,7 +45,7 @@ impl BeatsPage {
                         .and_then(|p| p.file_name())
                         .map(|s| s.to_string_lossy().into_owned())
                         .unwrap_or_else(|| "maxwell-kit.evilkit".into());
-                    let Some(path) = rfd::FileDialog::new()
+                    let Some(path) = FileDialog::new(dialogs)
                         .add_filter("Evil drum bank", &["evilkit"])
                         .set_file_name(filename)
                         .save_file()
@@ -62,7 +61,7 @@ impl BeatsPage {
                     self.dirty = false;
                 }
                 Action::Import => {
-                    let Some(path) = rfd::FileDialog::new()
+                    let Some(path) = FileDialog::new(dialogs)
                         .add_filter("WAV / AIFF audio", &["wav", "aif", "aiff", "aifc"])
                         .pick_file()
                     else {
@@ -152,7 +151,7 @@ impl BeatsPage {
                     let Some(pad) = &self.kit.pads[self.selected] else {
                         return Ok(());
                     };
-                    let Some(path) = rfd::FileDialog::new()
+                    let Some(path) = FileDialog::new(dialogs)
                         .add_filter("WAV audio", &["wav"])
                         .set_file_name("pad.wav")
                         .save_file()
@@ -192,5 +191,13 @@ impl BeatsPage {
             self.message = error;
         }
         self.peaks = kit_peaks(&self.kit);
+    }
+}
+
+#[cfg(test)]
+impl BeatsPage {
+    /// Whether a pad is held or the beat player is running: what `stop` silences.
+    pub(crate) fn is_sounding(&self) -> bool {
+        self.player.is_some() || self.held != 0 || self.midi_held != 0
     }
 }

@@ -241,7 +241,7 @@ impl StudioApp {
             AppCommand::NewProject => self.new_project(),
             AppCommand::OpenProject => self.open_project(),
             AppCommand::SaveProject if self.view == View::Pads => {
-                self.beats.save();
+                self.beats.save(self.dialogs.as_mut());
                 self.link_saved_beats_bank();
             }
             AppCommand::SaveProject => self.save_project(),
