@@ -114,7 +114,8 @@ mod tests {
         app.add_track();
         assert!(app.open_patch_lab());
         app.patch_lab.as_mut().unwrap().patch.gain = 0.456;
-        app.history.record(app.project.clone());
+        app.history
+            .record(app.project.clone(), app.editor_selection(), None);
         app.project.tracks[1]
             .notes
             .push(evil_project::Note::default());
@@ -142,7 +143,7 @@ mod tests {
         app.patch_lab.as_mut().unwrap().patch.gain = 0.123;
         let mut recorder = Recorder::new(RecordingTarget::Track(0), 0, 1920, None);
         recorder.hit(60, 100, 0, &app.project);
-        app.recording_snapshot = Some(app.project.clone());
+        app.recording_snapshot = Some(app.editor_snapshot());
         app.recorder = Some(recorder);
         assert!(!app.history.can_undo());
         app.undo();

@@ -25,7 +25,7 @@ impl StudioApp {
             .record_quantize
             .then(|| (u64::from(self.project.ticks_per_quarter.max(1)) / 4).max(1));
         self.preview_project();
-        self.recording_snapshot = Some(self.project.clone());
+        self.recording_snapshot = Some(self.editor_snapshot());
         self.recorder = Some(Recorder::new(
             target,
             self.transport.start_tick,

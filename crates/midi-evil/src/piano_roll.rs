@@ -1,13 +1,28 @@
-use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
+//! The piano roll: one focusable widget with a note cursor, not a node per note, because the
+//! roll paints only what the viewport shows and per-note nodes would make the rest unreachable.
+//! Its accessible name carries the cursor's note; its description carries the key help.
+
+pub mod cursor;
+mod drawing;
+pub mod edits;
+mod toolbar;
+
+pub(crate) use drawing::snap_tick;
+
+use eframe::egui::{self, Rect, Stroke, Vec2, accesskit};
 use evil_project::{EventSequence, Note, Project};
 
-use crate::theme;
-
-const KEY_HEIGHT: f32 = 18.0;
-const KEYBOARD_WIDTH: f32 = 62.0;
-const RULER_HEIGHT: f32 = 26.0;
-const MAX_PITCH: u8 = 127;
-const DEFAULT_NOTE_VELOCITY: u8 = 100;
+use self::{
+    cursor::{CursorKeeper, Reconciled, SequenceContext},
+    drawing::{KEY_HEIGHT, KEYBOARD_WIDTH, RULER_HEIGHT},
+    edits::{EditGrid, Edited, MAX_PITCH, Outcome, RollCommand},
+};
+use crate::{
+    announcer::Announcer,
+    regions::{self, Region},
+    speech::{self, Meter, Origin},
+    theme,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct PartDragState {
@@ -21,13 +36,18 @@ pub struct PartDragState {
 pub struct RollState {
     pub selected_track: usize,
     pub selected_part: Option<usize>,
-    pub selected_note: Option<usize>,
+    pub cursor: CursorKeeper,
     pub part_drag: Option<PartDragState>,
     clipboard: Vec<Note>,
     dragging_note: Option<usize>,
     resizing_note: Option<usize>,
     zoom: f32,
     scroll_to_middle: bool,
+    scroll_to_cursor: bool,
+    /// The roll's widget, once it has been shown: the key dispatch and F6 address it.
+    pub widget_id: Option<egui::Id>,
+    /// Whether the roll had focus when the last frame ended.
+    pub had_focus: bool,
 }
 
 impl Default for RollState {
@@ -35,13 +55,16 @@ impl Default for RollState {
         Self {
             selected_track: 0,
             selected_part: None,
-            selected_note: None,
+            cursor: CursorKeeper::default(),
             part_drag: None,
             clipboard: Vec::new(),
             dragging_note: None,
             resizing_note: None,
             zoom: 1.0,
             scroll_to_middle: true,
+            scroll_to_cursor: false,
+            widget_id: None,
+            had_focus: false,
         }
     }
 }
@@ -50,7 +73,7 @@ impl RollState {
     pub fn select_track(&mut self, index: usize) {
         self.selected_track = index;
         self.selected_part = None;
-        self.selected_note = None;
+        self.cursor.clear();
         self.dragging_note = None;
         self.resizing_note = None;
         self.scroll_to_middle = true;
@@ -58,7 +81,7 @@ impl RollState {
 
     pub fn select_part(&mut self, track: usize, part: Option<usize>) {
         if self.selected_track != track || self.selected_part != part {
-            self.selected_note = None;
+            self.cursor.clear();
             self.dragging_note = None;
             self.resizing_note = None;
             self.scroll_to_middle = true;
@@ -67,28 +90,89 @@ impl RollState {
         self.selected_part = part;
     }
 
-    pub fn clamp(&mut self, project: &Project) {
+    /// Puts back a selection that undo stored with a project, keeping it inside that project.
+    pub fn restore(
+        &mut self,
+        project: &Project,
+        track: usize,
+        part: Option<usize>,
+        document: u64,
+        cursor: Option<usize>,
+    ) {
         self.dragging_note = None;
         self.resizing_note = None;
         if project.tracks.is_empty() {
             self.selected_track = 0;
             self.selected_part = None;
-            self.selected_note = None;
+            self.cursor.clear();
             return;
         }
-        self.selected_track = self.selected_track.min(project.tracks.len() - 1);
-        let track = &project.tracks[self.selected_track];
-        self.selected_part = self
-            .selected_part
-            .filter(|index| *index < track.parts.len());
-        let note_count = self.selected_part.map_or(track.notes.len(), |part| {
-            project.patterns[track.parts[part].pattern].notes.len()
-        });
-        self.selected_note = self.selected_note.filter(|index| *index < note_count);
+        // One scroll: to the restored cursor's note, or to the middle of a newly shown sequence;
+        // a cursor cancels a middle scroll something earlier in the frame asked for.
+        if cursor.is_some() {
+            self.scroll_to_middle = false;
+        } else if track != self.selected_track || part != self.selected_part {
+            self.scroll_to_middle = true;
+        }
+        self.selected_track = track.min(project.tracks.len() - 1);
+        self.selected_part =
+            part.filter(|part| *part < project.tracks[self.selected_track].parts.len());
+        let context = sequence_context(project, self, document);
+        let notes = sequence_notes(project, context);
+        self.cursor.set(context, cursor, notes);
+        self.scroll_to_cursor = cursor.is_some();
     }
 
     pub fn pixels_per_tick(&self, ticks_per_quarter: u16) -> f32 {
         64.0 * self.zoom / f32::from(ticks_per_quarter)
+    }
+}
+
+/// The track or shared pattern the roll's selection points at.
+pub fn sequence_context(project: &Project, roll: &RollState, document: u64) -> SequenceContext {
+    let part = roll.selected_part.filter(|part| {
+        project
+            .tracks
+            .get(roll.selected_track)
+            .is_some_and(|track| *part < track.parts.len())
+    });
+    let pattern = part.map(|part| project.tracks[roll.selected_track].parts[part].pattern);
+    SequenceContext {
+        document,
+        track: roll.selected_track,
+        part,
+        pattern,
+    }
+}
+
+/// The track or pattern a context names, to edit.
+pub fn sequence_mut(
+    project: &mut Project,
+    context: SequenceContext,
+) -> Option<&mut dyn EventSequence> {
+    match context.pattern {
+        Some(pattern) => project
+            .patterns
+            .get_mut(pattern)
+            .map(|pattern| pattern as &mut dyn EventSequence),
+        None => project
+            .tracks
+            .get_mut(context.track)
+            .map(|track| track as &mut dyn EventSequence),
+    }
+}
+
+/// The notes a context names, or none when the selection no longer exists.
+pub fn sequence_notes(project: &Project, context: SequenceContext) -> &[Note] {
+    match context.pattern {
+        Some(pattern) => project
+            .patterns
+            .get(pattern)
+            .map_or(&[], |pattern| &pattern.notes),
+        None => project
+            .tracks
+            .get(context.track)
+            .map_or(&[], |track| &track.notes),
     }
 }
 
@@ -108,9 +192,7 @@ pub fn timeline_ticks(sequence: &(impl EventSequence + ?Sized), ticks_per_quarte
 }
 
 pub fn bar_ticks(project: &Project) -> u64 {
-    (u64::from(project.ticks_per_quarter.max(1)) * 4 * u64::from(project.beats_per_bar.max(1))
-        / u64::from(project.beat_unit.max(1)))
-    .max(1)
+    Meter::of(project).bar_ticks()
 }
 
 #[derive(Clone, Copy)]
@@ -128,91 +210,119 @@ impl RollContext {
     }
 }
 
-pub fn show(
-    ui: &mut egui::Ui,
-    context: RollContext,
+/// Everything about the sequence the roll edits that is not its notes.
+#[derive(Debug, Clone, Copy)]
+pub struct EditedSequence {
+    pub context: SequenceContext,
+    pub meter: Meter,
+    pub origin: Origin,
+    pub grid: EditGrid,
+}
+
+impl EditedSequence {
+    pub fn new(project: &Project, context: SequenceContext) -> Self {
+        let beat = u64::from(project.ticks_per_quarter.max(1));
+        let origin = match context.pattern {
+            Some(pattern) => Origin::Pattern {
+                sharing_parts: project
+                    .tracks
+                    .iter()
+                    .flat_map(|track| &track.parts)
+                    .filter(|part| part.pattern == pattern)
+                    .count(),
+            },
+            None => Origin::Song,
+        };
+        Self {
+            context,
+            meter: Meter::of(project),
+            origin,
+            grid: EditGrid {
+                snap: (beat / 4).max(1),
+                beat,
+                pattern_length: context
+                    .pattern
+                    .and_then(|pattern| project.patterns.get(pattern))
+                    .map(|pattern| pattern.length_ticks),
+            },
+        }
+    }
+
+    /// The roll's name for the notes as they are: what its cursor is on.
+    pub fn roll_name(&self, notes: &[Note], state: &RollState) -> String {
+        let cursor = state
+            .cursor
+            .index(self.context)
+            .and_then(|index| notes.get(index));
+        speech::roll_name(cursor, notes.len(), self.meter, self.origin)
+    }
+}
+
+/// Finds the cursor's note again after a change the roll did not make, and says so when the
+/// cursor had to be cleared.
+pub fn reconcile(
+    sequence: &dyn EventSequence,
+    state: &mut RollState,
+    edited: &EditedSequence,
+    announcer: &mut Announcer,
+) {
+    if state.cursor.reconcile(edited.context, sequence.notes()) == Reconciled::Reset {
+        announce(announcer, Outcome::SelectionReset, edited.origin);
+    }
+}
+
+/// Runs one command of the keyboard model on the cursor's note and announces its outcome.
+pub fn run_command(
     sequence: &mut dyn EventSequence,
     state: &mut RollState,
-    pattern_length: Option<u64>,
+    edited: &EditedSequence,
+    command: RollCommand,
+    announcer: &mut Announcer,
+) -> Edited {
+    let cursor = state.cursor.index(edited.context);
+    let result = edits::apply(sequence.notes_mut(), cursor, command, edited.grid);
+    state
+        .cursor
+        .set(edited.context, result.cursor, sequence.notes());
+    // A refusal leaves the view alone; a move to another note, or an edit that may have taken
+    // the note out of view, brings it back in view — and only as far as needed. After a deletion
+    // the cursor's index can be the deleted note's own and still name a different, distant note.
+    state.scroll_to_cursor = result.cursor.is_some()
+        && (result.cursor != cursor
+            || matches!(
+                result.outcome,
+                Outcome::Edited | Outcome::Added | Outcome::Deleted
+            ));
+    announce(announcer, result.outcome, edited.origin);
+    result
+}
+
+fn announce(announcer: &mut Announcer, outcome: Outcome, origin: Origin) {
+    if let Some(text) = speech::describe_outcome(outcome, origin) {
+        announcer.announce(text);
+    }
+}
+
+/// Shows the roll's toolbar and canvas. Keys reach the roll through the application's ordered
+/// key dispatch, before any panel is drawn; the pointer and the buttons act here, through the
+/// same edits. Returns whether the notes changed.
+pub fn show(
+    ui: &mut egui::Ui,
+    edited: &EditedSequence,
+    sequence: &mut dyn EventSequence,
+    state: &mut RollState,
+    announcer: &mut Announcer,
 ) -> bool {
     let original_notes = sequence.notes().to_vec();
-    ui.horizontal_wrapped(|ui| {
-        theme::label(
-            ui,
-            if pattern_length.is_some() {
-                "SHARED PATTERN"
-            } else {
-                "UNIQUE TIMELINE"
-            },
-        );
-        ui.add(egui::Slider::new(&mut state.zoom, 0.25..=3.0).text("Zoom"));
-        let selected = state.selected_note;
-        if ui.button("Quantize").clicked() {
-            let _ = evil_project::quantize_notes(
-                sequence,
-                (u64::from(context.ticks_per_quarter.max(1)) / 4).max(1),
-                selected,
-                pattern_length,
-            );
-        }
-        for (label, semitones) in [("−12", -12), ("−1", -1), ("+1", 1), ("+12", 12)] {
-            if ui.button(label).clicked() {
-                let _ = evil_project::transpose_notes(sequence, semitones, selected);
-            }
-        }
-        if ui.button("Clean overlaps").clicked() {
-            evil_project::clean_overlaps(sequence);
-        }
-        if ui.button("Copy").clicked() {
-            state.clipboard = match selected.and_then(|index| sequence.notes().get(index)) {
-                Some(note) => vec![*note],
-                None => sequence.notes().to_vec(),
-            };
-        }
-        let paste = !state.clipboard.is_empty() && ui.button("Paste").clicked();
-        if paste {
-            let origin = state
-                .clipboard
-                .iter()
-                .map(|note| note.start_tick)
-                .min()
-                .unwrap_or(0);
-            let destination = selected
-                .and_then(|index| sequence.notes().get(index))
-                .map_or(0, |note| note.start_tick + note.duration_ticks);
-            let additions: Vec<_> = state
-                .clipboard
-                .iter()
-                .filter_map(|note| {
-                    let start_tick = destination.checked_add(note.start_tick - origin)?;
-                    start_tick.checked_add(note.duration_ticks)?;
-                    Some(Note {
-                        start_tick,
-                        ..*note
-                    })
-                })
-                .filter(|note| pattern_length.is_none_or(|length| note.start_tick < length))
-                .collect();
-            state.selected_note = (!additions.is_empty()).then_some(sequence.notes().len());
-            sequence.notes_mut().extend(additions);
-        }
-        ui.label(
-            egui::RichText::new(if selected.is_some() {
-                "Operations affect the selected note · Copy/Paste inserts after it"
-            } else {
-                "Operations affect all notes · Click to draw · Drag to move/resize"
-            })
-            .size(11.0)
-            .color(theme::MUTED),
-        );
-    });
+    reconcile(sequence, state, edited, announcer);
+    toolbar::show(ui, edited, sequence, state, announcer);
     ui.add_space(4.0);
 
-    let ticks_per_quarter = context.ticks_per_quarter.max(1);
+    let ticks_per_quarter = edited.meter.ticks_per_quarter.max(1);
     let beat = u64::from(ticks_per_quarter);
-    let snap = (beat / 4).max(1);
-    let bar = context.bar_ticks;
-    let timeline_ticks = pattern_length
+    let timeline_ticks = edited
+        .grid
+        .pattern_length
         .unwrap_or_else(|| timeline_ticks(sequence, ticks_per_quarter))
         .max(beat);
     let pixels_per_tick = state.pixels_per_tick(ticks_per_quarter);
@@ -226,8 +336,8 @@ pub fn show(
     if state.scroll_to_middle {
         let notes = sequence.notes();
         let middle = match (
-            notes.iter().map(|n| n.pitch).min(),
-            notes.iter().map(|n| n.pitch).max(),
+            notes.iter().map(|note| note.pitch).min(),
+            notes.iter().map(|note| note.pitch).max(),
         ) {
             (Some(low), Some(high)) => ((u16::from(low) + u16::from(high)) / 2) as u8,
             _ => 60,
@@ -239,449 +349,183 @@ pub fn show(
         state.scroll_to_middle = false;
     }
 
-    scroll
-        .show_viewport(ui, |ui, viewport| {
-            let (response, full_painter) = ui.allocate_painter(size, egui::Sense::click_and_drag());
-            let board = response.rect;
-            let rect = Rect::from_min_max(
-                board.min + Vec2::new(KEYBOARD_WIDTH, RULER_HEIGHT),
-                board.max,
-            );
-            let visible_origin = board.min + viewport.min.to_vec2();
-            let edit_area = Rect::from_min_max(
-                visible_origin + Vec2::new(KEYBOARD_WIDTH, RULER_HEIGHT),
-                full_painter.clip_rect().max,
-            );
-            let painter =
-                full_painter.with_clip_rect(edit_area.intersect(full_painter.clip_rect()));
-            painter.rect_filled(rect, 0.0, theme::BACKGROUND);
-            draw_grid(&painter, rect, timeline_ticks, beat, bar, pixels_per_tick);
+    scroll.show_viewport(ui, |ui, viewport| {
+        let (response, full_painter) = ui.allocate_painter(size, egui::Sense::click_and_drag());
+        // egui gives focus on click only to text fields; without this a pointer selection is
+        // something no key can act on.
+        if response.clicked_by(egui::PointerButton::Primary) || response.drag_started() {
+            response.request_focus();
+        }
+        state.widget_id = Some(response.id);
+        crate::custom_editors::register(ui.ctx(), response.id);
+        regions::prefer_stop(ui.ctx(), Region::Editor, response.id);
+        if response.has_focus() {
+            // Without the filter an arrow key moves focus off the roll; Tab stays egui's.
+            let arrows = egui::EventFilter {
+                horizontal_arrows: true,
+                vertical_arrows: true,
+                ..Default::default()
+            };
+            ui.memory_mut(|memory| memory.set_focus_lock_filter(response.id, arrows));
+        } else if state.had_focus {
+            announcer.focus_lost();
+        }
+        let board = response.rect;
+        let rect = Rect::from_min_max(
+            board.min + Vec2::new(KEYBOARD_WIDTH, RULER_HEIGHT),
+            board.max,
+        );
+        let visible_origin = board.min + viewport.min.to_vec2();
+        let edit_area = Rect::from_min_max(
+            visible_origin + Vec2::new(KEYBOARD_WIDTH, RULER_HEIGHT),
+            full_painter.clip_rect().max,
+        );
+        let canvas = Canvas {
+            edit_area,
+            rect,
+            pixels_per_tick,
+        };
+        pointer_edits(ui, &response, canvas, edited, sequence, state, announcer);
 
-            for (index, note) in sequence.notes().iter().enumerate() {
-                let note_rect = note_rect(note, rect, pixels_per_tick);
-                let selected = state.selected_note == Some(index);
-                painter.rect_filled(
-                    note_rect,
-                    2.0,
-                    if selected {
-                        theme::IVORY
-                    } else {
-                        theme::track_color(state.selected_track)
-                    },
-                );
-                painter.rect_stroke(
-                    note_rect,
-                    2.0,
-                    Stroke::new(1.0, theme::TEXT.gamma_multiply(0.35)),
-                    egui::StrokeKind::Inside,
-                );
-                if note_rect.width() >= 36.0 {
-                    painter.text(
-                        note_rect.left_center() + Vec2::new(5.0, 0.0),
-                        egui::Align2::LEFT_CENTER,
-                        note_name(note.pitch),
-                        egui::FontId::monospace(10.0),
-                        theme::BACKGROUND,
-                    );
-                }
-            }
-            draw_keyboard(&full_painter, rect, visible_origin);
-            draw_ruler(
-                &full_painter,
-                rect,
-                visible_origin,
-                timeline_ticks,
-                bar,
-                pixels_per_tick,
-            );
-
-            let mut changed = false;
-            if response.drag_started()
-                && let Some(position) = ui.input(|input| input.pointer.press_origin())
-                && edit_area.contains(position)
-            {
-                if let Some(index) = note_at(sequence, position, rect, pixels_per_tick) {
-                    state.selected_note = Some(index);
-                    let note = &sequence.notes()[index];
-                    let right_edge = note_rect(note, rect, pixels_per_tick).max.x;
-                    if (position.x - right_edge).abs() <= 4.0 {
-                        state.resizing_note = Some(index);
-                        state.dragging_note = None;
-                    } else {
-                        state.dragging_note = Some(index);
-                        state.resizing_note = None;
-                    }
-                } else {
-                    state.selected_note = None;
-                    state.dragging_note = None;
-                    state.resizing_note = None;
-                }
-            }
-            if response.dragged()
-                && let (Some(index), Some(position)) =
-                    (state.dragging_note, response.interact_pointer_pos())
-                && let Some(note) = sequence.notes_mut().get_mut(index)
-            {
-                let (pitch, tick) = position_to_note(position, rect, pixels_per_tick, snap);
-                let tick =
-                    pattern_length.map_or(tick, |length| tick.min(length.saturating_sub(snap)));
-                if note.pitch != pitch || note.start_tick != tick {
-                    note.pitch = pitch;
-                    note.start_tick = tick;
-                    changed = true;
-                }
-            }
-            if response.dragged()
-                && let (Some(index), Some(position)) =
-                    (state.resizing_note, response.interact_pointer_pos())
-                && let Some(note) = sequence.notes_mut().get_mut(index)
-            {
-                let (_, end_tick) = position_to_note(position, rect, pixels_per_tick, snap);
-                let duration = end_tick.saturating_sub(note.start_tick).max(snap);
-                if note.duration_ticks != duration {
-                    note.duration_ticks = duration;
-                    changed = true;
-                }
-            }
-            if response.drag_stopped() {
-                state.dragging_note = None;
-                state.resizing_note = None;
-            }
-            if response.clicked()
-                && let Some(position) = response.interact_pointer_pos()
-                && edit_area.contains(position)
-            {
-                if let Some(index) = note_at(sequence, position, rect, pixels_per_tick) {
-                    state.selected_note = Some(index);
-                } else {
-                    let (pitch, start_tick) =
-                        position_to_note(position, rect, pixels_per_tick, snap);
-                    let start_tick = pattern_length.map_or(start_tick, |length| {
-                        start_tick.min(length.saturating_sub(snap))
-                    });
-                    let index = sequence.notes().len();
-                    sequence.notes_mut().push(Note {
-                        pitch,
-                        start_tick,
-                        duration_ticks: beat,
-                        velocity: DEFAULT_NOTE_VELOCITY,
-                    });
-                    state.selected_note = Some(index);
-                    changed = true;
-                }
-            }
-            if response.hovered()
-                && !ui.ctx().egui_wants_keyboard_input()
-                && ui.input(|input| input.key_pressed(egui::Key::Delete))
-                && let Some(index) = state.selected_note.take()
-                && index < sequence.notes().len()
-            {
-                sequence.notes_mut().remove(index);
-                changed = true;
-            }
-            changed
-        })
-        .inner
-        || original_notes != sequence.notes()
-}
-
-fn draw_grid(
-    painter: &egui::Painter,
-    rect: Rect,
-    timeline_ticks: u64,
-    beat: u64,
-    bar: u64,
-    pixels_per_tick: f32,
-) {
-    for pitch in 0..=MAX_PITCH {
-        let y = rect.top() + f32::from(MAX_PITCH - pitch) * KEY_HEIGHT;
-        if is_black_key(pitch) {
-            painter.rect_filled(
-                Rect::from_min_max(
-                    Pos2::new(rect.left(), y),
-                    Pos2::new(rect.right(), y + KEY_HEIGHT),
-                ),
+        let painter = full_painter.with_clip_rect(edit_area.intersect(full_painter.clip_rect()));
+        painter.rect_filled(rect, 0.0, theme::BACKGROUND);
+        drawing::draw_grid(
+            &painter,
+            rect,
+            timeline_ticks,
+            beat,
+            edited.meter.bar_ticks(),
+            pixels_per_tick,
+        );
+        let cursor = state.cursor.index(edited.context);
+        drawing::draw_notes(
+            &painter,
+            sequence.notes(),
+            rect,
+            pixels_per_tick,
+            cursor,
+            state.selected_track,
+        );
+        drawing::draw_keyboard(&full_painter, rect, visible_origin);
+        drawing::draw_ruler(
+            &full_painter,
+            rect,
+            visible_origin,
+            timeline_ticks,
+            edited.meter.bar_ticks(),
+            pixels_per_tick,
+        );
+        if std::mem::take(&mut state.scroll_to_cursor)
+            && let Some(note) = cursor.and_then(|index| sequence.notes().get(index))
+        {
+            let note_rect = drawing::note_rect(note, rect, pixels_per_tick);
+            ui.scroll_to_rect(drawing::scroll_target(note_rect), None);
+        }
+        if response.has_focus() {
+            full_painter.rect_stroke(
+                Rect::from_min_size(visible_origin, viewport.size()).shrink(1.0),
                 0.0,
-                Color32::from_rgb(26, 23, 33),
+                Stroke::new(2.0, theme::IVORY),
+                egui::StrokeKind::Inside,
             );
         }
-        painter.line_segment(
-            [Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)],
-            Stroke::new(0.5, Color32::from_rgb(42, 36, 49)),
-        );
-    }
-    let grid = (beat / 4).max(1);
-    let mut tick = (((painter.clip_rect().left() - rect.left()).max(0.0) / pixels_per_tick) as u64
-        / grid)
-        * grid;
-    let last_tick = (((painter.clip_rect().right() - rect.left()).max(0.0) / pixels_per_tick)
-        as u64)
-        .min(timeline_ticks);
-    while tick <= last_tick {
-        let x = rect.left() + tick as f32 * pixels_per_tick;
-        let (width, color) = if tick.is_multiple_of(bar) {
-            (1.5, theme::BORDER)
-        } else if tick.is_multiple_of(beat) {
-            (1.0, Color32::from_rgb(55, 46, 63))
-        } else {
-            (0.5, Color32::from_rgb(35, 30, 42))
-        };
-        painter.line_segment(
-            [Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())],
-            Stroke::new(width, color),
-        );
-        tick += grid;
-    }
+        let name = announcer.focused_name(response.id, edited.roll_name(sequence.notes(), state));
+        ui.ctx().accesskit_node_builder(response.id, |node| {
+            node.set_role(accesskit::Role::Canvas);
+            node.set_label(name);
+            node.set_description(speech::roll_key_help(speech::platform_command_key()));
+        });
+    });
+    original_notes != sequence.notes()
 }
 
-fn draw_keyboard(painter: &egui::Painter, grid: Rect, visible: Pos2) {
-    let keyboard = Rect::from_min_max(
-        Pos2::new(visible.x, visible.y + RULER_HEIGHT),
-        Pos2::new(visible.x + KEYBOARD_WIDTH, painter.clip_rect().bottom()),
-    );
-    let painter = painter.with_clip_rect(keyboard.intersect(painter.clip_rect()));
-    painter.rect_filled(keyboard, 0.0, theme::PANEL);
-    for pitch in 0..=MAX_PITCH {
-        let y = grid.top() + f32::from(MAX_PITCH - pitch) * KEY_HEIGHT;
-        let black = is_black_key(pitch);
-        let key = Rect::from_min_size(
-            Pos2::new(visible.x, y + 0.5),
-            Vec2::new(
-                if black { 42.0 } else { KEYBOARD_WIDTH - 2.0 },
-                KEY_HEIGHT - 1.0,
-            ),
-        );
-        painter.rect_filled(
-            key,
-            1.0,
-            if black {
-                theme::BACKGROUND
-            } else {
-                Color32::from_rgb(190, 180, 169)
+/// Where the canvas is: the visible edit area, the whole grid, and its scale.
+#[derive(Clone, Copy)]
+struct Canvas {
+    edit_area: Rect,
+    rect: Rect,
+    pixels_per_tick: f32,
+}
+
+/// The pointer's gestures, through the same edits as the keys.
+fn pointer_edits(
+    ui: &egui::Ui,
+    response: &egui::Response,
+    canvas: Canvas,
+    edited: &EditedSequence,
+    sequence: &mut dyn EventSequence,
+    state: &mut RollState,
+    announcer: &mut Announcer,
+) {
+    let Canvas {
+        edit_area,
+        rect,
+        pixels_per_tick,
+    } = canvas;
+    let snap = edited.grid.snap;
+    let mut result = None;
+    if response.drag_started()
+        && let Some(position) = ui.input(|input| input.pointer.press_origin())
+        && edit_area.contains(position)
+    {
+        let index = drawing::note_at(sequence, position, rect, pixels_per_tick);
+        let near_end = index.is_some_and(|index| {
+            let note = &sequence.notes()[index];
+            (position.x - drawing::note_rect(note, rect, pixels_per_tick).max.x).abs() <= 4.0
+        });
+        state.resizing_note = index.filter(|_| near_end);
+        state.dragging_note = index.filter(|_| !near_end);
+        result = Some(edits::select(sequence.notes(), index));
+    }
+    if response.dragged()
+        && let Some(position) = response.interact_pointer_pos()
+    {
+        let (pitch, tick) = drawing::position_to_note(position, rect, pixels_per_tick, snap);
+        if let Some(index) = state.dragging_note {
+            result = Some(edits::move_to(
+                sequence.notes_mut(),
+                index,
+                pitch,
+                tick,
+                edited.grid,
+            ));
+        } else if let Some(index) = state.resizing_note {
+            result = Some(edits::resize_to(
+                sequence.notes_mut(),
+                index,
+                tick,
+                edited.grid,
+            ));
+        }
+    }
+    if response.drag_stopped() {
+        state.dragging_note = None;
+        state.resizing_note = None;
+    }
+    if response.clicked_by(egui::PointerButton::Primary)
+        && let Some(position) = response.interact_pointer_pos()
+        && edit_area.contains(position)
+    {
+        result = Some(
+            match drawing::note_at(sequence, position, rect, pixels_per_tick) {
+                Some(index) => edits::select(sequence.notes(), Some(index)),
+                None => {
+                    let (pitch, start_tick) =
+                        drawing::position_to_note(position, rect, pixels_per_tick, snap);
+                    edits::add_at(sequence.notes_mut(), pitch, start_tick, edited.grid)
+                }
             },
         );
-        if pitch % 12 == 0 {
-            painter.text(
-                key.right_center() - Vec2::new(5.0, 0.0),
-                egui::Align2::RIGHT_CENTER,
-                octave_label(pitch),
-                egui::FontId::monospace(10.0),
-                theme::BACKGROUND,
-            );
+    }
+    if let Some(result) = result {
+        state
+            .cursor
+            .set(edited.context, result.cursor, sequence.notes());
+        if result.outcome == Outcome::NoRoom {
+            announce(announcer, result.outcome, edited.origin);
         }
     }
-}
-
-fn draw_ruler(
-    painter: &egui::Painter,
-    grid: Rect,
-    visible: Pos2,
-    ticks: u64,
-    bar: u64,
-    pixels: f32,
-) {
-    let ruler = Rect::from_min_max(
-        visible + Vec2::new(KEYBOARD_WIDTH, 0.0),
-        Pos2::new(painter.clip_rect().right(), visible.y + RULER_HEIGHT),
-    );
-    let ruler_painter = painter.with_clip_rect(ruler.intersect(painter.clip_rect()));
-    ruler_painter.rect_filled(ruler, 0.0, theme::RAISED);
-    let first = (((ruler.left() - grid.left()).max(0.0) / pixels) as u64 / bar) * bar;
-    let last = (((ruler.right() - grid.left()).max(0.0) / pixels) as u64).min(ticks);
-    for tick in (first..=last).step_by(bar as usize) {
-        let x = grid.left() + tick as f32 * pixels;
-        ruler_painter.text(
-            Pos2::new(x + 6.0, ruler.center().y),
-            egui::Align2::LEFT_CENTER,
-            format!("{:02}", tick / bar + 1),
-            egui::FontId::monospace(11.0),
-            theme::IVORY,
-        );
-    }
-    let corner = Rect::from_min_size(visible, Vec2::new(KEYBOARD_WIDTH, RULER_HEIGHT));
-    painter.rect_filled(corner, 0.0, theme::PANEL);
-    painter.text(
-        corner.center(),
-        egui::Align2::CENTER_CENTER,
-        "KEY",
-        egui::FontId::monospace(10.0),
-        theme::MUTED,
-    );
-}
-
-fn note_name(pitch: u8) -> String {
-    const NAMES: [&str; 12] = [
-        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
-    ];
-    format!(
-        "{}{}",
-        NAMES[usize::from(pitch % 12)],
-        i32::from(pitch) / 12 - 1
-    )
-}
-
-fn note_rect(note: &Note, rect: Rect, pixels_per_tick: f32) -> Rect {
-    let x = rect.left() + note.start_tick as f32 * pixels_per_tick;
-    let y = rect.top() + f32::from(MAX_PITCH - note.pitch) * KEY_HEIGHT;
-    Rect::from_min_size(
-        Pos2::new(x, y + 1.0),
-        Vec2::new(
-            (note.duration_ticks as f32 * pixels_per_tick).max(3.0),
-            KEY_HEIGHT - 2.0,
-        ),
-    )
-}
-
-fn note_at(
-    sequence: &(impl EventSequence + ?Sized),
-    position: Pos2,
-    rect: Rect,
-    pixels_per_tick: f32,
-) -> Option<usize> {
-    if !rect.contains(position) {
-        return None;
-    }
-    let tick = ((position.x - rect.left()) / pixels_per_tick) as u64;
-    let pitch = pitch_at(position, rect);
-    sequence.notes().iter().position(|note| {
-        note.pitch == pitch
-            && tick >= note.start_tick
-            && tick < note.start_tick + note.duration_ticks
-    })
-}
-
-fn position_to_note(position: Pos2, rect: Rect, pixels_per_tick: f32, snap: u64) -> (u8, u64) {
-    let raw_tick = ((position.x - rect.left()) / pixels_per_tick).max(0.0) as u64;
-    (pitch_at(position, rect), snap_tick(raw_tick, snap))
-}
-
-fn pitch_at(position: Pos2, rect: Rect) -> u8 {
-    let row = ((position.y - rect.top()) / KEY_HEIGHT).clamp(0.0, 127.0) as u8;
-    MAX_PITCH - row
-}
-
-pub(crate) fn snap_tick(tick: u64, snap: u64) -> u64 {
-    ((tick + snap / 2) / snap) * snap
-}
-
-fn octave_label(pitch: u8) -> String {
-    format!("C{}", i32::from(pitch) / 12 - 1)
-}
-
-fn is_black_key(pitch: u8) -> bool {
-    matches!(pitch % 12, 1 | 3 | 6 | 8 | 10)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use evil_project::Track;
-
-    #[test]
-    fn bar_lengths_follow_the_imported_time_signature() {
-        let mut project = Project::new("Meters");
-        assert_eq!(bar_ticks(&project), 1_920);
-        project.beats_per_bar = 6;
-        project.beat_unit = 8;
-        assert_eq!(bar_ticks(&project), 1_440);
-        project.ticks_per_quarter = 384;
-        project.beats_per_bar = 3;
-        project.beat_unit = 4;
-        assert_eq!(bar_ticks(&project), 1_152);
-    }
-
-    #[test]
-    fn sticky_keyboard_and_ruler_do_not_create_notes_but_the_grid_does() {
-        let context = egui::Context::default();
-        theme::install(&context);
-        let mut project = Project::new("Hit testing");
-        project.add_track(Track::default()).unwrap();
-        let mut state = RollState::default();
-        let mut time = 0.0;
-        let mut frame = |events| {
-            time += 0.1;
-            let _ = context.run_ui(
-                egui::RawInput {
-                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 600.0))),
-                    time: Some(time),
-                    events,
-                    ..Default::default()
-                },
-                |ui| {
-                    show(
-                        ui,
-                        RollContext::new(&project),
-                        &mut project.tracks[0],
-                        &mut state,
-                        None,
-                    );
-                },
-            );
-            project.tracks[0].notes.len()
-        };
-        frame(vec![]);
-        frame(vec![]);
-        for (position, expected) in [
-            (Pos2::new(24.0, 140.0), 0), // fixed keyboard, after initial vertical scroll
-            (Pos2::new(180.0, 48.0), 0), // fixed bar ruler
-            (Pos2::new(180.0, 140.0), 1),
-        ] {
-            frame(vec![
-                egui::Event::PointerMoved(position),
-                egui::Event::PointerButton {
-                    pos: position,
-                    button: egui::PointerButton::Primary,
-                    pressed: true,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ]);
-            let count = frame(vec![egui::Event::PointerButton {
-                pos: position,
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers: egui::Modifiers::NONE,
-            }]);
-            assert_eq!(count, expected, "unexpected note creation at {position:?}");
-        }
-        assert_eq!(project.tracks[0].notes[0].start_tick, 840);
-    }
-
-    #[test]
-    fn snaps_to_the_nearest_grid_point_without_underflow() {
-        assert_eq!(snap_tick(0, 32), 0);
-        assert_eq!(snap_tick(15, 32), 0);
-        assert_eq!(snap_tick(16, 32), 32);
-        assert_eq!(snap_tick(47, 32), 32);
-        assert_eq!(snap_tick(48, 32), 64);
-    }
-
-    #[test]
-    fn octave_labels_cover_the_full_midi_range() {
-        for pitch in 0..=MAX_PITCH {
-            let _ = octave_label(pitch);
-        }
-        assert_eq!(octave_label(0), "C-1");
-        assert_eq!(octave_label(60), "C4");
-        assert_eq!(octave_label(120), "C9");
-    }
-
-    #[test]
-    fn timeline_extends_to_cover_automation() {
-        let track = Track {
-            pitch_bends: vec![evil_project::PitchBend {
-                tick: 28 * 480,
-                value: 0,
-            }],
-            ..Track::default()
-        };
-        assert_eq!(timeline_ticks(&track, 480), 32 * 480);
-    }
-
-    #[test]
-    fn black_keys_match_a_piano_keyboard() {
-        assert!(!is_black_key(60));
-        assert!(is_black_key(61));
-        assert!(!is_black_key(62));
-        assert!(is_black_key(63));
-    }
-}
+mod tests;

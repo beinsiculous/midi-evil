@@ -9,16 +9,24 @@ application and runs the probe; README.md says what the session needs.
 """
 
 import argparse
-import ctypes
-import ctypes.util
-import os
 import sys
-import time
 
 import gi
 
 gi.require_version("Atspi", "2.0")
 from gi.repository import Atspi, GLib  # noqa: E402
+
+from probe_support import (  # noqa: E402
+    SETTLE_SECONDS,
+    ProbeError,
+    ancestor_names,
+    check_step_arguments,
+    wait_for_node,
+    WindowKeySender,
+    poll,
+    pump_events,
+    verify_isolation,
+)
 
 LISTENED_EVENT_TYPES = (
     "object:announcement",
@@ -29,13 +37,6 @@ LISTENED_EVENT_TYPES = (
     "object:active-descendant-changed",
 )
 EVENT_WINDOW_SECONDS = 0.5
-POLL_SECONDS = 0.25
-KEY_ALIASES = {"enter": "Return", "space": "space", "+": "plus"}
-MODIFIER_ALIASES = {"shift": "shift", "control": "control", "ctrl": "control", "alt": "alt"}
-
-
-class ProbeError(Exception):
-    """A failure reported as one line on stderr and exit status 1."""
 
 
 def describe(accessible):
@@ -89,6 +90,8 @@ def describe_if_present(accessible):
 
 def children(accessible):
     """The node's children that still exist; a node can vanish between two calls."""
+    if accessible is None:
+        return []
     try:
         child_count = accessible.get_child_count()
     except GLib.Error:
@@ -111,27 +114,6 @@ def walk(accessible, path=()):
         yield from walk(child, path + (child_index,))
 
 
-def pump_events(seconds):
-    # libatspi delivers events through the default GLib main context, so a listener only
-    # fires while that context is iterated.
-    context = GLib.MainContext.default()
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        while context.pending():
-            context.iteration(False)
-        time.sleep(0.01)
-
-
-def poll(wait_seconds, attempt):
-    """Call attempt until it returns something other than None or the wait runs out."""
-    deadline = time.monotonic() + wait_seconds
-    while True:
-        result = attempt()
-        if result is not None or time.monotonic() >= deadline:
-            return result
-        pump_events(POLL_SECONDS)
-
-
 def find_application(application_name, wait_seconds):
     """The desktop child with this name; AccessKit names it after the executable."""
 
@@ -151,6 +133,8 @@ def find_application(application_name, wait_seconds):
 
 
 def has_state(accessible, state):
+    if accessible is None:
+        return False
     try:
         return accessible.get_state_set().contains(state)
     except GLib.Error:
@@ -164,15 +148,17 @@ def name_of(accessible):
         return None
 
 
-def find_by_name(application, name, interface_getter, interface_label, prefix_must_be_unique):
+def find_by_name(application, name, interface_getter, interface_label, prefix_must_be_unique,
+                 region=None):
     """The node with this name that has the interface; says how many matched and why not.
 
     A usable node with exactly this name wins; failing that, the usable nodes whose name begins
     with it, because some names carry state ("Piano roll, C 4, bar 1 beat 1, ...") and change with
-    every key. A prefix that several usable nodes share is refused where acting on the wrong one
-    would go unnoticed.
+    every key. Where acting on the wrong node would go unnoticed, several candidates — exact or
+    by prefix — are refused; a region (a named ancestor) narrows them.
     """
-    named = [(node, name_of(node) or "") for _path, node in walk(application)]
+    named = [(node, name_of(node) or "") for _path, node in walk(application)
+             if region is None or region in ancestor_names(node)]
     exact = [node for node, node_name in named if node_name == name]
     beginning = [node for node, node_name in named if node_name.startswith(name)]
     if not beginning:
@@ -187,6 +173,9 @@ def find_by_name(application, name, interface_getter, interface_label, prefix_mu
             raise ProbeError(f"{len(usable)} nodes with {interface_label} have a name beginning "
                              f"{name!r}; give the whole name")
     if len(usable) > 1:
+        if prefix_must_be_unique:
+            raise ProbeError(f"{len(usable)} nodes named {name!r} have {interface_label}; "
+                             f"name the region it is in with --press-in REGION|NAME")
         print(f"{len(usable)} nodes named {name!r} with {interface_label}; "
               f"using the first: {describe_if_present(usable[0])}")
     return usable[0]
@@ -231,6 +220,10 @@ class EventRecorder:
         self.lines = []
         self.announcements = []
         self.last_step_announcements = []
+        # Name changes of whichever node was focused when the change arrived: the roll's name
+        # is what a screen reader speaks, and the status line, which repeats it, is never
+        # focused.
+        self.focused_name_changes = []
         self.listener = Atspi.EventListener.new(self.record)
         for event_type in LISTENED_EVENT_TYPES:
             self.listener.register(event_type)
@@ -249,6 +242,9 @@ class EventRecorder:
             payload = "accessible " + describe_if_present(payload)
         if event.type == "object:announcement":
             self.announcements.append(str(payload))
+        if (event.type == "object:property-change:accessible-name"
+                and has_state(event.source, Atspi.StateType.FOCUSED)):
+            self.focused_name_changes.append(str(payload))
         self.lines.append(
             f"{event.type} detail1={event.detail1} detail2={event.detail2} "
             f"payload={payload!r} source: {describe_if_present(event.source)}"
@@ -257,6 +253,7 @@ class EventRecorder:
     def clear(self):
         self.lines = []
         self.announcements = []
+        self.focused_name_changes = []
 
     def print_and_clear(self):
         for line in self.lines:
@@ -264,234 +261,52 @@ class EventRecorder:
         self.last_step_announcements = self.announcements
         self.clear()
 
-
-class KeyEvent(ctypes.Structure):
-    _fields_ = [
-        ("type", ctypes.c_int),
-        ("serial", ctypes.c_ulong),
-        ("send_event", ctypes.c_int),
-        ("display", ctypes.c_void_p),
-        ("window", ctypes.c_ulong),
-        ("root", ctypes.c_ulong),
-        ("subwindow", ctypes.c_ulong),
-        ("time", ctypes.c_ulong),
-        ("x", ctypes.c_int),
-        ("y", ctypes.c_int),
-        ("x_root", ctypes.c_int),
-        ("y_root", ctypes.c_int),
-        ("state", ctypes.c_uint),
-        ("keycode", ctypes.c_uint),
-        ("same_screen", ctypes.c_int),
-    ]
+    def take_focused_name_changes(self):
+        changes, self.focused_name_changes = self.focused_name_changes, []
+        return changes
 
 
-class XEvent(ctypes.Union):
-    # Xlib's XEvent is a union padded to 24 longs, and XSendEvent copies that many bytes.
-    _fields_ = [("key", KeyEvent), ("padding", ctypes.c_long * 24)]
-
-
-class Chord:
-    """A key with its modifiers, resolved to X keycodes before anything is sent."""
-
-    def __init__(self, text, keycode, modifiers, modifier_keycodes):
-        self.text = text
-        self.keycode = keycode
-        self.modifiers = modifiers
-        self.modifier_keycodes = modifier_keycodes
-
-
-class WindowKeySender:
-    """Sends key presses and releases to one X window with XSendEvent.
-
-    winit ignores a key that arrives while its window is not the X input focus, so the sender
-    refuses to send when the window has lost focus rather than report a key that was dropped.
-    """
-
-    KEY_PRESS = 2
-    KEY_RELEASE = 3
-    KEY_PRESS_MASK = 1 << 0
-    KEY_RELEASE_MASK = 1 << 1
-    MODIFIER_MASKS = {"shift": 1 << 0, "control": 1 << 2, "alt": 1 << 3}
-    MODIFIER_KEYSYMS = {"shift": "Shift_L", "control": "Control_L", "alt": "Alt_L"}
-
-    def __init__(self):
-        library_path = ctypes.util.find_library("X11")
-        if library_path is None or not os.environ.get("DISPLAY"):
-            raise ProbeError("keys need libX11 and DISPLAY; run the application under XWayland")
-        self.xlib = ctypes.cdll.LoadLibrary(library_path)
-        self.xlib.XOpenDisplay.restype = ctypes.c_void_p
-        self.xlib.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
-        self.xlib.XDefaultRootWindow.restype = ctypes.c_ulong
-        self.xlib.XStringToKeysym.restype = ctypes.c_ulong
-        self.xlib.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
-        self.xlib.XkbKeycodeToKeysym.argtypes = [
-            ctypes.c_void_p,
-            ctypes.c_ubyte,
-            ctypes.c_int,
-            ctypes.c_int,
-        ]
-        self.xlib.XkbKeycodeToKeysym.restype = ctypes.c_ulong
-        self.xlib.XFetchName.argtypes = [
-            ctypes.c_void_p,
-            ctypes.c_ulong,
-            ctypes.POINTER(ctypes.c_char_p),
-        ]
-        self.xlib.XQueryTree.argtypes = [
-            ctypes.c_void_p,
-            ctypes.c_ulong,
-            ctypes.POINTER(ctypes.c_ulong),
-            ctypes.POINTER(ctypes.c_ulong),
-            ctypes.POINTER(ctypes.POINTER(ctypes.c_ulong)),
-            ctypes.POINTER(ctypes.c_uint),
-        ]
-        self.xlib.XGetInputFocus.argtypes = [
-            ctypes.c_void_p,
-            ctypes.POINTER(ctypes.c_ulong),
-            ctypes.POINTER(ctypes.c_int),
-        ]
-        self.xlib.XSendEvent.argtypes = [
-            ctypes.c_void_p,
-            ctypes.c_ulong,
-            ctypes.c_int,
-            ctypes.c_long,
-            ctypes.c_void_p,
-        ]
-        self.xlib.XFlush.argtypes = [ctypes.c_void_p]
-        self.display = self.xlib.XOpenDisplay(None)
-        if not self.display:
-            raise ProbeError("cannot open the X display")
-        self.root = self.xlib.XDefaultRootWindow(self.display)
-        self.window = None
-
-    def keycode(self, keysym_name):
-        keysym = self.xlib.XStringToKeysym(keysym_name.encode())
-        if keysym == 0:
-            return 0
-        return self.xlib.XKeysymToKeycode(self.display, keysym)
-
-    def needs_shift(self, keysym_name, keycode):
-        """True when the keysym is on its key's shifted level, as + is on the = key."""
-        keysym = self.xlib.XStringToKeysym(keysym_name.encode())
-        unshifted = self.xlib.XkbKeycodeToKeysym(self.display, keycode, 0, 0)
-        shifted = self.xlib.XkbKeycodeToKeysym(self.display, keycode, 0, 1)
-        return unshifted != keysym and shifted == keysym
-
-    def parse(self, text):
-        """A chord such as Tab, shift+Tab, ctrl+Left, Enter or shift++; ProbeError if not."""
-        if text == "+":
-            modifier_names, key_name = [], "+"
-        elif text.endswith("++"):
-            modifier_names, key_name = text[:-2].split("+"), "+"
-        else:
-            *modifier_names, key_name = text.split("+")
-        if not key_name:
-            raise ProbeError(f"bad chord {text!r}: no key after the modifiers")
-        modifiers = []
-        for modifier_name in modifier_names:
-            modifier = MODIFIER_ALIASES.get(modifier_name.lower())
-            if modifier is None:
-                raise ProbeError(f"bad chord {text!r}: unknown modifier {modifier_name!r}")
-            modifiers.append(modifier)
-        keysym_name = KEY_ALIASES.get(key_name.lower(), key_name)
-        keycode = self.keycode(keysym_name)
-        if keycode == 0:
-            raise ProbeError(f"bad chord {text!r}: {key_name!r} is not an X keysym on this keyboard")
-        if "shift" not in modifiers and self.needs_shift(keysym_name, keycode):
-            modifiers.append("shift")
-        modifier_keycodes = [self.keycode(self.MODIFIER_KEYSYMS[name]) for name in modifiers]
-        return Chord(text, keycode, modifiers, modifier_keycodes)
-
-    def query_tree(self, window):
-        """The window's parent and children."""
-        root_return = ctypes.c_ulong()
-        parent_return = ctypes.c_ulong()
-        child_list = ctypes.POINTER(ctypes.c_ulong)()
-        child_count = ctypes.c_uint()
-        if not self.xlib.XQueryTree(
-            self.display,
-            window,
-            ctypes.byref(root_return),
-            ctypes.byref(parent_return),
-            ctypes.byref(child_list),
-            ctypes.byref(child_count),
-        ):
-            return 0, []
-        return parent_return.value, [child_list[index] for index in range(child_count.value)]
-
-    def find_window(self, window, title):
-        name = ctypes.c_char_p()
-        if self.xlib.XFetchName(self.display, window, ctypes.byref(name)) and name.value == title:
-            return window
-        for child in self.query_tree(window)[1]:
-            found = self.find_window(child, title)
-            if found is not None:
-                return found
-        return None
-
-    def attach(self, window_title, wait_seconds):
-        self.window = poll(wait_seconds, lambda: self.find_window(self.root, window_title.encode()))
-        if self.window is None:
-            raise ProbeError(f"no X window titled {window_title!r}; is it under XWayland?")
-
-    def focused_window(self):
-        window = ctypes.c_ulong()
-        revert_to = ctypes.c_int()
-        self.xlib.XGetInputFocus(self.display, ctypes.byref(window), ctypes.byref(revert_to))
-        return window.value
-
-    def application_has_focus(self):
-        window = self.focused_window()
-        # 0 is None and 1 is PointerRoot: neither is inside the application's window.
-        while window not in (0, 1, self.root):
-            if window == self.window:
-                return True
-            window = self.query_tree(window)[0]
-        return False
-
-    def wait_for_focus(self, wait_seconds):
-        if not poll(wait_seconds, lambda: True if self.application_has_focus() else None):
-            raise ProbeError(
-                f"the application's window does not have the X input focus "
-                f"(0x{self.focused_window():x} does); nothing was sent"
-            )
-
-    def send_one(self, event_type, keycode, state):
-        mask = self.KEY_PRESS_MASK if event_type == self.KEY_PRESS else self.KEY_RELEASE_MASK
-        event = XEvent()
-        event.key.type = event_type
-        event.key.display = self.display
-        event.key.window = self.window
-        event.key.root = self.root
-        event.key.state = state
-        event.key.keycode = keycode
-        event.key.same_screen = 1
-        # No propagation: an event the window does not take must go nowhere, never to an ancestor.
-        if not self.xlib.XSendEvent(self.display, self.window, 0, mask, ctypes.byref(event)):
-            raise ProbeError(f"XSendEvent to window {self.window:#x} failed; nothing was sent")
-
-    def send(self, chord):
-        # The modifier keys' own presses go first, as from a real keyboard, and every event
-        # carries the state the chord holds at that moment: winit 0.30 takes its modifiers from
-        # each core key event's state field (update_mods_from_core_event).
-        state = 0
-        for name, keycode in zip(chord.modifiers, chord.modifier_keycodes):
-            self.send_one(self.KEY_PRESS, keycode, state)
-            state |= self.MODIFIER_MASKS[name]
-        self.send_one(self.KEY_PRESS, chord.keycode, state)
-        self.send_one(self.KEY_RELEASE, chord.keycode, state)
-        for name, keycode in reversed(list(zip(chord.modifiers, chord.modifier_keycodes))):
-            self.send_one(self.KEY_RELEASE, keycode, state)
-            state &= ~self.MODIFIER_MASKS[name]
-        self.xlib.XFlush(self.display)
-
-
-def perform_action(application, name, recorder):
-    target = find_by_name(application, name, lambda node: node.get_action_iface(), "an action",
-                          prefix_must_be_unique=True)
+def perform_action(application, name, recorder, region=None):
+    target = wait_for_node(lambda: find_by_name(
+        application, name, lambda node: node.get_action_iface(), "an action",
+        prefix_must_be_unique=True, region=region))
     if not Atspi.Action.do_action(target.get_action_iface(), 0):
         raise ProbeError(f"press {name!r}: the action was refused")
     pump_events(EVENT_WINDOW_SECONDS)
     print(f"pressed {name!r}")
+    recorder.print_and_clear()
+
+
+def set_value_after_label(application, text, recorder):
+    """Sets the value box that belongs to the label with this name: the first node with a value
+    among the label's following siblings, before the next caption. egui lays a value box out
+    after its caption, and the inspector's boxes are not named yet. AccessKit turns the call into
+    the widget's SetValue action, as a screen reader's value change would be."""
+    label, _, value = text.rpartition(":")
+    caption = next((node for _path, node in walk(application) if name_of(node) == label), None)
+    if caption is None:
+        raise ProbeError(f"no label named {label!r}")
+    try:
+        parent = caption.get_parent()
+        if parent is None:
+            raise ProbeError(f"the label {label!r} has no parent to find its value box in")
+        siblings = children(parent)
+        position = caption.get_index_in_parent()
+        target = None
+        for sibling in siblings[position + 1:]:
+            if sibling.get_value_iface() is not None:
+                target = sibling
+                break
+            if sibling.get_role_name() == "label":
+                break
+        if target is None:
+            raise ProbeError(f"no value box belongs to the label {label!r}")
+        if not Atspi.Value.set_current_value(target.get_value_iface(), float(value)):
+            raise ProbeError(f"set {label!r} to {value}: the value was refused")
+    except GLib.Error as error:
+        raise ProbeError(f"set {label!r} to {value}: {error.message}") from error
+    pump_events(EVENT_WINDOW_SECONDS)
+    print(f"set the value after {label!r} to {value}")
     recorder.print_and_clear()
 
 
@@ -518,6 +333,8 @@ class Expectations:
         self.application = application
         self.recorder = recorder
         self.name_before_step = None
+        self.hold_name_changes = None
+        self.release_name_changes = None
 
     def focused_name(self):
         node = deepest_focused(self.application)
@@ -525,11 +342,23 @@ class Expectations:
 
     def before_step(self):
         self.name_before_step = self.focused_name()
+        # A count belongs to the hold that made it: a step that is not a hold has none.
+        self.hold_name_changes = None
+        self.release_name_changes = None
+
+    def holds(self, kind, text):
+        if kind == "expect":
+            name = self.focused_name()
+            return name is not None and text in name
+        return any(text in (name_of(node) or "") for _path, node in walk(self.application))
 
     def check(self, kind, text):
+        if kind in ("expect", "expect_node"):
+            # Something that should be there is waited for; something that should not is not.
+            poll(SETTLE_SECONDS, lambda: self.holds(kind, text) or None)
         name = self.focused_name()
         if kind == "expect":
-            passed = name is not None and text in name
+            passed = self.holds(kind, text)
             wanted = f"the focused name contains {text!r}"
         elif kind == "expect_not":
             # Nothing focused is not a pass: the check exists to show focus went somewhere else.
@@ -539,8 +368,45 @@ class Expectations:
             passed = name is not None and name == self.name_before_step
             wanted = f"the focused name is unchanged ({self.name_before_step!r})"
         elif kind == "expect_node":
-            passed = any(text in (name_of(node) or "") for _path, node in walk(self.application))
+            passed = self.holds(kind, text)
             wanted = f"some node's name contains {text!r}"
+        elif kind == "expect_region":
+            node = deepest_focused(self.application)
+            regions = [] if node is None else ancestor_names(node)
+            passed = text in regions
+            wanted = f"the focused node is inside the region {text!r} (inside: {regions!r})"
+        elif kind in ("expect_enabled", "expect_disabled"):
+            nodes = [node for _path, node in walk(self.application) if name_of(node) == text]
+            if len(nodes) != 1:
+                raise ProbeError(f"{len(nodes)} nodes named {text!r}; the state needs exactly one")
+            enabled = has_state(nodes[0], Atspi.StateType.ENABLED) \
+                and has_state(nodes[0], Atspi.StateType.SENSITIVE)
+            passed = enabled == (kind == "expect_enabled")
+            wanted = f"{text!r} is {'enabled' if kind == 'expect_enabled' else 'disabled'}"
+        elif kind == "expect_description":
+            node = deepest_focused(self.application)
+            try:
+                description = "" if node is None else (node.get_description() or "")
+            except GLib.Error as error:
+                raise ProbeError(f"reading the focused node's description: {error.message}") \
+                    from error
+            passed = text in description
+            wanted = f"the focused node's description contains {text!r}"
+        elif kind == "expect_hold_name_changes":
+            passed = self.hold_name_changes is not None and len(self.hold_name_changes) == int(text)
+            wanted = (f"{text} focused name change(s) while the key repeated "
+                      f"(seen: {self.hold_name_changes!r})")
+        elif kind == "expect_release_name_changes":
+            passed = (self.release_name_changes is not None
+                      and len(self.release_name_changes) == int(text))
+            wanted = (f"{text} focused name change(s) after the release "
+                      f"(seen: {self.release_name_changes!r})")
+        elif kind == "expect_announcement_count":
+            announcement, _, count = text.rpartition(":")
+            heard = [item for item in self.recorder.last_step_announcements if announcement in item]
+            passed = len(heard) == int(count)
+            wanted = (f"{count} announcement(s) containing {announcement!r} "
+                      f"(heard: {self.recorder.last_step_announcements!r})")
         else:
             announcements = self.recorder.last_step_announcements
             passed = any(text in announcement for announcement in announcements)
@@ -550,8 +416,39 @@ class Expectations:
         print(f"  ok: {wanted}")
 
 
+def hold_key(application, sender, chord, repeats, recorder, expectations, wait_seconds):
+    """Presses a chord, repeats it without a release, then releases it, and records the focused
+    name changes during the repeats and after the release apart. Repeats come every 40 ms, a
+    desktop's key repeat rate, each in a frame of its own."""
+    print_focus(application, f"before holding {chord.text}")
+    sender.wait_for_focus(wait_seconds)
+    expectations.before_step()
+    sender.press(chord)
+    pump_events(EVENT_WINDOW_SECONDS)
+    print_focus(application, f"after pressing {chord.text}")
+    recorder.take_focused_name_changes()
+    for _ in range(repeats):
+        sender.wait_for_focus(wait_seconds)
+        sender.repeat(chord)
+        pump_events(0.04)
+    pump_events(EVENT_WINDOW_SECONDS)
+    print_focus(application, f"after {repeats} repeats of {chord.text}, still held")
+    expectations.hold_name_changes = recorder.take_focused_name_changes()
+    sender.release(chord)
+    pump_events(EVENT_WINDOW_SECONDS)
+    print_focus(application, f"after releasing {chord.text}")
+    expectations.release_name_changes = recorder.take_focused_name_changes()
+    print(f"  name changes while held: {expectations.hold_name_changes!r}")
+    print(f"  name changes after the release: {expectations.release_name_changes!r}")
+    recorder.print_and_clear()
+
+
 def run(arguments):
+    check_step_arguments(arguments.steps)
+    verify_isolation()
     keys = [value for kind, value in arguments.steps if kind == "key"]
+    keys += [value.rpartition(":")[0] for kind, value in arguments.steps if kind == "hold"]
+    keys += [chord for kind, value in arguments.steps if kind == "burst" for chord in value.split()]
     sender = WindowKeySender() if keys else None
     # Every chord is checked before the first is sent.
     chords = {text: sender.parse(text) for text in keys}
@@ -572,12 +469,34 @@ def run(arguments):
         elif kind == "press":
             expectations.before_step()
             perform_action(application, value, recorder)
+        elif kind == "press_in":
+            region, _, name = value.partition("|")
+            expectations.before_step()
+            perform_action(application, name, recorder, region=region)
         elif kind == "focus":
             expectations.before_step()
             give_focus(application, value, recorder)
+        elif kind == "set_value":
+            expectations.before_step()
+            set_value_after_label(application, value, recorder)
         elif kind == "dump":
             for path, accessible in walk(application):
                 print("  " * len(path) + describe_if_present(accessible))
+        elif kind == "hold":
+            chord_text, _, repeats = value.rpartition(":")
+            hold_key(application, sender, chords[chord_text], int(repeats), recorder,
+                     expectations, arguments.wait)
+        elif kind == "burst":
+            # Back to back, with nothing pumped between, so the application reads them in one
+            # frame: the order of keys within a frame is what the burst exists to show.
+            print_focus(application, f"before the burst {value!r}")
+            sender.wait_for_focus(arguments.wait)
+            expectations.before_step()
+            for chord_text in value.split():
+                sender.send(chords[chord_text])
+            pump_events(EVENT_WINDOW_SECONDS)
+            print_focus(application, f"after the burst {value!r}")
+            recorder.print_and_clear()
         elif kind == "key":
             chord = chords[value]
             print_focus(application, f"before {chord.text}")
@@ -623,8 +542,16 @@ def main():
     steps.add_argument("--press", action=StepAction, metavar="NAME",
                        help="perform the first action of the node with this name "
                             "(or, failing an exact match, a name beginning with it)")
+    steps.add_argument("--press-in", action=StepAction, metavar="REGION|NAME",
+                       help="press the node named NAME inside the node (a region) named REGION")
+    steps.add_argument("--expect-enabled", action=StepAction, metavar="NAME",
+                       help="fail unless the one node named NAME is enabled and sensitive")
+    steps.add_argument("--expect-disabled", action=StepAction, metavar="NAME",
+                       help="fail unless the one node named NAME is disabled")
     steps.add_argument("--focus", action=StepAction, metavar="NAME",
                        help="give focus to the node with this name through AT-SPI")
+    steps.add_argument("--set-value", action=StepAction, metavar="LABEL:VALUE",
+                       help="set the value box that follows the label LABEL to VALUE")
     steps.add_argument("--dump", action=StepAction, nargs=0, help="print the whole tree")
     steps.add_argument("--key", action=StepAction, metavar="CHORD",
                        help="deliver a chord such as Tab, shift+Tab, ctrl+Left, F6 or Enter")
@@ -638,10 +565,30 @@ def main():
                        help="fail unless the focused node's name is what it was before the step")
     steps.add_argument("--expect-announcement", action=StepAction, metavar="TEXT",
                        help="fail unless an object:announcement during the step contains TEXT")
+    steps.add_argument("--burst", action=StepAction, metavar="CHORDS",
+                       help="deliver several space-separated chords back to back, in one frame")
+    steps.add_argument("--hold", action=StepAction, metavar="CHORD:REPEATS",
+                       help="press a chord, repeat it REPEATS times without a release, release it")
+    steps.add_argument("--expect-hold-name-changes", action=StepAction, metavar="COUNT",
+                       help="fail unless the last --hold saw COUNT focused name changes while held")
+    steps.add_argument("--expect-release-name-changes", action=StepAction, metavar="COUNT",
+                       help="fail unless the last --hold saw COUNT focused name changes after "
+                            "its release")
+    steps.add_argument("--expect-announcement-count", action=StepAction, metavar="TEXT:COUNT",
+                       help="fail unless exactly COUNT announcements of the step contain TEXT")
+    steps.add_argument("--expect-region", action=StepAction, metavar="NAME",
+                       help="fail unless the focused node is inside a node named NAME")
+    steps.add_argument("--expect-description", action=StepAction, metavar="TEXT",
+                       help="fail unless the focused node's description contains TEXT")
     try:
         run(parser.parse_args())
     except ProbeError as error:
         print(f"atspi-probe: {error}", file=sys.stderr)
+        return 1
+    except GLib.Error as error:
+        # A node can vanish between two calls; that is a failed step, not a traceback.
+        print(f"atspi-probe: the accessibility bus refused a call: {error.message}",
+              file=sys.stderr)
         return 1
     return 0
 

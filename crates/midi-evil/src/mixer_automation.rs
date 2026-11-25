@@ -196,6 +196,11 @@ fn show_lane(
 ) -> bool {
     let size = Vec2::new(timeline_ticks as f32 * pixels_per_tick, LANE_HEIGHT);
     let (response, painter) = ui.allocate_painter(size, egui::Sense::click_and_drag());
+    // A lane painter never takes focus by itself; without it a clicked point could not be
+    // deleted, or the Delete would go to whichever editor still had focus.
+    if response.clicked_by(egui::PointerButton::Primary) || response.drag_started() {
+        response.request_focus();
+    }
     let rect = response.rect;
     painter.rect_filled(rect, 0.0, theme::BACKGROUND);
     for division in 0..=4 {
@@ -216,6 +221,12 @@ fn show_lane(
     }
 
     let points = points(sequence, state);
+    crate::custom_editors::register(ui.ctx(), response.id);
+    let name = crate::speech::describe_lane("Mixer automation lane", &state.title(), points.len());
+    ui.ctx().accesskit_node_builder(response.id, |node| {
+        node.set_role(egui::accesskit::Role::Canvas);
+        node.set_label(name);
+    });
     for pair in points.windows(2) {
         painter.line_segment(
             [
@@ -281,9 +292,9 @@ fn show_lane(
             changed = true;
         }
     }
-    if response.hovered()
-        && !ui.ctx().egui_wants_keyboard_input()
-        && ui.input(|input| input.key_pressed(egui::Key::Delete))
+    // Delete belongs to the focused editor alone, so one key can never delete in two places.
+    if response.has_focus()
+        && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Delete))
         && remove_selected(sequence, state)
     {
         changed = true;
@@ -487,6 +498,45 @@ fn value_position(value: f32, rect: Rect, parameter: MixerParameter) -> f32 {
 mod tests {
     use super::*;
     use evil_project::{EffectParameter, Track};
+
+    #[test]
+    fn the_mixer_lane_takes_delete_only_with_focus_which_a_click_gives_it() {
+        let mut project = Project::new("Lane");
+        project.add_track(Track::default()).unwrap();
+        project.tracks[0]
+            .mixer_automation
+            .push(MixerAutomationEvent {
+                tick: 480,
+                parameter: MixerParameter::Gain,
+                value: 0.5,
+            });
+        let targets = targets(&project, 0);
+        let context = RollContext::new(&project);
+        let project = std::cell::RefCell::new(project);
+        let mut state = MixerAutomationState::default();
+        let roll = RollState::default();
+        let pixels_per_tick = roll.pixels_per_tick(480);
+        let point = Point {
+            index: 0,
+            tick: 480,
+            value: 0.5,
+        };
+        crate::automation::tests::delete_follows_focus(
+            |rect| point_position(point, rect, pixels_per_tick, MixerParameter::Gain),
+            &|| project.borrow().tracks[0].mixer_automation.len(),
+            &mut |ui| {
+                show(
+                    ui,
+                    &mut project.borrow_mut().tracks[0],
+                    &mut state,
+                    &targets,
+                    &roll,
+                    context,
+                    None,
+                );
+            },
+        );
+    }
 
     #[test]
     fn typed_point_edits_preserve_other_lanes_and_integer_values() {

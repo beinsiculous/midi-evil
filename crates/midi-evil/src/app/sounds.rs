@@ -39,18 +39,23 @@ impl StudioApp {
             self.beats.stop();
             self.roll.select_track(index);
             self.sync_sound_drafts();
-            if let Some(sound) = self.selected_sound() {
-                match sound.kind {
-                    crate::instruments::SoundKind::Synth if self.view == View::Pads => {
-                        self.view = View::Synth
-                    }
-                    crate::instruments::SoundKind::Kit
-                        if matches!(self.view, View::Synth | View::Keyboard) =>
-                    {
-                        self.view = View::Pads
-                    }
-                    _ => {}
+            self.keep_view_with_sound_kind();
+        }
+    }
+
+    /// A synth track is never shown in Pads, nor a drum kit in Synth or Keyboard.
+    pub(super) fn keep_view_with_sound_kind(&mut self) {
+        if let Some(sound) = self.selected_sound() {
+            match sound.kind {
+                crate::instruments::SoundKind::Synth if self.view == View::Pads => {
+                    self.view = View::Synth
                 }
+                crate::instruments::SoundKind::Kit
+                    if matches!(self.view, View::Synth | View::Keyboard) =>
+                {
+                    self.view = View::Pads
+                }
+                _ => {}
             }
         }
     }
@@ -247,102 +252,104 @@ impl StudioApp {
                     .inner_margin(egui::Margin::symmetric(14, 8)),
             )
             .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    theme::label(ui, "SOUND");
-                    let selected_track = self.roll.selected_track;
-                    let mut next_track = selected_track;
-                    egui::ComboBox::from_id_salt("sound-track")
-                        .width(135.0)
-                        .selected_text(
-                            self.project
-                                .tracks
-                                .get(selected_track)
-                                .map_or("Select track", |track| track.name.as_str()),
-                        )
-                        .show_ui(ui, |ui| {
-                            for (index, track) in self.project.tracks.iter().enumerate() {
-                                ui.selectable_value(
-                                    &mut next_track,
-                                    index,
-                                    format!("{:02}  {}", index + 1, track.name),
-                                );
-                            }
-                        });
-                    if next_track != selected_track {
-                        self.select_sound_track(next_track);
-                    }
-                    ui.menu_button("+ Track", |ui| {
-                        ui.add_enabled_ui(self.recorder.is_none(), |ui| {
-                            if ui.button("Synth track").clicked() {
-                                ui.close();
-                                self.add_track();
-                            }
-                            if ui.button("Drum track").clicked() {
-                                ui.close();
-                                self.add_drum_track();
-                            }
-                        });
-                    });
-                    let Some(current) = self.selected_sound() else {
-                        ui.label("Add a synth or drum track to load sounds.");
-                        return;
-                    };
-                    let choices =
-                        self.sounds
-                            .choices(&self.project, self.patch_base(), current.kind);
-                    let can_cycle = self.recorder.is_none()
-                        && choices.iter().any(|sound| !sound.same_source(&current));
-                    if ui
-                        .add_enabled(can_cycle, egui::Button::new("‹ Previous"))
-                        .on_hover_text("Previous sound in the filtered library · Alt+Left")
-                        .clicked()
-                    {
-                        self.cycle_sound(true);
-                    }
-                    let name = choices
-                        .iter()
-                        .find(|sound| sound.same_source(&current))
-                        .map_or(current.name.as_str(), |sound| sound.name.as_str());
-                    if ui
-                        .add_sized(
-                            [180.0, 30.0],
-                            egui::Button::new(
-                                RichText::new(format!("{name}…")).color(theme::IVORY),
+                crate::regions::group(ui, crate::regions::Region::Toolbar, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        theme::label(ui, "SOUND");
+                        let selected_track = self.roll.selected_track;
+                        let mut next_track = selected_track;
+                        egui::ComboBox::from_id_salt("sound-track")
+                            .width(135.0)
+                            .selected_text(
+                                self.project
+                                    .tracks
+                                    .get(selected_track)
+                                    .map_or("Select track", |track| track.name.as_str()),
                             )
-                            .truncate(),
-                        )
-                        .on_hover_text(format!(
-                            "Browse {} sounds\n{}",
-                            current.kind.label(),
-                            current.reference
-                        ))
-                        .clicked()
-                    {
-                        self.sounds.open = !self.sounds.open;
-                    }
-                    if ui
-                        .add_enabled(can_cycle, egui::Button::new("Next ›"))
-                        .on_hover_text("Next sound in the filtered library · Alt+Right")
-                        .clicked()
-                    {
-                        self.cycle_sound(false);
-                    }
-                    if ui
-                        .add_enabled(self.recorder.is_none(), egui::Button::new("Load files…"))
-                        .on_hover_text(
-                            "Load one or more instruments; remember them in your library",
-                        )
-                        .clicked()
-                    {
-                        self.load_sound_files();
-                    }
-                    theme::label(
-                        ui,
-                        format!("{} · {} sounds", current.kind.label(), choices.len()),
-                    );
-                    if self.recorder.is_some() {
-                        ui.label("Finish take to change sounds");
-                    }
+                            .show_ui(ui, |ui| {
+                                for (index, track) in self.project.tracks.iter().enumerate() {
+                                    ui.selectable_value(
+                                        &mut next_track,
+                                        index,
+                                        format!("{:02}  {}", index + 1, track.name),
+                                    );
+                                }
+                            });
+                        if next_track != selected_track {
+                            self.select_sound_track(next_track);
+                        }
+                        ui.menu_button("+ Track", |ui| {
+                            ui.add_enabled_ui(self.recorder.is_none(), |ui| {
+                                if ui.button("Synth track").clicked() {
+                                    ui.close();
+                                    self.add_track();
+                                }
+                                if ui.button("Drum track").clicked() {
+                                    ui.close();
+                                    self.add_drum_track();
+                                }
+                            });
+                        });
+                        let Some(current) = self.selected_sound() else {
+                            ui.label("Add a synth or drum track to load sounds.");
+                            return;
+                        };
+                        let choices =
+                            self.sounds
+                                .choices(&self.project, self.patch_base(), current.kind);
+                        let can_cycle = self.recorder.is_none()
+                            && choices.iter().any(|sound| !sound.same_source(&current));
+                        if ui
+                            .add_enabled(can_cycle, egui::Button::new("‹ Previous"))
+                            .on_hover_text("Previous sound in the filtered library · Alt+Left")
+                            .clicked()
+                        {
+                            self.cycle_sound(true);
+                        }
+                        let name = choices
+                            .iter()
+                            .find(|sound| sound.same_source(&current))
+                            .map_or(current.name.as_str(), |sound| sound.name.as_str());
+                        if ui
+                            .add_sized(
+                                [180.0, 30.0],
+                                egui::Button::new(
+                                    RichText::new(format!("{name}…")).color(theme::IVORY),
+                                )
+                                .truncate(),
+                            )
+                            .on_hover_text(format!(
+                                "Browse {} sounds\n{}",
+                                current.kind.label(),
+                                current.reference
+                            ))
+                            .clicked()
+                        {
+                            self.sounds.open = !self.sounds.open;
+                        }
+                        if ui
+                            .add_enabled(can_cycle, egui::Button::new("Next ›"))
+                            .on_hover_text("Next sound in the filtered library · Alt+Right")
+                            .clicked()
+                        {
+                            self.cycle_sound(false);
+                        }
+                        if ui
+                            .add_enabled(self.recorder.is_none(), egui::Button::new("Load files…"))
+                            .on_hover_text(
+                                "Load one or more instruments; remember them in your library",
+                            )
+                            .clicked()
+                        {
+                            self.load_sound_files();
+                        }
+                        theme::label(
+                            ui,
+                            format!("{} · {} sounds", current.kind.label(), choices.len()),
+                        );
+                        if self.recorder.is_some() {
+                            ui.label("Finish take to change sounds");
+                        }
+                    });
                 });
             });
     }
