@@ -847,9 +847,10 @@ fn show_sample_controls(ui: &mut Ui, sample: &mut SampleOscillator) {
     let frame_count = sample.samples.len();
     let playback = sample.playback_range();
     ui.horizontal_wrapped(|ui| {
+        let channels = if sample.is_stereo() { "stereo" } else { "mono" };
         ui.label(format!(
-            "{} · {} source frames · {} Hz · playback {}..{}",
-            sample.name, frame_count, sample.sample_rate, playback.start, playback.end
+            "{} · {} source frames · {} Hz · {} · playback {}..{}",
+            sample.name, frame_count, sample.sample_rate, channels, playback.start, playback.end
         ));
         if ui.checkbox(&mut sample.loop_enabled, "Loop").changed() && !sample.loop_enabled {
             sample.direction = SampleDirection::Forward;
@@ -1013,10 +1014,7 @@ fn sample_waveform(ui: &mut Ui, sample: &SampleOscillator) {
         let end = ((bar + 1) * frame_count / bars)
             .max(start + 1)
             .min(frame_count);
-        let peak = sample.samples[start..end]
-            .iter()
-            .fold(0.0_f32, |peak, value| peak.max(value.abs()))
-            .min(1.0);
+        let peak = sample.mono_display_peak(start, end).min(1.0);
         let x = plot.left() + bar as f32 / bars as f32 * plot.width();
         let height = (peak * plot.height() * 0.45).max(0.5);
         painter.line_segment(

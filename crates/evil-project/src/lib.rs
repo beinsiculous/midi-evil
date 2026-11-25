@@ -20,7 +20,13 @@ mod sequence;
 
 pub use instrument::{DEFAULT_DRUM_BASE_NOTE, DRUM_PAD_COUNT, Instrument, InstrumentSource};
 pub use pattern::{Part, Pattern};
-pub use sequence::{EventSequence, clean_overlaps, quantize_notes, transpose_notes};
+pub use sequence::{
+    EventSequence, GridModifier, QuantizeSettings, clean_identical_events, clean_overlaps,
+    clear_controller_events, clear_midi_controller, invert_note_selection, quantize_notes,
+    quantize_notes_advanced, ramp_notes_velocity, scale_notes_velocity, select_all_notes,
+    select_same_pitch_notes, set_notes_velocity, thin_aftertouch, thin_controller_events,
+    thin_mixer_automation, thin_pitch_bends, transpose_notes, transpose_selected_notes,
+};
 
 pub const FORMAT_NAME: &str = "midi-evil-project";
 pub const LEGACY_FORMAT_NAME: &str = "rusty-music-project";
@@ -109,6 +115,14 @@ pub struct NoteEdit {
     pub duration_ticks: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppendReport {
+    pub offset_ticks: u64,
+    pub added_instruments: usize,
+    pub added_tracks: usize,
+    pub added_notes: usize,
+}
+
 impl Default for Project {
     fn default() -> Self {
         Self {
@@ -171,44 +185,19 @@ impl Project {
         performance: &Performance,
     ) -> Result<Self, Error> {
         let mut instruments = Vec::with_capacity(performance.tracks.len());
-        let tracks = performance
-            .tracks
-            .iter()
-            .map(|track| {
-                let instrument = instruments.len();
-                instruments.push(Instrument {
-                    name: track.name.clone(),
-                    midi_program: track.program,
-                    gain: track.volume.map_or(0.8, |volume| f32::from(volume) / 127.0),
-                    pan: track.pan.map_or(0.0, |pan| match pan {
-                        64 => 0.0,
-                        0..=63 => f32::from(pan) / 64.0 - 1.0,
-                        _ => f32::from(pan - 64) / 63.0,
-                    }),
-                    pitch_bend_range_semitones: track.pitch_bend_range_semitones,
-                    ..Instrument::default()
-                });
-                Track {
-                    name: track.name.clone(),
-                    instrument,
-                    notes: track
-                        .notes
-                        .iter()
-                        .map(|note| Note {
-                            pitch: note.note,
-                            velocity: note.velocity,
-                            start_tick: note.start_tick,
-                            duration_ticks: note.duration_ticks,
-                        })
-                        .collect(),
-                    pitch_bends: track.pitch_bends.clone(),
-                    aftertouch: track.aftertouch.clone(),
-                    controllers: track.controllers.clone(),
-                    mixer_automation: track.mixer_automation.clone(),
-                    ..Track::default()
-                }
-            })
-            .collect();
+        let mut tracks = Vec::with_capacity(performance.tracks.len());
+        for performance_track in &performance.tracks {
+            let instrument_index = instruments.len();
+            let (instrument, track) = convert_performance_track(
+                performance_track,
+                instrument_index,
+                performance.ticks_per_quarter,
+                performance.ticks_per_quarter,
+                0,
+            )?;
+            instruments.push(instrument);
+            tracks.push(track);
+        }
         let project = Self {
             name: name.into(),
             tempo_bpm: performance.tempo_bpm,
@@ -230,6 +219,168 @@ impl Project {
         };
         project.validate()?;
         Ok(project)
+    }
+
+    /// Clear all song events, parts, patterns, and tempo changes while keeping instruments and mixer routing.
+    pub fn clear_song(&mut self) {
+        self.patterns.clear();
+        self.tempo_changes.clear();
+        self.tempo_bpm = 120.0;
+        self.beats_per_bar = 4;
+        self.beat_unit = 4;
+        for track in &mut self.tracks {
+            track.muted = false;
+            track.notes.clear();
+            track.pitch_bends.clear();
+            track.aftertouch.clear();
+            track.controllers.clear();
+            track.mixer_automation.clear();
+            track.parts.clear();
+        }
+    }
+
+    pub fn bar_ticks(&self) -> u64 {
+        (u64::from(self.ticks_per_quarter) * 4 * u64::from(self.beats_per_bar)
+            / u64::from(self.beat_unit.max(1)))
+        .max(1)
+    }
+
+    pub fn end_tick(&self) -> u64 {
+        let mut end = self
+            .tempo_changes
+            .iter()
+            .map(|change| change.tick)
+            .max()
+            .unwrap_or(0);
+        for track in &self.tracks {
+            for note in &track.notes {
+                end = end.max(note.start_tick.saturating_add(note.duration_ticks));
+            }
+            for event in &track.pitch_bends {
+                end = end.max(event.tick);
+            }
+            for event in &track.aftertouch {
+                end = end.max(event.tick);
+            }
+            for event in &track.controllers {
+                end = end.max(event.tick);
+            }
+            for event in &track.mixer_automation {
+                end = end.max(event.tick);
+            }
+            for part in &track.parts {
+                let part_end = part.start_tick.saturating_add(part.length_ticks);
+                end = end.max(part_end);
+                if let Some(pattern) = self.patterns.get(part.pattern)
+                    && pattern.length_ticks > 0
+                {
+                    for occurrence_start in
+                        (part.start_tick..part_end).step_by(pattern.length_ticks as usize)
+                    {
+                        for note in &pattern.notes {
+                            let start = occurrence_start.saturating_add(note.start_tick);
+                            if start < part_end {
+                                end = end.max(start.saturating_add(note.duration_ticks));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        end
+    }
+
+    pub fn next_bar_tick(&self) -> u64 {
+        let end = self.end_tick();
+        if end == 0 {
+            return 0;
+        }
+        let bar = self.bar_ticks();
+        end.div_ceil(bar).saturating_mul(bar)
+    }
+
+    /// Append tracks and tempo transitions from a performance at the next bar boundary.
+    pub fn append_performance(&mut self, performance: &Performance) -> Result<AppendReport, Error> {
+        self.validate()?;
+        if performance.ticks_per_quarter == 0 {
+            return Err(invalid(
+                "imported performance ticks_per_quarter must be > 0",
+            ));
+        }
+        tempo_microseconds(performance.tempo_bpm)?;
+
+        let mut updated = self.clone();
+        let offset_ticks = updated.next_bar_tick();
+        let src_tpq = performance.ticks_per_quarter;
+        let dst_tpq = updated.ticks_per_quarter;
+        let adopt_header =
+            offset_ticks == 0 && updated.tracks.is_empty() && updated.tempo_changes.is_empty();
+
+        if adopt_header {
+            updated.tempo_bpm = performance.tempo_bpm;
+            updated.beats_per_bar = performance.beats_per_bar;
+            updated.beat_unit = performance.beat_unit;
+        } else if offset_ticks > 0 {
+            let active_bpm = updated.tempo_bpm_at(offset_ticks);
+            if (active_bpm - performance.tempo_bpm).abs() > 0.001 {
+                upsert_tempo_change(
+                    &mut updated.tempo_changes,
+                    offset_ticks,
+                    performance.tempo_bpm,
+                );
+            }
+        }
+
+        for change in &performance.tempo_changes {
+            if change.tick == 0 {
+                continue;
+            }
+            if change.microseconds_per_quarter == 0 {
+                return Err(invalid("tempo change microseconds_per_quarter must be > 0"));
+            }
+            let scaled = scale_tick(change.tick, src_tpq, dst_tpq)?;
+            let tick = offset_ticks
+                .checked_add(scaled)
+                .ok_or_else(|| invalid("appended tempo change tick exceeds supported range"))?;
+            let bpm = (60_000_000.0 / f64::from(change.microseconds_per_quarter)) as f32;
+            upsert_tempo_change(&mut updated.tempo_changes, tick, bpm);
+        }
+        updated.tempo_changes.sort_by_key(|change| change.tick);
+
+        let mut added_notes = 0;
+        let mut added_instruments = 0;
+        let mut added_tracks = 0;
+        for performance_track in &performance.tracks {
+            let instrument_index = updated.instruments.len();
+            let (instrument, track) = convert_performance_track(
+                performance_track,
+                instrument_index,
+                src_tpq,
+                dst_tpq,
+                offset_ticks,
+            )?;
+            added_notes += track.notes.len();
+            updated.instruments.push(instrument);
+            updated.tracks.push(track);
+            added_instruments += 1;
+            added_tracks += 1;
+        }
+
+        updated.validate()?;
+        *self = updated;
+        Ok(AppendReport {
+            offset_ticks,
+            added_instruments,
+            added_tracks,
+            added_notes,
+        })
+    }
+
+    fn tempo_bpm_at(&self, tick: u64) -> f32 {
+        self.tempo_changes
+            .iter()
+            .rfind(|change| change.tick <= tick)
+            .map_or(self.tempo_bpm, |change| change.bpm)
     }
 
     pub fn load(path: impl AsRef<Path>) -> Result<Self, Error> {
@@ -721,6 +872,118 @@ pub(crate) fn invalid(message: &str) -> Error {
     Error::InvalidProject(message.to_owned())
 }
 
+fn scale_tick(tick: u64, src_tpq: u16, dst_tpq: u16) -> Result<u64, Error> {
+    if src_tpq == dst_tpq {
+        return Ok(tick);
+    }
+    let scaled =
+        (u128::from(tick) * u128::from(dst_tpq) + u128::from(src_tpq / 2)) / u128::from(src_tpq);
+    u64::try_from(scaled).map_err(|_| invalid("scaled tick exceeds supported range"))
+}
+
+fn shift_tick(tick: u64, src_tpq: u16, dst_tpq: u16, offset_ticks: u64) -> Result<u64, Error> {
+    offset_ticks
+        .checked_add(scale_tick(tick, src_tpq, dst_tpq)?)
+        .ok_or_else(|| invalid("appended event tick exceeds supported range"))
+}
+
+fn upsert_tempo_change(changes: &mut Vec<TempoChange>, tick: u64, bpm: f32) {
+    if let Some(existing) = changes.iter_mut().find(|change| change.tick == tick) {
+        existing.bpm = bpm;
+    } else {
+        changes.push(TempoChange { tick, bpm });
+    }
+}
+
+fn convert_performance_track(
+    track: &PerformanceTrack,
+    instrument_index: usize,
+    src_tpq: u16,
+    dst_tpq: u16,
+    offset_ticks: u64,
+) -> Result<(Instrument, Track), Error> {
+    let instrument = Instrument {
+        name: track.name.clone(),
+        midi_program: track.program,
+        gain: track.volume.map_or(0.8, |volume| f32::from(volume) / 127.0),
+        pan: track.pan.map_or(0.0, |pan| match pan {
+            64 => 0.0,
+            0..=63 => f32::from(pan) / 64.0 - 1.0,
+            _ => f32::from(pan - 64) / 63.0,
+        }),
+        pitch_bend_range_semitones: track.pitch_bend_range_semitones,
+        ..Instrument::default()
+    };
+    let notes = track
+        .notes
+        .iter()
+        .map(|note| {
+            Ok(Note {
+                pitch: note.note,
+                velocity: note.velocity,
+                start_tick: shift_tick(note.start_tick, src_tpq, dst_tpq, offset_ticks)?,
+                duration_ticks: scale_tick(note.duration_ticks, src_tpq, dst_tpq)?.max(1),
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    let pitch_bends = track
+        .pitch_bends
+        .iter()
+        .map(|event| {
+            Ok(PitchBend {
+                tick: shift_tick(event.tick, src_tpq, dst_tpq, offset_ticks)?,
+                value: event.value,
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    let aftertouch = track
+        .aftertouch
+        .iter()
+        .map(|event| {
+            Ok(Aftertouch {
+                tick: shift_tick(event.tick, src_tpq, dst_tpq, offset_ticks)?,
+                note: event.note,
+                value: event.value,
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    let controllers = track
+        .controllers
+        .iter()
+        .map(|event| {
+            Ok(ControllerEvent {
+                tick: shift_tick(event.tick, src_tpq, dst_tpq, offset_ticks)?,
+                controller: event.controller,
+                value: event.value,
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    let mixer_automation = track
+        .mixer_automation
+        .iter()
+        .map(|event| {
+            Ok(MixerAutomationEvent {
+                tick: shift_tick(event.tick, src_tpq, dst_tpq, offset_ticks)?,
+                parameter: event.parameter,
+                value: event.value,
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    Ok((
+        instrument,
+        Track {
+            name: track.name.clone(),
+            instrument: instrument_index,
+            notes,
+            pitch_bends,
+            aftertouch,
+            controllers,
+            mixer_automation,
+            ..Track::default()
+        },
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1194,5 +1457,122 @@ mod tests {
             project.validate(),
             Err(Error::UnsupportedVersion(99))
         ));
+    }
+
+    #[test]
+    fn clear_song_resets_sequence_and_tempo_while_preserving_instruments_and_mixer() {
+        let mut project = Project::new("Clear song");
+        project.tempo_bpm = 138.0;
+        project.beats_per_bar = 3;
+        project.beat_unit = 4;
+        project.tempo_changes.push(TempoChange {
+            tick: 480,
+            bpm: 150.0,
+        });
+        project.master_gain = 0.65;
+        project.send_buses[0].gain = 0.4;
+        let pattern = project
+            .add_pattern(Pattern {
+                name: "Loop".into(),
+                notes: vec![Note::default()],
+                ..Pattern::default()
+            })
+            .unwrap();
+        project
+            .add_track(Track {
+                name: "Synth".into(),
+                muted: true,
+                notes: vec![Note::default()],
+                parts: vec![Part {
+                    pattern,
+                    start_tick: 0,
+                    length_ticks: 480,
+                }],
+                ..Track::default()
+            })
+            .unwrap();
+        project.instruments[0].gain = 0.55;
+        project.instruments[0].send_gains = [0.3, 0.2];
+
+        project.clear_song();
+        assert!(project.patterns.is_empty());
+        assert!(project.tempo_changes.is_empty());
+        assert_eq!(project.tempo_bpm, 120.0);
+        assert_eq!((project.beats_per_bar, project.beat_unit), (4, 4));
+        assert_eq!(project.tracks.len(), 1);
+        assert!(!project.tracks[0].muted);
+        assert!(project.tracks[0].notes.is_empty());
+        assert!(project.tracks[0].parts.is_empty());
+        assert_eq!(project.instruments[0].gain, 0.55);
+        assert_eq!(project.instruments[0].send_gains, [0.3, 0.2]);
+        assert_eq!(project.master_gain, 0.65);
+        assert_eq!(project.send_buses[0].gain, 0.4);
+    }
+
+    #[test]
+    fn append_performance_offsets_to_next_bar_scales_tpq_and_preserves_tempo() {
+        let mut project = Project::new("Base");
+        project.tempo_bpm = 100.0;
+        project
+            .add_track(Track {
+                name: "Existing".into(),
+                notes: vec![Note {
+                    start_tick: 0,
+                    duration_ticks: 600,
+                    ..Note::default()
+                }],
+                ..Track::default()
+            })
+            .unwrap();
+        let performance = Performance {
+            tempo_bpm: 140.0,
+            beats_per_bar: 4,
+            beat_unit: 4,
+            ticks_per_quarter: 240,
+            tempo_changes: vec![
+                PerformanceTempoChange {
+                    tick: 0,
+                    microseconds_per_quarter: 428_571,
+                },
+                PerformanceTempoChange {
+                    tick: 240,
+                    microseconds_per_quarter: 375_000,
+                },
+            ],
+            tracks: vec![PerformanceTrack {
+                track_index: 0,
+                name: "Appended".into(),
+                notes: vec![PerformanceNote {
+                    note: 67,
+                    velocity: 110,
+                    start_tick: 120,
+                    duration_ticks: 240,
+                }],
+                pitch_bends: Vec::new(),
+                aftertouch: Vec::new(),
+                controllers: Vec::new(),
+                mixer_automation: Vec::new(),
+                pitch_bend_range_semitones: 2.0,
+                skipped_controller_events: 0,
+                program: Some(12),
+                volume: Some(127),
+                pan: Some(64),
+            }],
+        };
+
+        let report = project.append_performance(&performance).unwrap();
+        assert_eq!(report.offset_ticks, 1920);
+        assert_eq!(report.added_tracks, 1);
+        assert_eq!(report.added_notes, 1);
+        assert_eq!(project.tempo_bpm, 100.0);
+        assert_eq!(project.tempo_changes.len(), 2);
+        assert_eq!(project.tempo_changes[0].tick, 1920);
+        assert_eq!(project.tempo_changes[0].bpm, 140.0);
+        assert_eq!(project.tempo_changes[1].tick, 2400);
+        assert_eq!(project.tempo_changes[1].bpm, 160.0);
+        assert_eq!(project.tracks[1].notes[0].start_tick, 2160);
+        assert_eq!(project.tracks[1].notes[0].duration_ticks, 480);
+        assert_eq!(project.instruments[1].midi_program, Some(12));
+        project.to_performance().unwrap();
     }
 }

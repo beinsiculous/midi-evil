@@ -28,13 +28,13 @@ mod wavetable;
 
 pub use live::{LiveControls, LiveSynth};
 
-pub use aiff::read_mono_aiff;
+pub use aiff::{read_aiff, read_mono_aiff};
 pub use aux_envelope::AuxEnvelope;
 pub use delay::{Delay, DelayMode};
 pub use dynamics::Compressor;
 pub use effects::{
-    Bitcrush, INSERT_LIMIT, InsertEffect, SEND_COUNT, SendBus, apply_mono_insert, effect_parameter,
-    set_effect_parameter,
+    Bitcrush, INSERT_LIMIT, InsertEffect, SEND_COUNT, SendBus, apply_mono_insert,
+    apply_stereo_insert, effect_parameter, set_effect_parameter,
 };
 pub use envelope::Envelope;
 pub use equalizer::Equalizer;
@@ -59,7 +59,8 @@ pub use render::{
     RenderedSound, SynthAftertouch, SynthController, SynthNote, SynthPitchBend, SynthTempoChange,
     render, render_notes, render_notes_dry, render_notes_dry_with_automation,
     render_notes_dry_with_full_automation, render_notes_dry_with_pitch_bend,
-    render_notes_dry_with_tempo_and_full_automation, render_notes_with_automation,
+    render_notes_dry_with_tempo_and_full_automation, render_notes_stereo_dry,
+    render_notes_stereo_dry_with_tempo_and_full_automation, render_notes_with_automation,
     render_notes_with_full_automation, render_notes_with_pitch_bend, render_notes_with_tempo,
 };
 pub use reverb::Reverb;
@@ -68,7 +69,25 @@ pub use sync::OscillatorSync;
 use thiserror::Error;
 pub use unison::Unison;
 pub use voice::VoiceMode;
-pub use wav::read_mono_wav;
+pub use wav::{DecodedAudio, read_mono_wav, read_wav};
+
+/// Import WAV or uncompressed AIFF/AIFC audio based on file extension, preserving stereo.
+pub fn read_audio(path: impl AsRef<std::path::Path>) -> Result<DecodedAudio, Error> {
+    let path = path.as_ref();
+    let is_aiff = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("aif")
+                || extension.eq_ignore_ascii_case("aiff")
+                || extension.eq_ignore_ascii_case("aifc")
+        });
+    if is_aiff {
+        read_aiff(path)
+    } else {
+        read_wav(path)
+    }
+}
 pub use waveshaper::Waveshaper;
 
 #[derive(Debug, Error)]

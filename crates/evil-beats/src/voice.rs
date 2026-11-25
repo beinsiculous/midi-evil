@@ -17,7 +17,7 @@ pub(crate) struct PlaybackVoice {
     frame: u64,
     gate_seconds: f64,
     velocity: f32,
-    filter: Option<FilterProcessor>,
+    filter: Option<[FilterProcessor; 2]>,
     finished: bool,
 }
 
@@ -52,7 +52,9 @@ impl PlaybackVoice {
             choke_group,
             step: direction * tuning_rate * f64::from(pad.sample_rate)
                 / f64::from(output_sample_rate),
-            filter: pad.filter.map(crate::DrumFilter::processor),
+            filter: pad
+                .filter
+                .map(|filter| [filter.processor(), filter.processor()]),
             pad,
             output_sample_rate,
             position,
@@ -79,6 +81,15 @@ impl PlaybackVoice {
     }
 
     pub(crate) fn next_sample(&mut self) -> Option<f32> {
+        let frame = self.next_frame()?;
+        Some(if self.pad.is_stereo() {
+            (frame[0] + frame[1]) * 0.5
+        } else {
+            frame[0]
+        })
+    }
+
+    pub(crate) fn next_frame(&mut self) -> Option<[f32; 2]> {
         if self.finished {
             return None;
         }
@@ -90,20 +101,41 @@ impl PlaybackVoice {
             self.finished = true;
             return None;
         }
-        let sample = self.sample_at_position().unwrap_or(0.0);
-        let sample = self.filter.as_mut().map_or(sample, |filter| {
-            filter.process(sample, self.output_sample_rate)
-        });
+        let raw = self.frame_at_position().unwrap_or([0.0, 0.0]);
+        let filtered = match self.filter.as_mut() {
+            Some([left, right]) => {
+                let left_out = left.process(raw[0], self.output_sample_rate);
+                let right_out = if self.pad.is_stereo() {
+                    right.process(raw[1], self.output_sample_rate)
+                } else {
+                    left_out
+                };
+                [left_out, right_out]
+            }
+            None => raw,
+        };
         let amplitude = self
             .pad
             .envelope
             .amplitude(time_seconds as f32, self.gate_seconds as f32);
+        let gain = amplitude * self.velocity;
         self.frame = self.frame.wrapping_add(1);
         self.advance();
-        Some(sample * amplitude * self.velocity)
+        Some([filtered[0] * gain, filtered[1] * gain])
     }
 
-    fn sample_at_position(&self) -> Option<f32> {
+    fn frame_at_position(&self) -> Option<[f32; 2]> {
+        let (index, next, fraction) = self.interpolation_points()?;
+        let left =
+            self.pad.samples[index] + (self.pad.samples[next] - self.pad.samples[index]) * fraction;
+        let right = match &self.pad.right_samples {
+            Some(right) => right[index] + (right[next] - right[index]) * fraction,
+            None => left,
+        };
+        Some([left, right])
+    }
+
+    fn interpolation_points(&self) -> Option<(usize, usize, f32)> {
         let playback = self.pad.playback_range();
         if self.position < playback.start as f64 || self.position >= playback.end as f64 {
             return None;
@@ -118,10 +150,7 @@ impl PlaybackVoice {
         } else {
             index + 1
         };
-        let fraction = self.position.fract() as f32;
-        Some(
-            self.pad.samples[index] + (self.pad.samples[next] - self.pad.samples[index]) * fraction,
-        )
+        Some((index, next, self.position.fract() as f32))
     }
 
     fn advance(&mut self) {

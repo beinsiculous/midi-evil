@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 use evil_beats::{DrumKit, KitHit};
 use evil_project::{InstrumentSource, Project};
 use evil_synth::{
-    MonoTrack, Patch, StereoSound, StereoTrack, SynthAftertouch, SynthController, SynthNote,
-    SynthPitchBend, SynthTempoChange, mix_stereo_analyzed,
-    mix_stereo_with_sends_and_tempo_analyzed_range,
+    MonoTrack, Patch, SEND_COUNT, SendBus, StereoSound, StereoTrack, SynthAftertouch,
+    SynthController, SynthNote, SynthPitchBend, SynthTempoChange, mix_stereo_analyzed,
+    mix_stereo_with_sends_and_tempo_analyzed, mix_stereo_with_sends_and_tempo_analyzed_range,
 };
 use thiserror::Error;
 
@@ -89,30 +89,50 @@ pub fn load_drum_kit(source: &str, base: &Path) -> Result<DrumKit, Error> {
 }
 
 pub fn render_audition(patch: &Patch) -> Result<RenderOutput, Error> {
-    let sound = evil_synth::render_notes_dry(
-        patch,
-        &[SynthNote {
-            start_seconds: 0.0,
-            duration_seconds: f64::from(patch.duration_seconds),
-            pitch: 60,
-            velocity: 100,
-        }],
-    )?;
-    let mixed = mix_stereo_analyzed(
-        &[MonoTrack {
-            sound: &sound,
-            gain: 1.0,
-            pan: 0.0,
-            waveshaper: patch.waveshaper.as_ref(),
-            delay: patch.delay.as_ref(),
-            controllers: &[],
-            automation: &[],
-            inserts: &[],
-            send_gains: [0.0; evil_synth::SEND_COUNT],
-            dc_block: patch.uses_output_dc_block(),
-        }],
-        1.0,
-    )?;
+    let notes = [SynthNote {
+        start_seconds: 0.0,
+        duration_seconds: f64::from(patch.duration_seconds),
+        pitch: 60,
+        velocity: 100,
+    }];
+    let mixed = if patch.has_stereo_sample() {
+        let sound = evil_synth::render_notes_stereo_dry(patch, &notes)?;
+        mix_stereo_with_sends_and_tempo_analyzed(
+            &[],
+            &[StereoTrack {
+                sound: &sound,
+                gain: 1.0,
+                pan: 0.0,
+                waveshaper: patch.waveshaper.as_ref(),
+                delay: patch.delay.as_ref(),
+                controllers: &[],
+                automation: &[],
+                inserts: &[],
+                send_gains: [0.0; SEND_COUNT],
+                dc_block: patch.uses_output_dc_block(),
+            }],
+            &[SendBus::default(), SendBus::default()],
+            1.0,
+            &[],
+        )?
+    } else {
+        let sound = evil_synth::render_notes_dry(patch, &notes)?;
+        mix_stereo_analyzed(
+            &[MonoTrack {
+                sound: &sound,
+                gain: 1.0,
+                pan: 0.0,
+                waveshaper: patch.waveshaper.as_ref(),
+                delay: patch.delay.as_ref(),
+                controllers: &[],
+                automation: &[],
+                inserts: &[],
+                send_gains: [0.0; SEND_COUNT],
+                dc_block: patch.uses_output_dc_block(),
+            }],
+            1.0,
+        )?
+    };
     Ok(RenderOutput {
         sound: mixed.sound,
         mix_analysis: mixed.analysis,
@@ -293,6 +313,19 @@ fn scoped_project(project: &Project, scope: RenderScope) -> Result<Project, Erro
     Ok(input)
 }
 
+struct StereoRenderedTrack {
+    sound: StereoSound,
+    gain: f32,
+    pan: f32,
+    waveshaper: Option<evil_synth::Waveshaper>,
+    delay: Option<evil_synth::Delay>,
+    controllers: Vec<SynthController>,
+    automation: Vec<evil_synth::SynthMixerAutomation>,
+    inserts: Vec<evil_synth::InsertEffect>,
+    send_gains: [f32; SEND_COUNT],
+    dc_block: bool,
+}
+
 fn render_project_with_analysis_range(
     project: &Project,
     patch_base: &Path,
@@ -303,7 +336,7 @@ fn render_project_with_analysis_range(
         return Err(Error::NoNotes);
     }
     let mut rendered = Vec::new();
-    let mut stereo_rendered = Vec::new();
+    let mut stereo_rendered: Vec<StereoRenderedTrack> = Vec::new();
     let mut rendered_track_indices = Vec::new();
     let mut stereo_track_indices = Vec::new();
     let mut note_count = 0;
@@ -378,27 +411,51 @@ fn render_project_with_analysis_range(
                     .iter()
                     .filter(|event| !evil_project::controller_is_rendered(event.controller))
                     .count();
-                let sound = evil_synth::render_notes_dry_with_tempo_and_full_automation(
-                    &patch,
-                    &notes,
-                    &pitch_bends,
-                    &aftertouch,
-                    &controllers,
-                    &tempo_changes,
-                )?;
-                rendered_track_indices.push(track.track_index);
-                rendered.push((
-                    sound,
-                    settings.gain,
-                    settings.pan,
-                    patch.waveshaper.clone(),
-                    patch.delay.clone(),
-                    controllers,
-                    mixer_automation,
-                    settings.inserts.clone(),
-                    settings.send_gains,
-                    patch.uses_output_dc_block(),
-                ));
+                if patch.has_stereo_sample() {
+                    let sound = evil_synth::render_notes_stereo_dry_with_tempo_and_full_automation(
+                        &patch,
+                        &notes,
+                        &pitch_bends,
+                        &aftertouch,
+                        &controllers,
+                        &tempo_changes,
+                    )?;
+                    stereo_track_indices.push(track.track_index);
+                    stereo_rendered.push(StereoRenderedTrack {
+                        sound,
+                        gain: settings.gain,
+                        pan: settings.pan,
+                        waveshaper: patch.waveshaper.clone(),
+                        delay: patch.delay.clone(),
+                        controllers,
+                        automation: mixer_automation,
+                        inserts: settings.inserts.clone(),
+                        send_gains: settings.send_gains,
+                        dc_block: patch.uses_output_dc_block(),
+                    });
+                } else {
+                    let sound = evil_synth::render_notes_dry_with_tempo_and_full_automation(
+                        &patch,
+                        &notes,
+                        &pitch_bends,
+                        &aftertouch,
+                        &controllers,
+                        &tempo_changes,
+                    )?;
+                    rendered_track_indices.push(track.track_index);
+                    rendered.push((
+                        sound,
+                        settings.gain,
+                        settings.pan,
+                        patch.waveshaper.clone(),
+                        patch.delay.clone(),
+                        controllers,
+                        mixer_automation,
+                        settings.inserts.clone(),
+                        settings.send_gains,
+                        patch.uses_output_dc_block(),
+                    ));
+                }
             }
             InstrumentSource::DrumKit { kit, base_note } => {
                 let kit = load_drum_kit(kit, patch_base)?;
@@ -437,14 +494,18 @@ fn render_project_with_analysis_range(
                     })
                     .collect();
                 stereo_track_indices.push(track.track_index);
-                stereo_rendered.push((
+                stereo_rendered.push(StereoRenderedTrack {
                     sound,
-                    settings.gain,
-                    settings.pan,
-                    mixer_automation,
-                    settings.inserts.clone(),
-                    settings.send_gains,
-                ));
+                    gain: settings.gain,
+                    pan: settings.pan,
+                    waveshaper: None,
+                    delay: None,
+                    controllers: Vec::new(),
+                    automation: mixer_automation,
+                    inserts: settings.inserts.clone(),
+                    send_gains: settings.send_gains,
+                    dc_block: false,
+                });
             }
         }
     }
@@ -481,16 +542,18 @@ fn render_project_with_analysis_range(
         .collect();
     let stereo_tracks: Vec<_> = stereo_rendered
         .iter()
-        .map(
-            |(sound, gain, pan, automation, inserts, send_gains)| StereoTrack {
-                sound,
-                gain: *gain,
-                pan: *pan,
-                automation,
-                inserts,
-                send_gains: *send_gains,
-            },
-        )
+        .map(|track| StereoTrack {
+            sound: &track.sound,
+            gain: track.gain,
+            pan: track.pan,
+            waveshaper: track.waveshaper.as_ref(),
+            delay: track.delay.as_ref(),
+            controllers: &track.controllers,
+            automation: &track.automation,
+            inserts: &track.inserts,
+            send_gains: track.send_gains,
+            dc_block: track.dc_block,
+        })
         .collect();
     let track_count = tracks.len() + stereo_tracks.len();
     let mixed = mix_stereo_with_sends_and_tempo_analyzed_range(
@@ -722,12 +785,16 @@ mod tests {
                 ..Track::default()
             })
             .unwrap();
+        project.instruments[0].pan = -0.75;
         let rendered = render_project_range(&project, Path::new("."), 0, Some(480)).unwrap();
         let sample =
             evil_synth::SampleOscillator::from_stereo("Resampled bar", &rendered.sound).unwrap();
         assert_eq!(sample.name, "Resampled bar");
         assert_eq!(sample.sample_rate, project.sample_rate);
         assert_eq!(sample.samples.len(), 24_000);
+        assert_eq!(sample.right_samples.as_ref(), Some(&rendered.sound.right));
+        assert!(sample.is_stereo());
+        assert_ne!(sample.samples, rendered.sound.right);
         assert!(sample.samples.iter().any(|sample| sample.abs() > 0.001));
         sample.validate().unwrap();
     }
@@ -1588,5 +1655,77 @@ mod tests {
             render_project(&project, Path::new(".")),
             Err(Error::NoNotes)
         ));
+    }
+
+    #[test]
+    fn stereo_sample_synth_preserves_stereo_through_project_mix_stems_and_audition() {
+        let directory = tempfile::tempdir().unwrap();
+        let patch = Patch {
+            sample_rate: 8_000,
+            duration_seconds: 0.05,
+            oscillators: vec![evil_synth::Oscillator {
+                waveform: evil_synth::Waveform::Sample,
+                sample: Some(evil_synth::SampleOscillator {
+                    loop_enabled: true,
+                    ..evil_synth::SampleOscillator::new_stereo(
+                        vec![0.4, 0.2, -0.4, -0.2],
+                        vec![-0.1, 0.5, 0.1, -0.5],
+                        8_000,
+                    )
+                }),
+                ..evil_synth::Oscillator::default()
+            }],
+            delay: Some(evil_synth::Delay {
+                time_seconds: 0.01,
+                feedback: 0.25,
+                mix: 0.3,
+                ..evil_synth::Delay::default()
+            }),
+            ..Patch::default()
+        };
+        std::fs::write(
+            directory.path().join("stereo.json"),
+            patch.to_json_pretty().unwrap(),
+        )
+        .unwrap();
+
+        let audition = render_audition(&patch).unwrap();
+        assert_ne!(audition.sound.left, audition.sound.right);
+
+        let mut project = Project::new("Stereo Sample");
+        project.sample_rate = 8_000;
+        project
+            .add_track(Track {
+                notes: vec![Note {
+                    duration_ticks: 120,
+                    ..Note::default()
+                }],
+                ..Track::default()
+            })
+            .unwrap();
+        project.instruments[0].source = InstrumentSource::Synth {
+            patch: "stereo.json".to_owned(),
+        };
+        let full = render_project(&project, directory.path()).unwrap();
+        assert_ne!(full.sound.left, full.sound.right);
+        let stem = render_project_scoped(
+            &project,
+            directory.path(),
+            RenderScope::Track { track_index: 0 },
+        )
+        .unwrap();
+        assert_eq!(stem.sound.left, full.sound.left);
+        assert_eq!(stem.sound.right, full.sound.right);
+
+        project.instruments[0].pan = -1.0;
+        let left_only = render_project(&project, directory.path()).unwrap();
+        assert!(left_only.sound.right.iter().all(|sample| *sample == 0.0));
+        assert!(
+            left_only
+                .sound
+                .left
+                .iter()
+                .any(|sample| sample.abs() > 0.01)
+        );
     }
 }

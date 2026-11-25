@@ -39,11 +39,110 @@ struct AuxModulation {
 
 pub(crate) struct VoiceState {
     oscillators: Vec<Vec<OscillatorState>>,
-    filter: FilterState,
-    dc_blocker: DcBlocker,
+    filter: [FilterState; 2],
+    dc_blocker: [DcBlocker; 2],
     sync_phases: Vec<f32>,
     modal_phases: Vec<f32>,
     note_pitch: u8,
+}
+
+struct VoiceFrameParams {
+    sweep_progress: f32,
+    pitch_multiplier: f32,
+    oscillator_mode: OscillatorMode,
+    oscillator_mix: f32,
+    pulse_width: f32,
+    sync_ratio: Option<f32>,
+    filter_envelope: Option<f32>,
+    filter_cutoff_octaves: f32,
+    filter_resonance: f32,
+    gain_scale: f32,
+}
+
+impl VoiceFrameParams {
+    fn compute(patch: &Patch, time: f32, gate_seconds: f32, controls: &VoiceControls) -> Self {
+        let sweep_progress = (time / patch.duration_seconds).min(1.0);
+        let amp_envelope = if patch.modal_one_shot {
+            1.0
+        } else {
+            patch
+                .envelope
+                .amplitude_with_inversion(time, gate_seconds, patch.invert_amp_envelope)
+        };
+        let aux = [patch.aux_envelope.as_ref(), patch.aux_envelope_2.as_ref()]
+            .into_iter()
+            .flatten()
+            .fold(AuxModulation::default(), |mut total, aux| {
+                let level = aux.envelope.amplitude(time, gate_seconds);
+                total.amplitude += aux.amplitude_depth * level;
+                total.pitch_cents += aux.pitch_depth_cents * level;
+                total.pulse_width += aux.pulse_width_depth * level;
+                total.sync_ratio += aux.sync_ratio_depth * level;
+                total.filter_cutoff_octaves += aux.filter_cutoff_depth_octaves * level;
+                total.filter_resonance += aux.filter_resonance_depth * level;
+                total.oscillator_mix += aux.oscillator_mix_depth * level;
+                total
+            });
+        let modulation = &controls.modulation;
+        let bend_semitones = controls.bend_semitones;
+        let glide_semitones = if patch.glide_seconds > 0.0 && time < patch.glide_seconds {
+            controls.glide_from_semitones * (1.0 - time / patch.glide_seconds)
+        } else {
+            0.0
+        };
+        let pitch_multiplier = 2.0_f32.powf(
+            (modulation.pitch_cents + aux.pitch_cents + (bend_semitones + glide_semitones) * 100.0)
+                / 1200.0,
+        );
+        let oscillator_mode = patch.effective_oscillator_mode();
+        let oscillator_mix = (modulation.oscillator_mix + aux.oscillator_mix).clamp(-1.0, 1.0);
+        let pulse_width = modulation.pulse_width + aux.pulse_width;
+        let sync_ratio = patch.uses_sync().then(|| {
+            let offset = modulation.sync_ratio + aux.sync_ratio;
+            let ratio = if patch
+                .sync
+                .as_ref()
+                .is_some_and(|sync| sync.modulation_octaves)
+            {
+                patch.sync_ratio() * 2.0_f32.powf(offset)
+            } else {
+                patch.sync_ratio() + offset
+            };
+            ratio.clamp(0.01, 16.0)
+        });
+        let filter_envelope = patch.filter.as_ref().map(|_| {
+            patch
+                .filter_envelope
+                .as_ref()
+                .unwrap_or(&patch.envelope)
+                .amplitude(time, gate_seconds)
+        });
+        let filter_cutoff_octaves = modulation.filter_cutoff_octaves
+            + aux.filter_cutoff_octaves
+            + patch.filter.as_ref().map_or(0.0, |filter| {
+                if filter.key_tracking {
+                    bend_semitones / 12.0 * filter.key_tracking_ratio
+                } else {
+                    0.0
+                }
+            });
+        let filter_resonance = modulation.filter_resonance + aux.filter_resonance;
+        let amplitude = (1.0 + modulation.amplitude + aux.amplitude).clamp(0.0, 1.0);
+        let gain_scale =
+            amp_envelope * patch.gain * amplitude * controls.pressure * controls.expression;
+        Self {
+            sweep_progress,
+            pitch_multiplier,
+            oscillator_mode,
+            oscillator_mix,
+            pulse_width,
+            sync_ratio,
+            filter_envelope,
+            filter_cutoff_octaves,
+            filter_resonance,
+            gain_scale,
+        }
+    }
 }
 
 impl VoiceState {
@@ -71,8 +170,8 @@ impl VoiceState {
                         .collect()
                 })
                 .collect(),
-            filter: FilterState::default(),
-            dc_blocker: DcBlocker::default(),
+            filter: [FilterState::default(), FilterState::default()],
+            dc_blocker: [DcBlocker::default(), DcBlocker::default()],
             sync_phases: vec![0.0; count],
             modal_phases: vec![0.0; patch.modal_partials.len()],
             note_pitch,
@@ -95,127 +194,119 @@ impl VoiceState {
         gate_seconds: f32,
         controls: VoiceControls,
     ) -> f32 {
+        self.sample_channels::<false>(patch, time, gate_seconds, controls)[0]
+    }
+
+    pub fn sample_stereo(
+        &mut self,
+        patch: &Patch,
+        time: f32,
+        gate_seconds: f32,
+        controls: VoiceControls,
+    ) -> [f32; 2] {
+        self.sample_channels::<true>(patch, time, gate_seconds, controls)
+    }
+
+    fn sample_channels<const STEREO: bool>(
+        &mut self,
+        patch: &Patch,
+        time: f32,
+        gate_seconds: f32,
+        controls: VoiceControls,
+    ) -> [f32; 2] {
         let sample_rate = patch.sample_rate;
-        let sweep_progress = (time / patch.duration_seconds).min(1.0);
-        let amp_envelope = if patch.modal_one_shot {
-            1.0
-        } else {
-            patch
-                .envelope
-                .amplitude_with_inversion(time, gate_seconds, patch.invert_amp_envelope)
-        };
-        let aux = [patch.aux_envelope.as_ref(), patch.aux_envelope_2.as_ref()]
-            .into_iter()
-            .flatten()
-            .fold(AuxModulation::default(), |mut total, aux| {
-                let level = aux.envelope.amplitude(time, gate_seconds);
-                total.amplitude += aux.amplitude_depth * level;
-                total.pitch_cents += aux.pitch_depth_cents * level;
-                total.pulse_width += aux.pulse_width_depth * level;
-                total.sync_ratio += aux.sync_ratio_depth * level;
-                total.filter_cutoff_octaves += aux.filter_cutoff_depth_octaves * level;
-                total.filter_resonance += aux.filter_resonance_depth * level;
-                total.oscillator_mix += aux.oscillator_mix_depth * level;
-                total
-            });
-        let modulation = controls.modulation;
-        let bend_semitones = controls.bend_semitones;
-        let glide_semitones = if patch.glide_seconds > 0.0 && time < patch.glide_seconds {
-            controls.glide_from_semitones * (1.0 - time / patch.glide_seconds)
-        } else {
-            0.0
-        };
-        let pitch_multiplier = 2.0_f32.powf(
-            (modulation.pitch_cents + aux.pitch_cents + (bend_semitones + glide_semitones) * 100.0)
-                / 1200.0,
-        );
-        let oscillator_mode = patch.effective_oscillator_mode();
-        let oscillator_mix = (modulation.oscillator_mix + aux.oscillator_mix).clamp(-1.0, 1.0);
-        let pulse_width = modulation.pulse_width + aux.pulse_width;
-        let sync_ratio = patch.uses_sync().then(|| {
-            let offset = modulation.sync_ratio + aux.sync_ratio;
-            let ratio = if patch
-                .sync
-                .as_ref()
-                .is_some_and(|sync| sync.modulation_octaves)
-            {
-                patch.sync_ratio() * 2.0_f32.powf(offset)
-            } else {
-                patch.sync_ratio() + offset
-            };
-            ratio.clamp(0.01, 16.0)
-        });
+        let params = VoiceFrameParams::compute(patch, time, gate_seconds, &controls);
         let count = self.oscillators.len();
-        let mut sample = 0.0;
+        let mut sample = [0.0_f32; 2];
         for (voice_index, states) in self.oscillators.iter_mut().enumerate() {
             let detune = patch.unison.as_ref().map_or(0.0, |unison| {
                 (voice_index as f32 - (count - 1) as f32 / 2.0) * unison.detune_cents
             });
-            let voice_pitch = pitch_multiplier * 2.0_f32.powf(detune / 1200.0);
-            let slave_pitch = sync_ratio.map_or(voice_pitch, |ratio| ratio * voice_pitch);
-            let mut voice_sample = 0.0;
+            let voice_pitch = params.pitch_multiplier * 2.0_f32.powf(detune / 1200.0);
+            let slave_pitch = params
+                .sync_ratio
+                .map_or(voice_pitch, |ratio| ratio * voice_pitch);
+            let mut voice_sample = [0.0_f32; 2];
             if matches!(
-                oscillator_mode,
+                params.oscillator_mode,
                 OscillatorMode::Ring | OscillatorMode::Ring2
             ) {
                 let mut oscillators = patch.oscillators.iter().zip(states.iter_mut());
                 let (a, a_state) = oscillators.next().expect("ring mode requires Osc A");
                 let (b, b_state) = oscillators.next().expect("ring mode requires Osc B");
-                let b_pitch = if oscillator_mode == OscillatorMode::Ring2 && patch.pitch_tracking {
-                    voice_pitch * 2.0_f32.powf((69.0 - f32::from(self.note_pitch)) / 12.0)
-                } else {
-                    voice_pitch
-                };
-                let a = a.sample(
+                let b_pitch =
+                    if params.oscillator_mode == OscillatorMode::Ring2 && patch.pitch_tracking {
+                        voice_pitch * 2.0_f32.powf((69.0 - f32::from(self.note_pitch)) / 12.0)
+                    } else {
+                        voice_pitch
+                    };
+                let a = Self::eval_oscillator::<STEREO>(
+                    a,
                     a_state,
-                    sweep_progress,
+                    params.sweep_progress,
                     sample_rate,
                     voice_pitch,
-                    pulse_width,
+                    params.pulse_width,
                 );
-                let b = b.sample(b_state, sweep_progress, sample_rate, b_pitch, pulse_width);
-                voice_sample = a * b
-                    + oscillators
-                        .map(|(oscillator, state)| {
-                            oscillator.sample(
-                                state,
-                                sweep_progress,
-                                sample_rate,
-                                voice_pitch,
-                                pulse_width,
-                            )
-                        })
-                        .sum::<f32>();
+                let b = Self::eval_oscillator::<STEREO>(
+                    b,
+                    b_state,
+                    params.sweep_progress,
+                    sample_rate,
+                    b_pitch,
+                    params.pulse_width,
+                );
+                voice_sample = [a[0] * b[0], a[1] * b[1]];
+                for (oscillator, state) in oscillators {
+                    let aux_sample = Self::eval_oscillator::<STEREO>(
+                        oscillator,
+                        state,
+                        params.sweep_progress,
+                        sample_rate,
+                        voice_pitch,
+                        params.pulse_width,
+                    );
+                    voice_sample[0] += aux_sample[0];
+                    if STEREO {
+                        voice_sample[1] += aux_sample[1];
+                    }
+                }
             } else {
                 for (index, (oscillator, state)) in
                     patch.oscillators.iter().zip(states.iter_mut()).enumerate()
                 {
-                    let multiplier =
-                        if sync_ratio.is_some() && (index > 0 || patch.oscillators.len() == 1) {
-                            slave_pitch
-                        } else {
-                            voice_pitch
-                        };
-                    let mix_gain = if oscillator_mode != OscillatorMode::Mix {
+                    let multiplier = if params.sync_ratio.is_some()
+                        && (index > 0 || patch.oscillators.len() == 1)
+                    {
+                        slave_pitch
+                    } else {
+                        voice_pitch
+                    };
+                    let mix_gain = if params.oscillator_mode != OscillatorMode::Mix {
                         1.0
                     } else {
                         match index {
-                            0 => 1.0 - oscillator_mix.max(0.0),
-                            1 => 1.0 + oscillator_mix.min(0.0),
+                            0 => 1.0 - params.oscillator_mix.max(0.0),
+                            1 => 1.0 + params.oscillator_mix.min(0.0),
                             _ => 1.0,
                         }
                     };
-                    voice_sample += oscillator.sample(
+                    let osc_sample = Self::eval_oscillator::<STEREO>(
+                        oscillator,
                         state,
-                        sweep_progress,
+                        params.sweep_progress,
                         sample_rate,
                         multiplier,
-                        pulse_width,
-                    ) * mix_gain;
+                        params.pulse_width,
+                    );
+                    voice_sample[0] += osc_sample[0] * mix_gain;
+                    if STEREO {
+                        voice_sample[1] += osc_sample[1] * mix_gain;
+                    }
                 }
             }
-            if sync_ratio.is_some() {
-                let sync_step = patch.oscillators[0].frequency(sweep_progress, voice_pitch)
+            if params.sync_ratio.is_some() {
+                let sync_step = patch.oscillators[0].frequency(params.sweep_progress, voice_pitch)
                     / sample_rate as f32;
                 let phase = &mut self.sync_phases[voice_index];
                 *phase = (*phase + sync_step).fract();
@@ -227,51 +318,100 @@ impl VoiceState {
                         .zip(states.iter_mut())
                         .skip(first_slave)
                     {
-                        voice_sample += oscillator.sync_correction(
+                        let correction = oscillator.sync_correction(
                             state,
                             *phase,
-                            sweep_progress,
+                            params.sweep_progress,
                             sample_rate,
                             slave_pitch,
-                            pulse_width,
+                            params.pulse_width,
                         );
+                        voice_sample[0] += correction;
+                        if STEREO {
+                            voice_sample[1] += correction;
+                        }
                         state.reset_phase(oscillator);
                     }
                 }
             }
-            sample += voice_sample / count as f32;
+            sample[0] += voice_sample[0] / count as f32;
+            if STEREO {
+                sample[1] += voice_sample[1] / count as f32;
+            }
         }
-        let fundamental = patch.oscillators[0].frequency(sweep_progress, pitch_multiplier);
+        let fundamental =
+            patch.oscillators[0].frequency(params.sweep_progress, params.pitch_multiplier);
         for (index, partial) in patch.modal_partials.iter().enumerate() {
             let frequency = fundamental * partial.ratio;
             let phase = self.modal_phases[index];
             let pitch_gain = 2.0_f32
                 .powf((60.0 - f32::from(self.note_pitch)) / 12.0 * partial.pitch_gain_per_octave);
-            sample += (phase * 2.0 * std::f32::consts::PI).sin()
+            let modal = (phase * 2.0 * std::f32::consts::PI).sin()
                 * partial.amplitude
                 * pitch_gain
                 * (-time / partial.decay_seconds).exp();
+            sample[0] += modal;
+            if STEREO {
+                sample[1] += modal;
+            }
             self.modal_phases[index] = (phase + frequency / sample_rate as f32).fract();
         }
+        let out0 = self.post_process_channel(patch, sample[0], 0, &params);
+        if STEREO {
+            [
+                out0,
+                self.post_process_channel(patch, sample[1], 1, &params),
+            ]
+        } else {
+            [out0, out0]
+        }
+    }
+
+    #[inline]
+    fn eval_oscillator<const STEREO: bool>(
+        oscillator: &crate::Oscillator,
+        state: &mut OscillatorState,
+        sweep_progress: f32,
+        sample_rate: u32,
+        pitch_multiplier: f32,
+        pulse_width: f32,
+    ) -> [f32; 2] {
+        if STEREO {
+            oscillator.sample_stereo(
+                state,
+                sweep_progress,
+                sample_rate,
+                pitch_multiplier,
+                pulse_width,
+            )
+        } else {
+            let value = oscillator.sample(
+                state,
+                sweep_progress,
+                sample_rate,
+                pitch_multiplier,
+                pulse_width,
+            );
+            [value, value]
+        }
+    }
+
+    fn post_process_channel(
+        &mut self,
+        patch: &Patch,
+        mut sample: f32,
+        channel: usize,
+        params: &VoiceFrameParams,
+    ) -> f32 {
+        let sample_rate = patch.sample_rate;
         if let Some(filter) = &patch.filter {
-            let filter_envelope = patch
-                .filter_envelope
-                .as_ref()
-                .unwrap_or(&patch.envelope)
-                .amplitude(time, gate_seconds);
             sample = filter.process(
                 sample,
-                &mut self.filter,
+                &mut self.filter[channel],
                 sample_rate,
-                filter_envelope,
-                modulation.filter_cutoff_octaves
-                    + aux.filter_cutoff_octaves
-                    + if filter.key_tracking {
-                        bend_semitones / 12.0 * filter.key_tracking_ratio
-                    } else {
-                        0.0
-                    },
-                modulation.filter_resonance + aux.filter_resonance,
+                params.filter_envelope.expect("filter envelope computed"),
+                params.filter_cutoff_octaves,
+                params.filter_resonance,
             );
         }
         if let Some(dc_block_hz) = patch
@@ -281,12 +421,9 @@ impl VoiceState {
             .map(|sync| sync.dc_block_hz)
             .filter(|cutoff_hz| *cutoff_hz > 0.0)
         {
-            sample = self
-                .dc_blocker
-                .process_with_cutoff(sample, sample_rate, dc_block_hz);
+            sample = self.dc_blocker[channel].process_with_cutoff(sample, sample_rate, dc_block_hz);
         }
-        let amplitude = (1.0 + modulation.amplitude + aux.amplitude).clamp(0.0, 1.0);
-        sample * (amp_envelope * patch.gain * amplitude * controls.pressure * controls.expression)
+        sample * params.gain_scale
     }
 }
 

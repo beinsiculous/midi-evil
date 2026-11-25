@@ -1,6 +1,8 @@
 use std::{fs, path::Path};
 
-use crate::{Error, RenderedSound, sample::MAX_SAMPLE_SECONDS, wav::downmix_interleaved};
+use crate::{
+    DecodedAudio, Error, RenderedSound, sample::MAX_SAMPLE_SECONDS, wav::deinterleave_audio,
+};
 
 #[derive(Clone, Copy)]
 enum Encoding {
@@ -17,8 +19,8 @@ struct CommonChunk {
     encoding: Encoding,
 }
 
-/// Read finite mono/stereo uncompressed AIFF/AIFC audio and downmix it to mono.
-pub fn read_mono_aiff(path: impl AsRef<Path>) -> Result<RenderedSound, Error> {
+/// Read finite mono/stereo uncompressed AIFF/AIFC audio, preserving stereo channels.
+pub fn read_aiff(path: impl AsRef<Path>) -> Result<DecodedAudio, Error> {
     let bytes = fs::read(path).map_err(|error| Error::InvalidAiff(error.to_string()))?;
     if bytes.len() < 12 || &bytes[0..4] != b"FORM" {
         return Err(invalid("AIFF audio needs a FORM header"));
@@ -73,6 +75,11 @@ pub fn read_mono_aiff(path: impl AsRef<Path>) -> Result<RenderedSound, Error> {
     let common = common.ok_or_else(|| Error::InvalidAiff("AIFF needs a COMM chunk".to_owned()))?;
     let sound = sound.ok_or_else(|| Error::InvalidAiff("AIFF needs an SSND chunk".to_owned()))?;
     decode(common, sound)
+}
+
+/// Read finite mono/stereo uncompressed AIFF/AIFC audio and downmix it to mono.
+pub fn read_mono_aiff(path: impl AsRef<Path>) -> Result<RenderedSound, Error> {
+    read_aiff(path).map(DecodedAudio::into_mono)
 }
 
 fn parse_common(data: &[u8], form: &[u8; 4]) -> Result<CommonChunk, Error> {
@@ -132,7 +139,7 @@ fn parse_common(data: &[u8], form: &[u8; 4]) -> Result<CommonChunk, Error> {
     })
 }
 
-fn decode(common: CommonChunk, sound: &[u8]) -> Result<RenderedSound, Error> {
+fn decode(common: CommonChunk, sound: &[u8]) -> Result<DecodedAudio, Error> {
     let bytes_per_sample = usize::from(common.bits_per_sample / 8);
     let sample_count = common
         .frames
@@ -153,14 +160,8 @@ fn decode(common: CommonChunk, sound: &[u8]) -> Result<RenderedSound, Error> {
         };
         samples.push(sample);
     }
-    let samples = downmix_interleaved(samples, common.channels);
-    if samples.iter().any(|sample| !sample.is_finite()) {
-        return Err(invalid("AIFF samples must be finite"));
-    }
-    Ok(RenderedSound {
-        samples,
-        sample_rate: common.sample_rate,
-    })
+    deinterleave_audio(samples, common.channels, common.sample_rate)
+        .map_err(|message| invalid(format!("AIFF {message}")))
 }
 
 fn pcm_sample(bytes: &[u8], bits: u16, little_endian: bool) -> f32 {
@@ -260,6 +261,9 @@ mod tests {
         let sound = read_mono_aiff(&aiff).unwrap();
         assert_eq!(sound.samples, vec![0.25, -0.25]);
         assert_eq!(sound.sample_rate, 48_000);
+        let stereo = read_aiff(&aiff).unwrap();
+        assert_eq!(stereo.samples, vec![0.5, -0.5]);
+        assert_eq!(stereo.right_samples, Some(vec![0.0, 0.0]));
 
         let aifc = directory.path().join("little.aifc");
         let mut pcm = Vec::new();
@@ -270,6 +274,9 @@ mod tests {
         let sound = read_mono_aiff(&aifc).unwrap();
         assert_eq!(sound.samples, vec![0.5, -0.5]);
         assert_eq!(sound.sample_rate, 44_100);
+        let mono = read_aiff(&aifc).unwrap();
+        assert_eq!(mono.samples, vec![0.5, -0.5]);
+        assert_eq!(mono.right_samples, None);
     }
 
     #[test]

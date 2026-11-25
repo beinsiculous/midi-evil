@@ -90,8 +90,8 @@ pub fn render_kit(kit: &DrumKit, hits: &[KitHit], sample_rate: u32) -> Result<St
         }
         let mut voice_mix = VoiceMix::default();
         for voice in &mut active {
-            if let Some(sample) = voice.next_sample() {
-                voice_mix.add(pads[voice.slot].as_ref().unwrap(), sample);
+            if let Some(frame) = voice.next_frame() {
+                voice_mix.add(pads[voice.slot].as_ref().unwrap(), frame);
             }
         }
         let mixed = buses.mix(voice_mix, kit.gain, sample_rate);
@@ -481,6 +481,70 @@ mod tests {
         for expected in offline.left {
             let actual = live.next_frame()[0].atanh();
             assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");
+        }
+    }
+
+    #[test]
+    fn stereo_pads_and_trg_buses_match_live_playback_sample_for_sample() {
+        use crate::{DrumBus, DrumFilter, DrumMachine};
+
+        let mut kit = DrumKit::empty("Stereo TRG");
+        kit.gain = 0.9;
+        kit.buses[0] = DrumBus {
+            filter: Some(DrumFilter {
+                cutoff_hz: 1_500.0,
+                resonance: 0.3,
+                ..DrumFilter::default()
+            }),
+            gain: 0.6,
+            pan: 0.0,
+            muted: false,
+        };
+        let mut pad = KitPad::new(DrumPad::new_stereo(
+            vec![0.6, 0.2, -0.4, 0.1],
+            vec![-0.3, 0.5, 0.2, -0.6],
+            48_000,
+        ));
+        pad.voice.gain = 0.75;
+        pad.voice.envelope.release_seconds = 0.0;
+        pad.voice.filter = Some(DrumFilter {
+            cutoff_hz: 2_500.0,
+            ..DrumFilter::default()
+        });
+        pad.bus_sends[0] = 0.5;
+        kit.pads[0] = Some(pad);
+
+        let offline = render_kit(
+            &kit,
+            &[KitHit {
+                pad_index: 0,
+                start_seconds: 0.0,
+                duration_seconds: None,
+                velocity: 110,
+            }],
+            48_000,
+        )
+        .unwrap();
+        assert_ne!(offline.left, offline.right);
+
+        let mut live = DrumMachine::default();
+        live.set_gain(kit.gain);
+        live.set_buses(kit.buses);
+        live.set_pad(
+            0,
+            Some(PreparedPad::new(kit.pads[0].as_ref().unwrap()).unwrap()),
+        );
+        live.set_input(1, 110, None, 120.0).unwrap();
+        for frame in 0..offline.left.len() {
+            let actual = live.next_frame().map(f32::atanh);
+            assert!(
+                (actual[0] - offline.left[frame]).abs() < 1e-5,
+                "left mismatch at {frame}"
+            );
+            assert!(
+                (actual[1] - offline.right[frame]).abs() < 1e-5,
+                "right mismatch at {frame}"
+            );
         }
     }
 }

@@ -63,16 +63,18 @@ impl BeatsPage {
                 }
                 Action::Import => {
                     let Some(path) = rfd::FileDialog::new()
-                        .add_filter("WAV audio", &["wav"])
+                        .add_filter("WAV / AIFF audio", &["wav", "aif", "aiff", "aifc"])
                         .pick_file()
                     else {
                         return Ok(());
                     };
-                    let voice = DrumPad::read_wav(&path).map_err(|e| e.to_string())?;
+                    let voice = DrumPad::read(&path).map_err(|e| e.to_string())?;
+                    let channels = if voice.is_stereo() { "stereo" } else { "mono" };
                     self.sample_undo = None;
                     self.kit.pads[self.selected] = Some(KitPad::new(voice));
                     self.dirty = true;
-                    self.message = format!("Loaded WAV into pad {:02}", self.selected + 1);
+                    self.message =
+                        format!("Loaded {channels} audio into pad {:02}", self.selected + 1);
                 }
                 Action::Crop | Action::Normalize => {
                     let Some(pad) = &mut self.kit.pads[self.selected] else {
@@ -157,15 +159,24 @@ impl BeatsPage {
                     else {
                         return Ok(());
                     };
-                    pad.voice
-                        .render(&[DrumHit {
-                            start_seconds: 0.0,
-                            duration_seconds: pad.gate_seconds,
-                            velocity: 127,
-                        }])
-                        .map_err(|e| e.to_string())?
-                        .write_wav(&path)
-                        .map_err(|e| e.to_string())?;
+                    let hit = [DrumHit {
+                        start_seconds: 0.0,
+                        duration_seconds: pad.gate_seconds,
+                        velocity: 127,
+                    }];
+                    if pad.voice.is_stereo() {
+                        pad.voice
+                            .render_stereo(&hit)
+                            .map_err(|e| e.to_string())?
+                            .write_wav(&path)
+                            .map_err(|e| e.to_string())?;
+                    } else {
+                        pad.voice
+                            .render(&hit)
+                            .map_err(|e| e.to_string())?
+                            .write_wav(&path)
+                            .map_err(|e| e.to_string())?;
+                    }
                     self.message = format!("Saved {}", path.display());
                 }
                 Action::Clear => {

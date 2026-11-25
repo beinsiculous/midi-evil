@@ -296,6 +296,36 @@ impl Oscillator {
         -0.5 * discontinuity * poly_blep(reset_phase, phase_step) * self.amplitude
     }
 
+    pub(crate) fn sample_stereo(
+        &self,
+        state: &mut OscillatorState,
+        sweep_progress: f32,
+        sample_rate: u32,
+        pitch_multiplier: f32,
+        pulse_width_offset: f32,
+    ) -> [f32; 2] {
+        if self.waveform == Waveform::Sample {
+            let Some(source) = self.sample_for_zone(state.sample_zone) else {
+                return [0.0, 0.0];
+            };
+            let playback_rate = self.frequency(sweep_progress, pitch_multiplier)
+                / source.root_frequency_hz
+                * source.sample_rate as f32
+                / sample_rate as f32;
+            let [left, right] = source.at_stereo(state.sample_position);
+            state.sample_position = source.advance(state.sample_position, f64::from(playback_rate));
+            return [left * self.amplitude, right * self.amplitude];
+        }
+        let mono = self.sample(
+            state,
+            sweep_progress,
+            sample_rate,
+            pitch_multiplier,
+            pulse_width_offset,
+        );
+        [mono, mono]
+    }
+
     pub(crate) fn sample(
         &self,
         state: &mut OscillatorState,

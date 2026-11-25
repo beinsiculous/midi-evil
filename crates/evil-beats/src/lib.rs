@@ -34,6 +34,8 @@ pub enum SampleDirection {
 pub struct DrumPad {
     pub name: String,
     pub samples: Vec<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right_samples: Option<Vec<f32>>,
     pub sample_rate: u32,
     pub gain: f32,
     pub tuning_semitones: f32,
@@ -58,6 +60,7 @@ impl DrumPad {
         Self {
             name: "Pad".to_owned(),
             samples,
+            right_samples: None,
             sample_rate,
             gain: 0.8,
             tuning_semitones: 0.0,
@@ -75,6 +78,17 @@ impl DrumPad {
         }
     }
 
+    pub fn new_stereo(left: Vec<f32>, right: Vec<f32>, sample_rate: u32) -> Self {
+        Self {
+            right_samples: Some(right),
+            ..Self::new(left, sample_rate)
+        }
+    }
+
+    pub fn is_stereo(&self) -> bool {
+        self.right_samples.is_some()
+    }
+
     /// The selected source region, with an exclusive end frame.
     pub fn playback_range(&self) -> Range<usize> {
         self.playback_start_frame..self.playback_end_frame.unwrap_or(self.samples.len())
@@ -88,7 +102,10 @@ impl DrumPad {
         if playback.start == 0 && playback.end == self.samples.len() {
             return Ok(false);
         }
-        self.samples = self.samples[playback].to_vec();
+        self.samples = self.samples[playback.clone()].to_vec();
+        if let Some(right) = &mut self.right_samples {
+            *right = right[playback].to_vec();
+        }
         self.playback_start_frame = 0;
         self.playback_end_frame = None;
         Ok(true)
@@ -98,15 +115,25 @@ impl DrumPad {
     /// Returns `false` for silence or an already unity-peak source.
     pub fn normalize(&mut self) -> Result<bool, Error> {
         self.validate()?;
-        let peak = self
+        let left_peak = self
             .samples
             .iter()
             .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+        let peak = self
+            .right_samples
+            .iter()
+            .flatten()
+            .fold(left_peak, |peak, sample| peak.max(sample.abs()));
         if peak == 0.0 || peak == 1.0 {
             return Ok(false);
         }
         for sample in &mut self.samples {
             *sample /= peak;
+        }
+        if let Some(right) = &mut self.right_samples {
+            for sample in right {
+                *sample /= peak;
+            }
         }
         self.validate()?;
         Ok(true)
@@ -122,12 +149,29 @@ impl DrumPad {
         tempo_bpm: f32,
     ) -> Result<bool, Error> {
         self.validate()?;
-        let mut processed = self.samples.clone();
-        evil_synth::apply_mono_insert(&mut processed, self.sample_rate, effect, tempo_bpm)?;
-        if processed == self.samples {
-            return Ok(false);
+        if let Some(existing_right) = &self.right_samples {
+            let mut left = self.samples.clone();
+            let mut right = existing_right.clone();
+            evil_synth::apply_stereo_insert(
+                &mut left,
+                &mut right,
+                self.sample_rate,
+                effect,
+                tempo_bpm,
+            )?;
+            if left == self.samples && right == *existing_right {
+                return Ok(false);
+            }
+            self.samples = left;
+            self.right_samples = Some(right);
+        } else {
+            let mut processed = self.samples.clone();
+            evil_synth::apply_mono_insert(&mut processed, self.sample_rate, effect, tempo_bpm)?;
+            if processed == self.samples {
+                return Ok(false);
+            }
+            self.samples = processed;
         }
-        self.samples = processed;
         self.validate()?;
         Ok(true)
     }
@@ -138,9 +182,14 @@ impl DrumPad {
                 "sample_rate must be 8000..=192000".to_owned(),
             ));
         }
-        if self.samples.is_empty() || self.samples.iter().any(|sample| !sample.is_finite()) {
+        if self.samples.is_empty()
+            || self.samples.iter().any(|sample| !sample.is_finite())
+            || self.right_samples.as_ref().is_some_and(|right| {
+                right.len() != self.samples.len() || right.iter().any(|sample| !sample.is_finite())
+            })
+        {
             return Err(Error::InvalidPad(
-                "samples must be nonempty and finite".to_owned(),
+                "samples must be nonempty, finite, and matched across channels".to_owned(),
             ));
         }
         let playback = self.playback_range();
@@ -184,31 +233,7 @@ impl DrumPad {
     /// Render independent, overlapping hits into one mono stream. `None` gates
     /// play the complete trimmed pad; looped hits need a finite gate.
     pub fn render(&self, hits: &[DrumHit]) -> Result<RenderedSound, Error> {
-        self.validate()?;
-        for (index, hit) in hits.iter().enumerate() {
-            hit.validate(index)?;
-        }
-
-        let pad = Arc::new(self.clone());
-        let mut scheduled = Vec::with_capacity(hits.len());
-        for (index, hit) in hits.iter().enumerate() {
-            let voice = voice::PlaybackVoice::new(
-                pad.clone(),
-                0,
-                0,
-                self.sample_rate,
-                hit.velocity,
-                hit.duration_seconds,
-            );
-            let duration = voice.duration_seconds().ok_or(Error::UngatedLoop(index))?;
-            if hit.start_seconds + duration > MAX_RENDER_SECONDS {
-                return Err(Error::RenderTooLong);
-            }
-            let start_frame = (hit.start_seconds * f64::from(self.sample_rate)).round() as usize;
-            scheduled.push((start_frame, index, voice));
-        }
-        scheduled.sort_by_key(|(start, index, _)| (*start, *index));
-
+        let scheduled = self.schedule_hits(hits)?;
         let mut output = Vec::new();
         let mut active: Vec<voice::PlaybackVoice> = Vec::with_capacity(voice::VOICE_LIMIT);
         let mut scheduled = scheduled.into_iter().peekable();
@@ -244,6 +269,82 @@ impl DrumPad {
             samples: output,
             sample_rate: self.sample_rate,
         })
+    }
+
+    /// Render independent, overlapping hits into discrete stereo output.
+    pub fn render_stereo(&self, hits: &[DrumHit]) -> Result<evil_synth::StereoSound, Error> {
+        let scheduled = self.schedule_hits(hits)?;
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        let mut active: Vec<voice::PlaybackVoice> = Vec::with_capacity(voice::VOICE_LIMIT);
+        let mut scheduled = scheduled.into_iter().peekable();
+        while !active.is_empty() || scheduled.peek().is_some() {
+            active.retain(|voice| !voice.is_finished());
+            if active.is_empty()
+                && let Some((start, _, _)) = scheduled.peek()
+                && *start > left.len()
+            {
+                left.resize(*start, 0.0);
+                right.resize(*start, 0.0);
+            }
+            let frame = left.len();
+            if frame as f64 >= MAX_RENDER_SECONDS * f64::from(self.sample_rate) {
+                return Err(Error::RenderTooLong);
+            }
+            while scheduled
+                .peek()
+                .is_some_and(|(start, _, _)| *start == frame)
+            {
+                let (_, _, voice) = scheduled.next().unwrap();
+                voice::allocate_voice(&mut active, voice);
+            }
+            let mut mixed = [0.0; 2];
+            for voice in &mut active {
+                if let Some(sample) = voice.next_frame() {
+                    mixed[0] += sample[0] * self.gain;
+                    mixed[1] += sample[1] * self.gain;
+                }
+            }
+            left.push(mixed[0]);
+            right.push(mixed[1]);
+            active.retain(|voice| !voice.is_finished());
+        }
+        Ok(evil_synth::StereoSound {
+            left,
+            right,
+            sample_rate: self.sample_rate,
+        })
+    }
+
+    fn schedule_hits(
+        &self,
+        hits: &[DrumHit],
+    ) -> Result<Vec<(usize, usize, voice::PlaybackVoice)>, Error> {
+        self.validate()?;
+        for (index, hit) in hits.iter().enumerate() {
+            hit.validate(index)?;
+        }
+
+        let pad = Arc::new(self.clone());
+        let mut scheduled = Vec::with_capacity(hits.len());
+        for (index, hit) in hits.iter().enumerate() {
+            let voice = voice::PlaybackVoice::new(
+                pad.clone(),
+                0,
+                0,
+                self.sample_rate,
+                hit.velocity,
+                hit.duration_seconds,
+            );
+            let duration = voice.duration_seconds().ok_or(Error::UngatedLoop(index))?;
+            if hit.start_seconds + duration > MAX_RENDER_SECONDS {
+                return Err(Error::RenderTooLong);
+            }
+            let start_frame = (hit.start_seconds * f64::from(self.sample_rate)).round() as usize;
+            scheduled.push((start_frame, index, voice));
+        }
+        scheduled.sort_by_key(|(start, index, _)| (*start, *index));
+        Ok(scheduled)
     }
 }
 
@@ -526,6 +627,61 @@ mod tests {
                 velocity: 0,
             }])
             .is_err()
+        );
+        assert!(
+            DrumPad::new_stereo(vec![0.0, 0.5], vec![0.0], 48_000)
+                .validate()
+                .is_err()
+        );
+        assert!(
+            DrumPad::new_stereo(vec![0.0], vec![f32::NAN], 48_000)
+                .validate()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn stereo_pad_crop_normalize_effect_and_render_preserve_both_channels() {
+        let mut pad = DrumPad::new_stereo(
+            vec![0.0, 0.25, -0.125, 0.0],
+            vec![0.0, -0.5, 0.25, 0.0],
+            8_000,
+        );
+        pad.gain = 1.0;
+        pad.envelope.release_seconds = 0.0;
+        pad.playback_start_frame = 1;
+        pad.playback_end_frame = Some(3);
+        let hit = DrumHit {
+            start_seconds: 0.0,
+            duration_seconds: None,
+            velocity: 127,
+        };
+        let trimmed = pad.render_stereo(&[hit]).unwrap();
+        assert_eq!(trimmed.left, [0.25, -0.125]);
+        assert_eq!(trimmed.right, [-0.5, 0.25]);
+        assert!(pad.crop_to_playback_range().unwrap());
+        assert_eq!(pad.samples, [0.25, -0.125]);
+        assert_eq!(pad.right_samples, Some(vec![-0.5, 0.25]));
+
+        assert!(pad.normalize().unwrap());
+        assert_eq!(pad.samples, [0.5, -0.25]);
+        assert_eq!(pad.right_samples, Some(vec![-1.0, 0.5]));
+        assert!(!pad.normalize().unwrap());
+
+        let effect = evil_synth::InsertEffect::Delay(evil_synth::Delay {
+            time_seconds: 0.00025,
+            feedback: 0.0,
+            mix: 1.0,
+            ..evil_synth::Delay::default()
+        });
+        assert!(pad.apply_effect(&effect, 120.0).unwrap());
+        assert_ne!(pad.samples, pad.right_samples.clone().unwrap());
+        assert_eq!(pad.samples.len(), pad.right_samples.as_ref().unwrap().len());
+        let stereo_out = pad.render_stereo(&[hit]).unwrap();
+        let mono_out = pad.render(&[hit]).unwrap();
+        assert_ne!(stereo_out.left, stereo_out.right);
+        assert!(
+            (mono_out.samples[0] - (stereo_out.left[0] + stereo_out.right[0]) * 0.5).abs() < 1e-6
         );
     }
 }

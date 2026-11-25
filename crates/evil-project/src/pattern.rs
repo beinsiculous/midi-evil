@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -201,6 +203,376 @@ impl Project {
         );
         track.parts.remove(part_index);
         Ok(())
+    }
+
+    /// Copy events from `source_pattern` that start within `target_pattern`'s length.
+    pub fn copy_pattern_events(
+        &mut self,
+        source_pattern: usize,
+        target_pattern: usize,
+    ) -> Result<usize, Error> {
+        if source_pattern >= self.patterns.len() || target_pattern >= self.patterns.len() {
+            return Err(invalid("pattern does not exist"));
+        }
+        if source_pattern == target_pattern {
+            return Err(invalid("source and target patterns must differ"));
+        }
+        let mut updated = self.clone();
+        let source = self.patterns[source_pattern].clone();
+        let target = &mut updated.patterns[target_pattern];
+        let target_length = target.length_ticks;
+        let mut copied = 0;
+
+        let notes: Vec<_> = source
+            .notes
+            .iter()
+            .filter(|note| note.start_tick < target_length)
+            .copied()
+            .collect();
+        copied += notes.len();
+        target.notes.extend(notes);
+
+        let bends: Vec<_> = source
+            .pitch_bends
+            .iter()
+            .filter(|event| event.tick < target_length)
+            .copied()
+            .collect();
+        copied += bends.len();
+        target.pitch_bends.extend(bends);
+
+        let pressure: Vec<_> = source
+            .aftertouch
+            .iter()
+            .filter(|event| event.tick < target_length)
+            .copied()
+            .collect();
+        copied += pressure.len();
+        target.aftertouch.extend(pressure);
+
+        let controllers: Vec<_> = source
+            .controllers
+            .iter()
+            .filter(|event| event.tick < target_length)
+            .copied()
+            .collect();
+        copied += controllers.len();
+        target.controllers.extend(controllers);
+
+        let mixer_automation: Vec<_> = source
+            .mixer_automation
+            .iter()
+            .filter(|event| event.tick < target_length)
+            .copied()
+            .collect();
+        copied += mixer_automation.len();
+        target.mixer_automation.extend(mixer_automation);
+
+        updated.validate()?;
+        *self = updated;
+        Ok(copied)
+    }
+
+    /// Remove patterns not referenced by any arrangement part and remap part indices.
+    pub fn remove_unused_patterns(&mut self) -> usize {
+        let mut used = vec![false; self.patterns.len()];
+        for track in &self.tracks {
+            for part in &track.parts {
+                if let Some(flag) = used.get_mut(part.pattern) {
+                    *flag = true;
+                }
+            }
+        }
+        let original_count = self.patterns.len();
+        let mut remap = vec![None; original_count];
+        let mut retained = Vec::new();
+        for (old_index, pattern) in self.patterns.drain(..).enumerate() {
+            if used[old_index] {
+                remap[old_index] = Some(retained.len());
+                retained.push(pattern);
+            }
+        }
+        self.patterns = retained;
+        for track in &mut self.tracks {
+            for part in &mut track.parts {
+                if let Some(new_index) = remap.get(part.pattern).copied().flatten() {
+                    part.pattern = new_index;
+                }
+            }
+        }
+        original_count - self.patterns.len()
+    }
+
+    /// Split an arrangement part at `split_tick`, keeping the rendered performance identical.
+    pub fn split_part(
+        &mut self,
+        track_index: usize,
+        part_index: usize,
+        split_tick: u64,
+    ) -> Result<(usize, usize), Error> {
+        let part = self.part(track_index, part_index)?;
+        let part_end = part
+            .start_tick
+            .checked_add(part.length_ticks)
+            .ok_or_else(|| invalid("part end tick exceeds the supported range"))?;
+        if split_tick <= part.start_tick || split_tick >= part_end {
+            return Err(invalid(
+                "split tick must fall strictly inside the arrangement part",
+            ));
+        }
+
+        let mut updated = self.clone();
+        let left_length = split_tick - part.start_tick;
+        let right_length = part_end - split_tick;
+        let pattern = &self.patterns[part.pattern];
+        let right_pattern = if left_length.is_multiple_of(pattern.length_ticks) {
+            part.pattern
+        } else {
+            let mut notes = Vec::new();
+            let mut pitch_bends = Vec::new();
+            let mut aftertouch = Vec::new();
+            let mut controllers = Vec::new();
+            let mut mixer_automation = Vec::new();
+            expand_part(
+                pattern,
+                part,
+                &mut notes,
+                &mut pitch_bends,
+                &mut aftertouch,
+                &mut controllers,
+                &mut mixer_automation,
+            );
+            notes.retain(|note| note.start_tick >= split_tick);
+            for note in &mut notes {
+                note.start_tick -= split_tick;
+            }
+            pitch_bends.retain(|event| event.tick >= split_tick);
+            for event in &mut pitch_bends {
+                event.tick -= split_tick;
+            }
+            aftertouch.retain(|event| event.tick >= split_tick);
+            for event in &mut aftertouch {
+                event.tick -= split_tick;
+            }
+            controllers.retain(|event| event.tick >= split_tick);
+            for event in &mut controllers {
+                event.tick -= split_tick;
+            }
+            mixer_automation.retain(|event| event.tick >= split_tick);
+            for event in &mut mixer_automation {
+                event.tick -= split_tick;
+            }
+            updated.add_pattern(Pattern {
+                name: format!("{} Split", pattern.name),
+                length_ticks: right_length,
+                notes,
+                pitch_bends,
+                aftertouch,
+                controllers,
+                mixer_automation,
+            })?
+        };
+
+        updated.tracks[track_index].parts[part_index].length_ticks = left_length;
+        updated.tracks[track_index].parts.insert(
+            part_index + 1,
+            Part {
+                pattern: right_pattern,
+                start_tick: split_tick,
+                length_ticks: right_length,
+            },
+        );
+        updated.validate()?;
+        *self = updated;
+        Ok((part_index, part_index + 1))
+    }
+
+    /// Join two arrangement parts on the same track into one new pattern without altering other parts.
+    pub fn join_parts(
+        &mut self,
+        track_index: usize,
+        first_part_index: usize,
+        second_part_index: usize,
+    ) -> Result<usize, Error> {
+        if first_part_index == second_part_index {
+            return Err(invalid("joining requires two distinct arrangement parts"));
+        }
+        let first = self.part(track_index, first_part_index)?;
+        let second = self.part(track_index, second_part_index)?;
+        let (earlier, later) =
+            if (first.start_tick, first_part_index) <= (second.start_tick, second_part_index) {
+                (first, second)
+            } else {
+                (second, first)
+            };
+        let earlier_end = earlier
+            .start_tick
+            .checked_add(earlier.length_ticks)
+            .ok_or_else(|| invalid("part end tick exceeds the supported range"))?;
+        let later_end = later
+            .start_tick
+            .checked_add(later.length_ticks)
+            .ok_or_else(|| invalid("part end tick exceeds the supported range"))?;
+        let joined_start = earlier.start_tick;
+        let joined_length = earlier_end.max(later_end) - joined_start;
+
+        let mut notes = Vec::new();
+        let mut pitch_bends = Vec::new();
+        let mut aftertouch = Vec::new();
+        let mut controllers = Vec::new();
+        let mut mixer_automation = Vec::new();
+        for part in [earlier, later] {
+            expand_part(
+                &self.patterns[part.pattern],
+                part,
+                &mut notes,
+                &mut pitch_bends,
+                &mut aftertouch,
+                &mut controllers,
+                &mut mixer_automation,
+            );
+        }
+        for note in &mut notes {
+            note.start_tick -= joined_start;
+        }
+        for event in &mut pitch_bends {
+            event.tick -= joined_start;
+        }
+        for event in &mut aftertouch {
+            event.tick -= joined_start;
+        }
+        for event in &mut controllers {
+            event.tick -= joined_start;
+        }
+        for event in &mut mixer_automation {
+            event.tick -= joined_start;
+        }
+        notes.sort_by_key(|note| (note.start_tick, note.pitch));
+        pitch_bends.sort_by_key(|event| event.tick);
+        aftertouch.sort_by_key(|event| event.tick);
+        controllers.sort_by_key(|event| event.tick);
+        mixer_automation.sort_by_key(|event| event.tick);
+
+        let mut updated = self.clone();
+        let joined_pattern = updated.add_pattern(Pattern {
+            name: format!(
+                "{} + {}",
+                self.patterns[earlier.pattern].name, self.patterns[later.pattern].name
+            ),
+            length_ticks: joined_length,
+            notes,
+            pitch_bends,
+            aftertouch,
+            controllers,
+            mixer_automation,
+        })?;
+        let keep_index = first_part_index.min(second_part_index);
+        let drop_index = first_part_index.max(second_part_index);
+        updated.tracks[track_index].parts[keep_index] = Part {
+            pattern: joined_pattern,
+            start_tick: joined_start,
+            length_ticks: joined_length,
+        };
+        updated.tracks[track_index].parts.remove(drop_index);
+        updated.validate()?;
+        *self = updated;
+        Ok(keep_index)
+    }
+
+    /// Move one arrangement part onto another track (or the same track) at `start_tick`.
+    pub fn move_part_to_track(
+        &mut self,
+        source_track_index: usize,
+        part_index: usize,
+        target_track_index: usize,
+        start_tick: u64,
+    ) -> Result<usize, Error> {
+        if target_track_index >= self.tracks.len() {
+            return Err(invalid("target track does not exist"));
+        }
+        let mut part = self.part(source_track_index, part_index)?;
+        part.start_tick = start_tick;
+        self.validate_part(part)?;
+        if source_track_index == target_track_index {
+            self.tracks[source_track_index].parts[part_index] = part;
+            return Ok(part_index);
+        }
+        self.tracks[source_track_index].parts.remove(part_index);
+        let new_index = self.tracks[target_track_index].parts.len();
+        self.tracks[target_track_index].parts.push(part);
+        Ok(new_index)
+    }
+
+    /// Atomically move multiple selected `(track_index, part_index)` parts across tracks/time.
+    /// Returns the new `(track_index, part_index)` coordinates in original selection order.
+    pub fn move_parts(
+        &mut self,
+        selections: &[(usize, usize)],
+        track_delta: isize,
+        tick_delta: i64,
+    ) -> Result<Vec<(usize, usize)>, Error> {
+        if selections.is_empty() {
+            return Err(invalid("select at least one arrangement part"));
+        }
+        let mut seen = BTreeSet::new();
+        let mut planned = Vec::with_capacity(selections.len());
+        for &(track_index, part_index) in selections {
+            if !seen.insert((track_index, part_index)) {
+                return Err(invalid("part selection contains duplicate entries"));
+            }
+            let mut part = self.part(track_index, part_index)?;
+            let target_track = isize::try_from(track_index)
+                .ok()
+                .and_then(|value| value.checked_add(track_delta))
+                .and_then(|value| usize::try_from(value).ok())
+                .filter(|&target| target < self.tracks.len())
+                .ok_or_else(|| invalid("target track is outside the track list"))?;
+            let target_tick = i128::from(part.start_tick) + i128::from(tick_delta);
+            if target_tick < 0 || target_tick > i128::from(u64::MAX) {
+                return Err(invalid(
+                    "target part start tick is outside the supported range",
+                ));
+            }
+            part.start_tick = target_tick as u64;
+            self.validate_part(part)?;
+            planned.push((track_index, part_index, target_track, part));
+        }
+
+        let mut updated = self.clone();
+        let mut removals: Vec<(usize, usize)> = selections.to_vec();
+        removals.sort_unstable_by(|left, right| right.cmp(left));
+        for (track_index, part_index) in removals {
+            updated.tracks[track_index].parts.remove(part_index);
+        }
+
+        let mut moved_positions = Vec::with_capacity(planned.len());
+        for (_, _, target_track, part) in planned {
+            let new_index = updated.tracks[target_track].parts.len();
+            updated.tracks[target_track].parts.push(part);
+            moved_positions.push((target_track, new_index));
+        }
+        updated.validate()?;
+        *self = updated;
+        Ok(moved_positions)
+    }
+
+    /// Return the bounding `[min_start, max_end)` tick range covering the selected parts.
+    pub fn parts_tick_range(&self, selections: &[(usize, usize)]) -> Result<(u64, u64), Error> {
+        if selections.is_empty() {
+            return Err(invalid("select at least one arrangement part"));
+        }
+        let mut min_start = u64::MAX;
+        let mut max_end = 0_u64;
+        for &(track_index, part_index) in selections {
+            let part = self.part(track_index, part_index)?;
+            let end_tick = part
+                .start_tick
+                .checked_add(part.length_ticks)
+                .ok_or_else(|| invalid("part end tick exceeds the supported range"))?;
+            min_start = min_start.min(part.start_tick);
+            max_end = max_end.max(end_tick);
+        }
+        Ok((min_start, max_end))
     }
 
     /// Copy unique events and parts starting in a section immediately after it.
@@ -443,5 +815,124 @@ mod tests {
         assert_eq!(project.tracks[0].parts[1].start_tick, 1440);
         assert_eq!(project.tracks[0].parts[1].length_ticks, 480);
         assert_eq!(project.tracks[0].parts[1].pattern, 0);
+    }
+
+    #[test]
+    fn copy_pattern_events_and_remove_unused_patterns_preserve_references() {
+        let mut project = project_with_part();
+        let source = project
+            .add_pattern(Pattern {
+                name: "Source".into(),
+                length_ticks: 960,
+                notes: vec![
+                    Note {
+                        start_tick: 60,
+                        duration_ticks: 60,
+                        pitch: 72,
+                        ..Note::default()
+                    },
+                    Note {
+                        start_tick: 600,
+                        duration_ticks: 60,
+                        pitch: 74,
+                        ..Note::default()
+                    },
+                ],
+                controllers: vec![ControllerEvent {
+                    tick: 120,
+                    controller: 1,
+                    value: 64,
+                }],
+                ..Pattern::default()
+            })
+            .unwrap();
+        let unused = project
+            .add_pattern(Pattern {
+                name: "Unused".into(),
+                ..Pattern::default()
+            })
+            .unwrap();
+        assert_eq!(unused, 2);
+        assert!(project.copy_pattern_events(source, source).is_err());
+        assert_eq!(project.copy_pattern_events(source, 0).unwrap(), 2);
+        assert_eq!(project.patterns[0].notes.len(), 2);
+        assert_eq!(project.patterns[0].notes[1].pitch, 72);
+        assert_eq!(project.patterns[0].controllers.len(), 1);
+
+        assert_eq!(project.remove_unused_patterns(), 2);
+        assert_eq!(project.patterns.len(), 1);
+        assert_eq!(project.tracks[0].parts[0].pattern, 0);
+    }
+
+    #[test]
+    fn split_and_join_parts_preserve_the_expanded_performance() {
+        let mut project = project_with_part();
+        let expected_before = project.to_performance().unwrap();
+
+        let (left, right) = project.split_part(0, 0, 960).unwrap();
+        assert_eq!((left, right), (0, 1));
+        assert_eq!(project.tracks[0].parts[0].pattern, 0);
+        assert_eq!(project.tracks[0].parts[1].pattern, 0);
+        assert_eq!(
+            project.to_performance().unwrap().tracks[0].notes,
+            expected_before.tracks[0].notes
+        );
+
+        let mut mid_cycle = project_with_part();
+        let expected_mid = mid_cycle.to_performance().unwrap();
+        assert!(mid_cycle.split_part(0, 0, 480).is_err());
+        let (left, right) = mid_cycle.split_part(0, 0, 720).unwrap();
+        assert_eq!((left, right), (0, 1));
+        assert_ne!(mid_cycle.tracks[0].parts[1].pattern, 0);
+        assert_eq!(
+            mid_cycle.to_performance().unwrap().tracks[0].notes,
+            expected_mid.tracks[0].notes
+        );
+
+        let joined = mid_cycle.join_parts(0, 0, 1).unwrap();
+        assert_eq!(joined, 0);
+        assert_eq!(mid_cycle.tracks[0].parts.len(), 1);
+        assert_eq!(
+            mid_cycle.to_performance().unwrap().tracks[0].notes,
+            expected_mid.tracks[0].notes
+        );
+        assert_eq!(
+            mid_cycle.to_performance().unwrap().tracks[0].mixer_automation,
+            expected_mid.tracks[0].mixer_automation
+        );
+    }
+
+    #[test]
+    fn cross_track_and_multi_part_moves_are_atomic_and_report_ranges() {
+        let mut project = project_with_part();
+        project.add_track(Track::default()).unwrap();
+        project.duplicate_part(0, 0).unwrap();
+        assert_eq!(
+            project.parts_tick_range(&[(0, 0), (0, 1)]).unwrap(),
+            (480, 2400)
+        );
+
+        let moved = project.move_part_to_track(0, 1, 1, 960).unwrap();
+        assert_eq!(moved, 0);
+        assert_eq!(project.tracks[0].parts.len(), 1);
+        assert_eq!(project.tracks[1].parts.len(), 1);
+        assert_eq!(project.tracks[1].parts[0].start_tick, 960);
+
+        let before = project.clone();
+        assert!(project.move_parts(&[(0, 0), (1, 0)], 0, -500).is_err());
+        assert!(project.move_parts(&[(0, 0), (1, 0)], 1, 0).is_err());
+        assert!(project.move_parts(&[(0, 0), (0, 0)], 0, 120).is_err());
+        assert_eq!(project, before);
+
+        let new_positions = project.move_parts(&[(0, 0), (1, 0)], 0, 120).unwrap();
+        assert_eq!(new_positions, vec![(0, 0), (1, 0)]);
+        assert_eq!(project.tracks[0].parts[0].start_tick, 600);
+        assert_eq!(project.tracks[1].parts[0].start_tick, 1080);
+
+        let cross = project.move_parts(&[(0, 0)], 1, -120).unwrap();
+        assert_eq!(cross, vec![(1, 1)]);
+        assert!(project.tracks[0].parts.is_empty());
+        assert_eq!(project.tracks[1].parts.len(), 2);
+        assert_eq!(project.tracks[1].parts[1].start_tick, 480);
     }
 }

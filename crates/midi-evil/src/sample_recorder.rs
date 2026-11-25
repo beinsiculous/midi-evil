@@ -37,12 +37,20 @@ impl RecordingBuffer {
         if self.interleaved.is_empty() {
             return Err("no microphone audio was captured".to_owned());
         }
-        let samples = self
-            .interleaved
-            .chunks(self.channels as usize)
-            .map(|frame| frame.iter().sum::<f32>() / frame.len() as f32)
-            .collect();
-        let mut sample = SampleOscillator::new(samples, self.sample_rate);
+        let mut sample = match self.channels {
+            1 => SampleOscillator::new(self.interleaved, self.sample_rate),
+            2 => {
+                let frame_count = self.interleaved.len() / 2;
+                let mut left = Vec::with_capacity(frame_count);
+                let mut right = Vec::with_capacity(frame_count);
+                for frame in self.interleaved.chunks_exact(2) {
+                    left.push(frame[0]);
+                    right.push(frame[1]);
+                }
+                SampleOscillator::new_stereo(left, right, self.sample_rate)
+            }
+            _ => return Err("microphone input must be mono or stereo".to_owned()),
+        };
         sample.name = "Microphone".to_owned();
         sample.validate().map_err(|error| error.to_string())?;
         Ok(sample)
@@ -149,18 +157,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn recording_buffer_downmixes_stereo_and_enforces_the_limit() {
+    fn recording_buffer_preserves_stereo_and_enforces_the_limit() {
         let mut buffer = RecordingBuffer::new(2, 8_000).unwrap();
         buffer.push_interleaved(&[0.5, 0.25, -0.5, 0.25]);
         let sample = buffer.finish().unwrap();
         assert_eq!(sample.name, "Microphone");
-        assert_eq!(sample.samples, vec![0.375, -0.125]);
+        assert_eq!(sample.samples, vec![0.5, -0.5]);
+        assert_eq!(sample.right_samples, Some(vec![0.25, 0.25]));
+        assert!(sample.is_stereo());
         assert_eq!(sample.sample_rate, 8_000);
 
         let mut buffer = RecordingBuffer::new(1, 8_000).unwrap();
         buffer.push_interleaved(&vec![0.25; 8_000 * 30 + 100]);
         assert_eq!(buffer.interleaved.len(), 8_000 * 30);
-        assert!(buffer.finish().is_ok());
+        let mono = buffer.finish().unwrap();
+        assert_eq!(mono.right_samples, None);
+        assert!(!mono.is_stereo());
     }
 
     #[test]

@@ -4,9 +4,39 @@ use hound::{SampleFormat, WavSpec, WavWriter};
 
 use crate::{Error, RenderedSound, StereoSound, sample::MAX_SAMPLE_SECONDS};
 
-/// Read finite mono/stereo PCM or float WAV audio and downmix it to mono.
+/// Decoded mono or stereo audio preserving discrete left/right channels when present.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DecodedAudio {
+    pub samples: Vec<f32>,
+    pub right_samples: Option<Vec<f32>>,
+    pub sample_rate: u32,
+}
+
+impl DecodedAudio {
+    pub fn is_stereo(&self) -> bool {
+        self.right_samples.is_some()
+    }
+
+    pub fn into_mono(self) -> RenderedSound {
+        let samples = match self.right_samples {
+            Some(right) => self
+                .samples
+                .into_iter()
+                .zip(right)
+                .map(|(left, right)| (left + right) * 0.5)
+                .collect(),
+            None => self.samples,
+        };
+        RenderedSound {
+            samples,
+            sample_rate: self.sample_rate,
+        }
+    }
+}
+
+/// Read finite mono/stereo PCM or float WAV audio, preserving stereo channels.
 /// Instrument sources share the 8–192 kHz and 30-second bounds.
-pub fn read_mono_wav(path: impl AsRef<Path>) -> Result<RenderedSound, Error> {
+pub fn read_wav(path: impl AsRef<Path>) -> Result<DecodedAudio, Error> {
     let mut reader = hound::WavReader::open(path)?;
     let spec = reader.spec();
     if !(1..=2).contains(&spec.channels) || !(8_000..=192_000).contains(&spec.sample_rate) {
@@ -29,23 +59,57 @@ pub fn read_mono_wav(path: impl AsRef<Path>) -> Result<RenderedSound, Error> {
                 .collect::<Result<_, _>>()?
         }
     };
-    let samples = downmix_interleaved(samples, spec.channels);
-    if samples.is_empty() || samples.iter().any(|sample| !sample.is_finite()) {
-        return Err(Error::InvalidWav(
-            "WAV samples must be nonempty and finite".to_owned(),
-        ));
-    }
-    Ok(RenderedSound {
-        samples,
-        sample_rate: spec.sample_rate,
-    })
+    deinterleave_audio(samples, spec.channels, spec.sample_rate)
+        .map_err(|message| Error::InvalidWav(format!("WAV {message}")))
 }
 
-pub(crate) fn downmix_interleaved(samples: Vec<f32>, channels: u16) -> Vec<f32> {
-    samples
-        .chunks(usize::from(channels))
-        .map(|frame| frame.iter().sum::<f32>() / frame.len() as f32)
-        .collect()
+/// Read finite mono/stereo PCM or float WAV audio and downmix it to mono.
+/// Instrument sources share the 8–192 kHz and 30-second bounds.
+pub fn read_mono_wav(path: impl AsRef<Path>) -> Result<RenderedSound, Error> {
+    read_wav(path).map(DecodedAudio::into_mono)
+}
+
+pub(crate) fn deinterleave_audio(
+    samples: Vec<f32>,
+    channels: u16,
+    sample_rate: u32,
+) -> Result<DecodedAudio, &'static str> {
+    if samples.is_empty() {
+        return Err("samples must be nonempty and finite");
+    }
+    match channels {
+        1 => {
+            if samples.iter().any(|sample| !sample.is_finite()) {
+                return Err("samples must be nonempty and finite");
+            }
+            Ok(DecodedAudio {
+                samples,
+                right_samples: None,
+                sample_rate,
+            })
+        }
+        2 => {
+            if !samples.len().is_multiple_of(2) {
+                return Err("stereo audio must contain complete left/right frames");
+            }
+            let frame_count = samples.len() / 2;
+            let mut left = Vec::with_capacity(frame_count);
+            let mut right = Vec::with_capacity(frame_count);
+            for frame in samples.chunks_exact(2) {
+                if !frame[0].is_finite() || !frame[1].is_finite() {
+                    return Err("samples must be nonempty and finite");
+                }
+                left.push(frame[0]);
+                right.push(frame[1]);
+            }
+            Ok(DecodedAudio {
+                samples: left,
+                right_samples: Some(right),
+                sample_rate,
+            })
+        }
+        _ => Err("audio must be mono or stereo"),
+    }
 }
 
 impl RenderedSound {
@@ -124,5 +188,51 @@ mod tests {
         assert_eq!(samples.len(), 4);
         assert!(samples[0] > 0 && samples[1] < 0);
         assert!(samples[2] < 0 && samples[3] > 0);
+    }
+
+    #[test]
+    fn read_wav_preserves_stereo_and_keeps_mono_single_channel() {
+        let directory = tempfile::tempdir().unwrap();
+        let stereo_path = directory.path().join("stereo.wav");
+        let mut writer = hound::WavWriter::create(
+            &stereo_path,
+            hound::WavSpec {
+                channels: 2,
+                sample_rate: 48_000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        for sample in [16_384_i16, -8_192, -16_384, 8_192] {
+            writer.write_sample(sample).unwrap();
+        }
+        writer.finalize().unwrap();
+        let decoded = super::read_wav(&stereo_path).unwrap();
+        assert_eq!(decoded.samples, vec![0.5, -0.5]);
+        assert_eq!(decoded.right_samples, Some(vec![-0.25, 0.25]));
+        assert!(decoded.is_stereo());
+        assert_eq!(
+            super::read_mono_wav(&stereo_path).unwrap().samples,
+            vec![0.125, -0.125]
+        );
+
+        let mono_path = directory.path().join("mono.wav");
+        let mut writer = hound::WavWriter::create(
+            &mono_path,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 48_000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        writer.write_sample(16_384_i16).unwrap();
+        writer.finalize().unwrap();
+        let mono = super::read_wav(&mono_path).unwrap();
+        assert_eq!(mono.samples, vec![0.5]);
+        assert_eq!(mono.right_samples, None);
+        assert!(!mono.is_stereo());
     }
 }
