@@ -13,6 +13,37 @@ set -u
 probes=$(cd "$(dirname "$0")" && pwd)
 repository=$(cd "$probes/../../.." && pwd)
 
+# The inner entry's guard. It runs before the inner entry's first bus call or child process and
+# refuses unless this shell is the child of dbus-run-session on a bus that is not the desktop's,
+# in the private runtime directory the outer half made and marked, with the in-memory settings
+# backend. Both earlier incidents were a launcher whose environment had slipped, and a check
+# made later, in the probe, would refuse only after the damage.
+verify_isolation() {
+    local refusal=
+    local parent_command
+    parent_command=$(cat "/proc/$PPID/comm" 2> /dev/null)
+    if [ "${GSETTINGS_BACKEND-}" != memory ]; then
+        refusal="the settings backend is not the in-memory one"
+    elif [ "$parent_command" != dbus-run-sessio ]; then
+        refusal="this shell was not started by dbus-run-session (its parent is '$parent_command')"
+    elif [ -z "${DBUS_SESSION_BUS_ADDRESS-}" ] \
+        || [ "$DBUS_SESSION_BUS_ADDRESS" = "${MIDI_EVIL_DESKTOP_BUS_ADDRESS-}" ] \
+        || [ -z "${MIDI_EVIL_DESKTOP_BUS_ADDRESS+set}" ] \
+        || [[ $DBUS_SESSION_BUS_ADDRESS == *"/run/user/"* ]]; then
+        refusal="the session bus is not one dbus-run-session made for this run"
+    elif [[ ${XDG_RUNTIME_DIR-} != /tmp/midi-evil-probe.* ]] \
+        || [ "$XDG_RUNTIME_DIR" != "${MIDI_EVIL_PRIVATE_RUNTIME-}" ] \
+        || [ ! -O "$XDG_RUNTIME_DIR" ] \
+        || [ -z "${MIDI_EVIL_PROBE_TOKEN-}" ] \
+        || [ "$(cat "$XDG_RUNTIME_DIR/isolation-token" 2> /dev/null)" != "$MIDI_EVIL_PROBE_TOKEN" ]; then
+        refusal="the runtime directory is not this run's private one"
+    fi
+    if [ -n "$refusal" ]; then
+        echo "run-probe: refuses to run: $refusal; nothing was started or changed" >&2
+        return 2
+    fi
+}
+
 inside_private_bus() {
     export XDG_DATA_HOME=$XDG_RUNTIME_DIR/data
     mkdir -p "$XDG_DATA_HOME"
@@ -28,7 +59,11 @@ inside_private_bus() {
     registry=$!
     export DISPLAY=$MIDI_EVIL_X_DISPLAY
     unset WAYLAND_DISPLAY
-    "$MIDI_EVIL_BINARY" "$MIDI_EVIL_FILE" > "$XDG_RUNTIME_DIR/application.log" 2>&1 &
+    # An empty ALSA configuration defines no device, so a gate that starts playback or a take
+    # can never sound on the desktop, and no MIDI port of the person's is opened.
+    : > "$XDG_RUNTIME_DIR/silent-asound.conf"
+    ALSA_CONFIG_PATH=$XDG_RUNTIME_DIR/silent-asound.conf \
+        "$MIDI_EVIL_BINARY" "$MIDI_EVIL_FILE" > "$XDG_RUNTIME_DIR/application.log" 2>&1 &
     application=$!
     # Globals, not locals: the trap runs after this function has returned. The outer cleanup
     # reads the same list in case this shell dies before its trap runs.
@@ -52,6 +87,7 @@ inside_private_bus() {
 
 if [ "${1-}" = --inside-private-bus ]; then
     shift
+    verify_isolation || exit 2
     inside_private_bus "$@"
     exit $?
 fi
@@ -80,6 +116,8 @@ desktop_display=${DISPLAY:?run-probe: DISPLAY is not set; it names the XWayland 
 # the runtime directory and a long path overflows a socket address. Being private, it is also why
 # this run can neither join nor disturb a MIDI Evil the person has open.
 private_runtime=$(mktemp -d /tmp/midi-evil-probe.XXXXXX) || exit 1
+isolation_token=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+echo "$isolation_token" > "$private_runtime/isolation-token"
 cleanup() {
     local started_pid
     for started_pid in $(cat "$private_runtime/started-pids" 2> /dev/null); do
@@ -94,6 +132,8 @@ trap cleanup EXIT
 # own settings. DISPLAY=:99 is a display that does not exist: given the real one, the launcher
 # would write its bus address onto the desktop's X root window.
 GSETTINGS_BACKEND=memory DISPLAY=:99 XDG_RUNTIME_DIR=$private_runtime \
+    MIDI_EVIL_PRIVATE_RUNTIME=$private_runtime MIDI_EVIL_PROBE_TOKEN=$isolation_token \
+    MIDI_EVIL_DESKTOP_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS-} \
     MIDI_EVIL_X_DISPLAY=$desktop_display MIDI_EVIL_REGISTRY=$registry_binary \
     MIDI_EVIL_BINARY=$binary MIDI_EVIL_FILE=$file \
     dbus-run-session -- "$0" --inside-private-bus "$@" 3>&2 2> "$private_runtime/session.log"

@@ -4,9 +4,19 @@ use eframe::egui::{self, RichText, TextureHandle};
 
 mod chrome;
 mod drafts;
+#[cfg(test)]
+mod key_dispatch_tests;
+#[cfg(test)]
+mod keyboard_model_tests;
 mod keyboard_page;
+mod keys;
+mod notes_view;
 mod recording;
 mod sounds;
+#[cfg(test)]
+mod test_harness;
+mod track_rack;
+mod undo;
 
 use crate::{
     mixer::{self, MixerState},
@@ -15,15 +25,17 @@ use crate::{
 };
 use evil_project::{Instrument, InstrumentSource, Project, Track};
 
+use crate::announcer::Announcer;
 use crate::art;
 use crate::automation::{self, AutomationState};
-use crate::history::EditorHistory;
+use crate::history::{EditorHistory, Snapshot};
 use crate::instance::SingleInstance;
 use crate::instruments::{portable_file_reference, rebase_project_sources};
 use crate::launch::LaunchOptions;
 use crate::patch_lab::{self, PatchLab};
 use crate::piano_roll::{self, RollState};
 use crate::preview::PreviewPlayer;
+use crate::regions::{self, Region};
 use crate::render_job::{RenderJob, WavExportQueue};
 use crate::transport::Transport;
 
@@ -53,9 +65,8 @@ pub struct StudioApp {
     mixer: MixerState,
     transport: Transport,
     instance: Option<SingleInstance>,
-    history: EditorHistory,
+    history: EditorHistory<undo::EditorSelection>,
     resetting_document: bool,
-    restoring_history: bool,
     saved_this_frame: Option<Project>,
     render_job: Option<RenderJob>,
     pending_render: Option<PendingRender>,
@@ -69,13 +80,19 @@ pub struct StudioApp {
     beats_binding: Option<(usize, String)>,
     recorder: Option<crate::recording::Recorder>,
     recording_started_at: Option<std::time::Instant>,
-    recording_snapshot: Option<Project>,
+    recording_snapshot: Option<Snapshot<undo::EditorSelection>>,
     record_quantize: bool,
     midi_input: crate::midi_input::MidiInput,
     pending_midi_notes: Vec<crate::keyboard::NoteEvent>,
     sounds: crate::instruments::SoundBrowser,
     recovery: crate::recovery::RecoveryWindow,
     drafts: drafts::SoundDrafts,
+    announcer: Announcer,
+    /// Counts the documents this window has held; a cursor never crosses from one to the next.
+    document: u64,
+    frame_start: Option<undo::FrameStart>,
+    held_gesture: Option<undo::HeldGesture>,
+    gestures_started: u64,
 }
 
 enum PendingRender {
@@ -148,7 +165,6 @@ impl StudioApp {
             instance,
             history: EditorHistory::default(),
             resetting_document: false,
-            restoring_history: false,
             saved_this_frame: None,
             render_job: None,
             pending_render: None,
@@ -169,6 +185,11 @@ impl StudioApp {
             sounds: crate::instruments::SoundBrowser::restore(storage),
             recovery: crate::recovery::RecoveryWindow::default(),
             drafts: drafts::SoundDrafts::default(),
+            announcer: Announcer::default(),
+            document: 0,
+            frame_start: None,
+            held_gesture: None,
+            gestures_started: 0,
         };
         app.add_track();
         app.dirty = false;
@@ -236,6 +257,7 @@ impl StudioApp {
     fn structural_edit_allowed(&mut self) -> bool {
         if self.recorder.is_some() {
             self.status = "Commit the current take before changing tracks".to_owned();
+            self.announcer.announce(self.status.clone());
             false
         } else {
             true
@@ -245,78 +267,6 @@ impl StudioApp {
     fn invalidate_beats_link(&mut self) {
         self.beats_binding = None;
         self.beats.clear_instrument_link();
-    }
-
-    fn reset_history(&mut self) {
-        self.beats.discard_draft();
-        self.history.clear();
-        self.mixer.last_analysis = None;
-        self.mixer.last_channel_meters.clear();
-        self.resetting_document = true;
-        self.saved_this_frame = None;
-    }
-
-    fn undo(&mut self) {
-        let target = if self.recorder.is_some() {
-            self.recording_snapshot.as_ref()
-        } else {
-            self.history.undo_target()
-        };
-        let preserve_drafts = self.history_preserves_sound_drafts(target);
-        if (self.history.can_undo() || self.recorder.is_some())
-            && !preserve_drafts
-            && !self.confirm_history_change()
-        {
-            return;
-        }
-        let recording_snapshot = self.recording_snapshot.clone();
-        if self.recorder.is_some() {
-            self.stop_preview();
-            if let Some(snapshot) = recording_snapshot {
-                self.history.record(snapshot);
-            }
-        }
-        if let Some(project) = self.history.undo(&self.project) {
-            if preserve_drafts {
-                self.stop_keyboard();
-                self.beats.stop();
-            } else {
-                self.clear_all_sound_drafts();
-            }
-            self.project = project;
-            self.invalidate_beats_link();
-            self.roll.clamp(&self.project);
-            self.sync_sound_drafts();
-            self.restoring_history = true;
-            self.dirty = true;
-            self.status = "Undo".to_owned();
-        }
-    }
-
-    fn redo(&mut self) {
-        if self.recorder.is_some() {
-            self.stop_preview();
-            return;
-        }
-        let preserve_drafts = self.history_preserves_sound_drafts(self.history.redo_target());
-        if self.history.can_redo() && !preserve_drafts && !self.confirm_history_change() {
-            return;
-        }
-        if let Some(project) = self.history.redo(&self.project) {
-            if preserve_drafts {
-                self.stop_keyboard();
-                self.beats.stop();
-            } else {
-                self.clear_all_sound_drafts();
-            }
-            self.project = project;
-            self.invalidate_beats_link();
-            self.roll.clamp(&self.project);
-            self.sync_sound_drafts();
-            self.restoring_history = true;
-            self.dirty = true;
-            self.status = "Redo".to_owned();
-        }
     }
 
     fn remove_selected_track(&mut self) {
@@ -370,8 +320,15 @@ impl StudioApp {
         }
     }
 
+    /// Whether anything would be lost, an edit still in progress included: a held key must not
+    /// let New or Open replace the project without asking.
+    fn unsaved_changes(&mut self) -> bool {
+        self.record_pending_edit();
+        self.dirty || self.recorder.is_some() || self.has_sound_drafts()
+    }
+
     fn can_discard_changes(&mut self) -> bool {
-        let unsaved = self.dirty || self.recorder.is_some() || self.has_sound_drafts();
+        let unsaved = self.unsaved_changes();
         if unsaved {
             self.stop_keyboard();
             self.beats.stop();
@@ -383,57 +340,6 @@ impl StudioApp {
                 .set_buttons(rfd::MessageButtons::YesNo)
                 .show()
                 == rfd::MessageDialogResult::Yes
-    }
-
-    fn shortcuts(&mut self, context: &egui::Context) {
-        let command =
-            |key| context.input(|input| input.modifiers.command && input.key_pressed(key));
-        if command(egui::Key::N) {
-            self.new_project();
-        }
-        if command(egui::Key::O) {
-            self.open_project();
-        }
-        if command(egui::Key::S) {
-            if self.view == View::Pads {
-                self.beats.save();
-                self.link_saved_beats_bank();
-            } else {
-                self.save_project();
-            }
-        }
-        if command(egui::Key::Z) && !context.input(|input| input.modifiers.shift) {
-            self.undo();
-        }
-        if command(egui::Key::Y) {
-            self.redo();
-        }
-        if context.input(|input| {
-            input.modifiers.command && input.modifiers.shift && input.key_pressed(egui::Key::Z)
-        }) {
-            self.redo();
-        }
-        if !context.egui_wants_keyboard_input() && !self.show_about {
-            if context
-                .input_mut(|input| input.consume_key(egui::Modifiers::ALT, egui::Key::ArrowLeft))
-            {
-                self.cycle_sound(true);
-            }
-            if context
-                .input_mut(|input| input.consume_key(egui::Modifiers::ALT, egui::Key::ArrowRight))
-            {
-                self.cycle_sound(false);
-            }
-        }
-        if !context.egui_wants_keyboard_input()
-            && context.input(|input| input.key_pressed(egui::Key::Space))
-        {
-            if self.preview.is_some() || self.render_job.is_some() {
-                self.stop_preview();
-            } else {
-                self.preview_project();
-            }
-        }
     }
 
     fn add_track(&mut self) {
@@ -846,28 +752,6 @@ impl StudioApp {
         self.beats_binding = None;
         self.project_path = Some(path);
         self.dirty = false;
-    }
-
-    fn finish_project_frame(&mut self, mut previous_project: Project, previous_base: &Path) {
-        let saved = self.saved_this_frame.take();
-        if self.resetting_document {
-            self.resetting_document = false;
-        } else {
-            if saved.is_some() {
-                // Save As changes the reference base, not the musical edit history.
-                rebase_project_sources(&mut previous_project, previous_base, self.patch_base());
-            }
-            if previous_project != self.project {
-                if !self.restoring_history {
-                    self.history.record(previous_project);
-                }
-                self.dirty = true;
-            }
-            if let Some(saved) = saved {
-                self.dirty = self.project != saved;
-            }
-        }
-        self.restoring_history = false;
     }
 
     fn relink_midi(&mut self) {
@@ -1384,31 +1268,6 @@ impl StudioApp {
         self.start_render(PendingRender::WavExport { current, queue });
     }
 
-    fn automation_panel(&mut self, ui: &mut egui::Ui) {
-        if self.project.tracks.is_empty() {
-            return;
-        }
-        egui::Panel::bottom("automation")
-            .resizable(true)
-            .default_size(220.0)
-            .min_size(150.0)
-            .max_size(360.0)
-            .show(ui, |ui| {
-                if automation::show(ui, &mut self.project, &mut self.automation, &self.roll) {
-                    self.dirty = true;
-                    let track = &self.project.tracks[self.roll.selected_track];
-                    let sequence: &dyn evil_project::EventSequence = self
-                        .roll
-                        .selected_part
-                        .and_then(|part| track.parts.get(part))
-                        .map_or(track as &dyn evil_project::EventSequence, |part| {
-                            &self.project.patterns[part.pattern]
-                        });
-                    self.status = automation::edit_status(sequence, &self.automation);
-                }
-            });
-    }
-
     fn poll_instance(&mut self, context: &egui::Context) {
         for _ in 0..4 {
             let message = match &self.instance {
@@ -1436,8 +1295,8 @@ impl eframe::App for StudioApp {
     }
 
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let previous_project = self.project.clone();
         let previous_base = self.patch_base().to_path_buf();
+        self.begin_project_frame();
         // Poll background renders, audio completion and incoming launch requests while idle.
         root.ctx()
             .request_repaint_after(std::time::Duration::from_millis(100));
@@ -1446,7 +1305,7 @@ impl eframe::App for StudioApp {
         self.poll_instance(root.ctx());
         self.poll_midi_input();
         self.sync_sound_drafts();
-        self.shortcuts(root.ctx());
+        self.dispatch_keys(root.ctx());
         if self
             .preview
             .as_ref()
@@ -1480,113 +1339,7 @@ impl eframe::App for StudioApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(theme::BACKGROUND).inner_margin(16))
             .show(root, |ui| {
-                if self.project.tracks.is_empty() && self.view != View::Pads {
-                    ui.centered_and_justified(|ui| {
-                        if ui.button("+ Add a track to begin composing").clicked() {
-                            self.add_track();
-                        }
-                    });
-                    return;
-                }
-                match self.view {
-                    View::Song => {
-                        let previous_transport = self.transport;
-                        let playhead_tick = self.song_playhead_tick();
-                        let allow_structural_edits = self.recorder.is_none();
-                        let result = workspace::song(
-                            ui,
-                            &mut self.project,
-                            &mut self.roll,
-                            &mut self.transport,
-                            playhead_tick,
-                            allow_structural_edits,
-                        );
-                        if result.edit_notes {
-                            self.view = View::Notes;
-                        }
-                        if let Some(status) = result.status {
-                            self.status = status;
-                        }
-                        if self.transport != previous_transport {
-                            self.stop_preview();
-                        }
-                    }
-                    View::Notes => {
-                        let track = &self.project.tracks[self.roll.selected_track];
-                        let part = self
-                            .roll
-                            .selected_part
-                            .filter(|part| *part < track.parts.len());
-                        let pattern = part.map(|part| track.parts[part].pattern);
-                        ui.horizontal(|ui| {
-                            ui.heading(&track.name);
-                            if let Some(pattern) = pattern {
-                                ui.label(
-                                    RichText::new(format!(
-                                        "/ {} (shared P{:03})",
-                                        self.project.patterns[pattern].name,
-                                        pattern + 1
-                                    ))
-                                    .color(theme::PURPLE),
-                                );
-                            }
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.toggle_value(&mut self.show_automation, "Automation");
-                                    if ui.button("Arranger").clicked() {
-                                        self.view = View::Song;
-                                    }
-                                },
-                            );
-                        });
-                        let context = piano_roll::RollContext::new(&self.project);
-                        let pattern_length =
-                            pattern.map(|index| self.project.patterns[index].length_ticks);
-                        let sequence: &mut dyn evil_project::EventSequence = match pattern {
-                            Some(index) => &mut self.project.patterns[index],
-                            None => &mut self.project.tracks[self.roll.selected_track],
-                        };
-                        if piano_roll::show(ui, context, sequence, &mut self.roll, pattern_length) {
-                            self.dirty = true;
-                            self.status = if pattern.is_some() {
-                                "Shared pattern edited; all linked parts were updated".to_owned()
-                            } else {
-                                "Unique timeline notes edited".to_owned()
-                            };
-                        }
-                    }
-                    View::Mixer => {
-                        let mut selected = self.roll.selected_track;
-                        let meter = self.preview.as_ref().map_or(
-                            crate::preview::MeterSnapshot::default(),
-                            PreviewPlayer::meter,
-                        );
-                        let channel_meters = self
-                            .preview
-                            .as_ref()
-                            .map_or_else(Vec::new, PreviewPlayer::channel_meters);
-                        mixer::mixer(
-                            ui,
-                            &mut self.project,
-                            &mut selected,
-                            &mut self.mixer,
-                            meter,
-                            &channel_meters,
-                        );
-                        if selected != self.roll.selected_track {
-                            self.select_sound_track(selected);
-                        }
-                    }
-                    View::Synth => self.patch_lab_panel(ui),
-                    View::Keyboard => self.keyboard_panel(ui),
-                    View::Pads => {
-                        self.sync_beats_instrument();
-                        let hits = self.beats.show(ui, self.project.tempo_bpm);
-                        self.link_saved_beats_bank();
-                        self.record_pad_hits(&hits);
-                    }
-                }
+                regions::group(ui, Region::Editor, |ui| self.editor(ui));
             });
         self.sync_sound_drafts();
         self.about_window(root.ctx());
@@ -1594,7 +1347,83 @@ impl eframe::App for StudioApp {
         if let Some(path) = self.recovery.show(root.ctx()) {
             self.open_project_path(&path);
         }
-        self.finish_project_frame(previous_project, &previous_base);
+        self.announcer.end_frame(root.ctx());
+        regions::end_frame(root.ctx());
+        self.roll.had_focus = self
+            .roll
+            .widget_id
+            .is_some_and(|roll| root.ctx().memory(|memory| memory.has_focus(roll)));
+        if let Some(start) = self.frame_start.take() {
+            self.finish_project_frame(start, &previous_base);
+        }
+    }
+}
+
+impl StudioApp {
+    fn editor(&mut self, ui: &mut egui::Ui) {
+        if self.project.tracks.is_empty() && self.view != View::Pads {
+            ui.centered_and_justified(|ui| {
+                if ui.button("+ Add a track to begin composing").clicked() {
+                    self.add_track();
+                }
+            });
+            return;
+        }
+        match self.view {
+            View::Song => {
+                let previous_transport = self.transport;
+                let playhead_tick = self.song_playhead_tick();
+                let allow_structural_edits = self.recorder.is_none();
+                let result = workspace::song(
+                    ui,
+                    &mut self.project,
+                    &mut self.roll,
+                    &mut self.transport,
+                    playhead_tick,
+                    allow_structural_edits,
+                );
+                if result.edit_notes {
+                    self.view = View::Notes;
+                }
+                if let Some(status) = result.status {
+                    self.status = status;
+                }
+                if self.transport != previous_transport {
+                    self.stop_preview();
+                }
+            }
+            View::Notes => self.notes_view(ui),
+            View::Mixer => {
+                let mut selected = self.roll.selected_track;
+                let meter = self.preview.as_ref().map_or(
+                    crate::preview::MeterSnapshot::default(),
+                    PreviewPlayer::meter,
+                );
+                let channel_meters = self
+                    .preview
+                    .as_ref()
+                    .map_or_else(Vec::new, PreviewPlayer::channel_meters);
+                mixer::mixer(
+                    ui,
+                    &mut self.project,
+                    &mut selected,
+                    &mut self.mixer,
+                    meter,
+                    &channel_meters,
+                );
+                if selected != self.roll.selected_track {
+                    self.select_sound_track(selected);
+                }
+            }
+            View::Synth => self.patch_lab_panel(ui),
+            View::Keyboard => self.keyboard_panel(ui),
+            View::Pads => {
+                self.sync_beats_instrument();
+                let hits = self.beats.show(ui, self.project.tempo_bpm);
+                self.link_saved_beats_bank();
+                self.record_pad_hits(&hits);
+            }
+        }
     }
 }
 
@@ -1619,9 +1448,11 @@ mod tests {
     fn command_shift_z_redoes_without_first_undoing_another_edit() {
         let context = egui::Context::default();
         let mut app = StudioApp::create(&context, None, LaunchOptions::default(), None);
-        app.history.record(app.project.clone());
+        app.history
+            .record(app.project.clone(), app.editor_selection(), None);
         app.project.name = "First edit".into();
-        app.history.record(app.project.clone());
+        app.history
+            .record(app.project.clone(), app.editor_selection(), None);
         app.project.name = "Second edit".into();
         app.undo();
         assert_eq!(app.project.name, "First edit");
@@ -1643,7 +1474,7 @@ mod tests {
                 }],
                 ..Default::default()
             },
-            |ui| app.shortcuts(ui.ctx()),
+            |ui| app.dispatch_keys(ui.ctx()),
         );
         assert_eq!(app.project.name, "Second edit");
     }
@@ -1666,7 +1497,8 @@ mod tests {
         app.project.instruments[0].source = InstrumentSource::Synth {
             patch: "lead.json".into(),
         };
-        app.history.record(app.project.clone());
+        app.history
+            .record(app.project.clone(), app.editor_selection(), None);
         app.project.tracks[0]
             .notes
             .push(evil_project::Note::default());

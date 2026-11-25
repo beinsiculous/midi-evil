@@ -6,7 +6,9 @@ re-run. They are half of each gate; the other half is a person listening with Or
 ## `atspi-probe.py` and `run-probe.sh` — the native application over AT-SPI
 
 `run-probe.sh` starts MIDI Evil, runs `atspi-probe.py` against it with the script's own
-arguments, stops everything it started, and exits with the probe's status. The probe finds the
+arguments, stops everything it started, and exits with the probe's status. `probe_support.py`
+beside them holds what the probe stands on: its isolation check, its event pump, and the sender
+that delivers keys to the application's own X window. The probe finds the
 application on the AT-SPI bus, then runs its steps in the order given: it performs actions on
 named nodes, delivers keys, checks what each step left, and prints the focused node and the
 application's accessibility events in the half second after each key. Run from the repository
@@ -27,6 +29,9 @@ Steps, run in command-line order:
 
 - `--press NAME` performs the first action (click) of the node with that name — this is how the
   probe switches views and presses toolbar buttons without a pointer.
+- `--press-in "REGION|NAME"` presses the node named NAME inside the node named REGION — a region
+  such as `Side panel` — for names two controls share. `--press` itself refuses a name that
+  several pressable nodes carry, so it can never silently press the other one.
 - `--focus NAME` gives that node focus through AT-SPI (AccessKit's Focus action). A gate does not
   use it to reach the roll: the roll is reached with F6, as a person would.
 - `--key CHORD` delivers a key: an X keysym name (`Tab`, `Left`, `Delete`, `Home`, `F6`, `a`) or
@@ -34,13 +39,38 @@ Steps, run in command-line order:
   (`shift+Tab`, `ctrl+Left`, `shift+F6`, `shift++`). Every chord is checked before the first is
   sent; a bad one stops the probe with one line on stderr. A keysym that sits on a key's shifted
   level (`+`, `A`) is sent with Shift added.
+- `--burst "CHORD CHORD …"` delivers several chords back to back with nothing pumped between.
+  Nothing outside the application can show they were read in one frame, so a burst row shows the
+  net result only; the one-frame ordering is proven by the crate's tests, which feed one frame by
+  construction: `two_keys_in_one_frame_act_in_the_order_they_arrived` and
+  `an_arrow_in_the_frame_after_f6_moves_the_cursor_and_focus_stays` (`app/keyboard_model_tests.rs`),
+  and `keys_after_a_tab_in_the_same_frame_never_edit_the_note_being_left`
+  (`app/key_dispatch_tests.rs`).
+- `--hold CHORD:REPEATS` presses a chord, sends REPEATS further presses of its key 40 ms apart
+  with no release between — winit reports each as a repeat — waits, then releases it. It records
+  the focused node's name changes while the key repeated and after the release, apart.
+- `--set-value LABEL:VALUE` sets the value box that belongs to the label LABEL — the first node
+  with a value among the label's following siblings, before the next caption — through AT-SPI's
+  Value interface, which AccessKit turns into the widget's SetValue action: the
+  note inspector's boxes are reached this way while they have no names of their own.
 - The expectations check what the last `--press`, `--focus` or `--key` left; several may follow
   one step. `--expect TEXT` fails the run unless the focused node's name contains TEXT;
   `--expect-not TEXT` fails if it does, **or if nothing is focused** — it exists to show focus went
   somewhere else. `--expect-same-name` fails unless a node is focused and its name is what it was
   before that step. `--expect-node TEXT` fails unless some node, focused or not, has a name
   containing TEXT. `--expect-announcement TEXT` fails unless an `object:announcement` raised
-  during that step contains TEXT. A failed expectation is one line on stderr and exit status 1.
+  during that step contains TEXT, and `--expect-announcement-count TEXT:COUNT` unless exactly
+  COUNT of them do. `--expect-region NAME` fails unless the focused node is inside a node named
+  NAME (the regions are named groups: Toolbar, Side panel, Editor); `--expect-description TEXT`
+  unless its description contains TEXT. `--expect-enabled NAME` and `--expect-disabled NAME` read
+  the enabled and sensitive states of the one node named NAME. AccessKit's AT-SPI adapter reports
+  a disabled state only for roles that can be read-only — text inputs, checkboxes, sliders, combo
+  boxes and the like — so a disabled *button* always reads enabled, and these steps cannot show it. After a `--hold`, `--expect-hold-name-changes COUNT` and
+  `--expect-release-name-changes COUNT` count the focused name's changes while the key repeated
+  and after its release; a step that was not a `--hold` leaves no counts, so these fail after
+  one. A failed expectation is one line on stderr and exit status 1. The new steps' arguments
+  (`--hold Up:5x`, a count that is not a number) are checked with the chords, before anything
+  runs, and a call the accessibility bus refuses is one line on stderr, not a traceback.
 - `--heading TEXT` prints a line into the transcript; `--dump` prints each node as role, name,
   description, value, text, focus states, actions and extents in window coordinates.
 
@@ -58,11 +88,19 @@ name and is itself pressable, so a guess would press the wrong one and say it ha
 
 ## `native-gate.sh` — the native gate's mechanical half
 
-Runs the plan's native gate (§ W0-native, *Gate*) through `run-probe.sh` and prints the
-transcript: the main sequence, then each edge, each in a fresh application. Every step the gate
-names carries an `--expect`, so exit status 0 means each key did what the gate says. The
-sequences assume the Bach fixture and the debug build's keyboard model; the other half of the gate
-is a person performing the same keys with Orca.
+Runs the native gate of W-A1a (plan § W-A1a, *Gate rows*) and prints the transcript: first the
+refusal rows — the inner entry with the desktop's own environment; one row per clause of its
+check, each with every other clause satisfied so only that clause can refuse; a control with all
+of them satisfied, which must get past the check; and the probe's own check called without the
+launcher — each requiring the desktop's screen-reader flag and settings files to be unchanged;
+then W0's sequence and its five edges, less the transport; then the rows found in W0's review,
+R-1 to R-10 and R-14 to R-20, each in a fresh application. Every step a row names carries an
+expectation, so exit status 0 means each key did what the row says. Rows that need a project of
+their own — two identical notes, a bass part, two tracks — write it as a small `.evil` file into a
+private temporary directory, removed on exit. What keys cannot show from outside (which of two
+identical notes a Delete took, a lane point clicked with a pointer) is proven by the crate's
+tests, and those rows say so in their titles. Each row is headed with the configuration it ran in;
+the other half of the gate is a person performing the same keys with Orca, Wayland-native.
 
 ```sh
 MIDI_EVIL_BINARY=/path/to/target/debug/midi-evil coordination/web/probes/native-gate.sh
@@ -110,6 +148,27 @@ Instead the script runs the application and the probe inside a private session b
 - The private bus runs with `DISPLAY=:99`, a display that does not exist: given the real one, its
   launcher would write its bus address onto the desktop's X root window. The application and the
   probe use the desktop's real `DISPLAY`.
+
+**It refuses to run outside that isolation, twice.** `run-probe.sh` has set the screen-reader
+flag, started a registry and launched the application before Python runs, so a check only in the
+probe would refuse after the damage. The launcher's inner entry therefore checks, before its first
+bus call or child process, and exits 2 with one line on stderr when any fails:
+
+- the settings backend is the in-memory one (`GSETTINGS_BACKEND=memory`);
+- its parent process is `dbus-run-session`;
+- its session bus is set, is not the desktop's (the address the outer half recorded), and is not
+  a per-user bus under `/run/user/`;
+- its runtime directory is a `/tmp/midi-evil-probe.*` directory, the one the outer half made,
+  owned by the person running it, holding the random token the outer half wrote.
+
+The probe checks again, before it sends anything: the settings backend; the runtime directory's
+name, that it is the outer half's, and its token; the session bus, as above; and — a clause only
+the probe has — that the accessibility bus is set and not under `/run/user/`. It does not repeat
+the launcher's parent check (its own parent is the inner shell) or the ownership check.
+
+**It makes no sound.** The application runs with `ALSA_CONFIG_PATH` naming an empty file in the
+private runtime directory: ALSA then defines no device, so a row that starts playback or a take
+cannot sound on the desktop, and no MIDI port of the person's is opened.
 
 **It cannot touch a live MIDI Evil.** A second instance hands its file to the first and exits —
 but only through the socket in its runtime directory, and this run's is private, so it can neither

@@ -41,11 +41,26 @@ credential configured"). Deepseek stood in, as the `roles` skill allows.
 | 13 | W-A1 section v2 | deepseek | 10 | 10 | 0 | 0 | "the toolbar's existing convention is `selected: Option<usize>` where `None` means every note … the second click either moves every note or does nothing" | 5:07 |
 | 14 | W-A1 section v3 | codex | 3 | 3 | 0 | 0 | "Delete followed by Ctrl+Z arrives before the next frame … `StudioApp::ui` currently runs global shortcuts before drawing the roll, so Undo restores the earlier project and cursor first, then the roll processes Delete" | 3:03 |
 | 14 | W-A1 section v3 | deepseek | 17 | 15 | 1 | 1 | "History is recorded at frame end by `finish_project_frame` … at a point where the only selection in reach is the twin" — one misread of a gate row's fixture, one rebutted on the plan's own order (W1 splits the crate) | 5:20 |
+| 15 | W-A1a code v1 (diff) | codex | 4 | 4 | 0 | 0 | "`dispatch_keys` sets `text_editing` from `egui_wants_keyboard_input()`, which in egui 0.35 returns true whenever **any widget** has focus" — Space and the Alt arrows dead once the roll took focus | 3:25 |
+| 15 | W-A1a code v1 (diff) | deepseek | 5 | 3 | 1 | 1 | "The new `dispatch_keys` loop acts on every `egui::Event::Key { pressed: true }`, including `repeat: true` events … Hold Enter: `RollCommand::Add` appends a one-beat note … on every repeat, while `Announcer::observe_key` deliberately … suppresses the \"Added.\" announcement" | 12:57 |
+| 15 | W-A1a probe v1 (diff) | gemini | 5 | 2 | 2 | 1 | hold counts never reset; two claims that the gate cannot run, refuted by it running | 7:38 |
+| 15 | W-A1a probe v1 (diff) | deepseek | 8 | 6 | 2 | 0 | "The new refusal row only ever exercises the first isolation clause" | 6:55 |
+| 16 | W-A1a code v2 (diff) | codex | 3 | 3 | 0 | 0 | "`holding_an_edit` … postpones that function while the key remains down. Press Ctrl+N before releasing it: `new_project()` checks `self.dirty` before any pending edit is recorded and replaces the project without prompting." | 3:06 |
+| 16 | W-A1a code v2 (diff) | deepseek | 5 | 5 | 0 | 0 | "the lane is focused and is not the roll, so `command_key` returns false for `Space`" | 16:50 |
+| 16 | W-A1a probe v2 (diff) | gemini | 5 | 2 | 3 | 0 | three "cannot run" claims refuted by the gate; `None` nodes and an empty burst accepted | 12:50 |
+| 16 | W-A1a probe v2 (diff) | deepseek | 9 | 4 | 5 | 0 | its three headline failures and two speculative ones all refuted by the passing gate; its half-point — "the row never actually shows the buttons are disabled" — led to the finding that AccessKit never reports a disabled button | 20:13 |
+| 17 | W-A1a undo and dispatch (excerpt) | codex | 3 | 2 | 0 | 0 | "`undo()` records A and restores it, but leaves `edit_batch.after_keys` containing B" — the fourth defect of one mechanism, which was then removed; its third finding was the planner's excerpt not building | — |
+| 18 | W-A1a code v4 (diff) | codex | 3 | 3 | 0 | 0 | "`restore_snapshot` restores Song view, but `dispatch_keys` retains the roll eligibility and focus cached before the loop. Enter therefore adds a note even though Notes is no longer active." | 3:09 |
+| 18 | W-A1a code v4 (diff) | deepseek | 5 | 3 | 1 | 1 | the view restore, objected to for the third time and this time accepted; the replayed-pass theory refuted from egui's source | 11:06 |
+| 19 | W-A1a code v5 (diff) | codex | 2 | 2 | 0 | 0 | "`ui.scroll_to_rect(note_rect, None)` considers the full scroll viewport visible, but drawing excludes the top 26 pixels for the ruler and the left 62 pixels for the keyboard" — "Mergeable after addressing F1 and F2" | 4:18 |
 
-Totals so far: codex 20 findings, 18 real, two refuted (both the same lockfile the planner had left
-out of the diff it was given); deepseek 102 findings, 95 real, three refuted, the rest rebutted on
-policy; gemini 41 findings, 28 real, eight refuted, five rebutted on policy. The web mechanism's
-one real hole was found by codex in under two minutes and by deepseek with the evidence for it;
-deepseek alone saw that the gate had passed it. Codex stays the narrow, fast, accurate one, deepseek
-the thorough one, and gemini the one whose claims need checking against the file before anything is
-done about them — a third of its findings on the web probe did not survive that.
+Totals so far: codex 47 findings, 44 real, two refuted (a lockfile left out of a diff) and one
+the planner's own excerpt; deepseek 178 findings, 158 real, thirteen refuted, the rest rebutted on
+policy; gemini 51 findings, 32 real, thirteen refuted. On production code the pattern sharpened:
+codex found, in three or four minutes a round, every defect that could lose a person's work — the
+dead shortcuts, the guard that waited on a key, the corrupted undo stack, the hidden roll; deepseek
+found the held-key repeats and the lanes, and was right three times about the view before it was
+listened to; on the probe, where a passing gate is the answer to "this cannot run", half of
+deepseek's and gemini's findings did not survive it. One lesson is the planner's: "a hold is one
+undo entry" was asked for without saying where the entry lives, and four review rounds went to a
+mechanism that should never have been built.

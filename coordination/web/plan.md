@@ -411,7 +411,8 @@ is the only evidence from the configuration people run.
      fields — are functions that return the new cursor. No reconciliation.
   2. **Undo and redo restore the cursor with the project.** `EditorHistory` (`history.rs`) keeps
      whole `Project` snapshots; each gains the editor's selection as it was — view, track, part,
-     cursor — and restoring a snapshot restores that selection. The selection stored with a
+     cursor — and restoring a snapshot restores that selection (less the view: see W-A1a's
+     outcome). The selection stored with a
      snapshot is the one captured **at the start of the frame, beside `previous_project`**
      (`finish_project_frame`, `app.rs:854-875`) — the selection that belonged to that project, not
      the one the edit left behind; the state being left is stored with *its* selection, so redo
@@ -467,7 +468,42 @@ is the only evidence from the configuration people run.
   already has Quantize, the transposes, Clean overlaps, Copy and Paste; it gains Earlier, Later,
   Shorter, Longer, Add and Delete, each calling the same edit as its chord.
 
-### W-A1a — the roll, the announcer, the regions
+### W-A1a — the roll, the announcer, the regions — DONE 2026-11-24
+
+Built by Claude Opus 5.5 over five passes; 419 tests, the native gate green three runs running, and
+Jesse's sitting passed: "yep it passes, speaking at rest is fine". What differed from the section
+below, and what it leaves the next two batches:
+
+- **Undo and redo do not restore the view.** The design's kind 2 said they would; that is
+  withdrawn. The workspace is where the person is, not what was selected — and restoring it let a
+  key later in the same frame edit a roll no longer shown. They restore track, part and cursor.
+- **One undo entry per hold is a rule of the history, not of the frame.** The first attempt
+  postponed the end-of-frame bookkeeping while a nudge was held, and four defects came out of it —
+  the unsaved-changes guard waiting on a key, batches spanning different keys, the toolbar's Undo
+  corrupting the stack, Save As recording an unrebased snapshot. `EditorHistory::record` now takes
+  the gesture an edit belongs to and does not push when the entry on top is the same gesture's; a
+  roll key's edit is recorded in the dispatch, at that key; every frame ends as it always did.
+  Left as it is: a hold that crosses a Save As is two entries.
+- **A repeat is not a new command.** Only the cursor's moves and the nudges act on a key's repeats.
+- **The dispatch asks whether a text field is being edited**, not whether anything has focus, and a
+  focused text field keeps its own undo; nothing is claimed behind an open menu or window; keys
+  after a Tab in the same frame do not reach the editor being left.
+- **R-17's first fixture was wrong** — moving C 5 onto B 4's start re-sorts nothing; the gate moves
+  B 4 before C 5 instead. **R-7's first press publishes its name**; the hold begins at the first
+  repeat.
+- **The transport chord is plain `I`.** The lanes are named ("Automation lane, Pitch bend,
+  1 point") and take focus on click.
+- **egui does not replay a frame's keys on a second pass** (`RawInput::take` moves them out,
+  `data/input/raw_input.rs:117-137`), so no pass guard was needed.
+- **For W-A1b: a disabled button is never reported disabled.** AccessKit's AT-SPI adapter reports
+  that state only for roles that can be read-only (`accesskit_atspi_common-0.18.1/src/node.rs:350`);
+  every greyed-out button in the application reaches Orca as available. W-A1b gives each disabled
+  button a description saying why — pending Jesse's ruling between that and leaving it upstream's.
+- **For W-A1c:** the arranger's own `allow_structural_edits` checks move to the command boundary
+  with the arranger's keys; `describe_part` and `describe_track` are written when something calls
+  them.
+- **The probe** waits for a node it is about to press and for a name it expects, after one gate
+  run in four lost two rows to a half-second window on a loaded desktop.
 
 **Files:** `speech.rs`, `announcer.rs`, `regions.rs` (new); `piano_roll.rs` (687 lines — the cursor
 and the edits go to a new `piano_roll/cursor.rs` and `piano_roll/edits.rs`, so no file passes 600);
