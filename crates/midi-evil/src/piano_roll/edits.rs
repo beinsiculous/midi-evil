@@ -6,6 +6,8 @@
 use eframe::egui;
 use evil_project::Note;
 
+pub use crate::key_help::ChordModifier;
+
 pub const MAX_PITCH: u8 = 127;
 pub const MIDDLE_C: u8 = 60;
 pub const DEFAULT_NOTE_VELOCITY: u8 = 100;
@@ -29,14 +31,6 @@ pub enum RollCommand {
     Delete,
     ClearSelection,
     ReadTransport,
-}
-
-/// The modifier half of a chord. `Command` is Control, or Command on macOS.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChordModifier {
-    None,
-    Shift,
-    Command,
 }
 
 impl RollCommand {
@@ -88,15 +82,7 @@ impl RollCommand {
     /// The command a key press means, if the roll takes it. Modifiers must match exactly, so
     /// Right and Control+Right are never confused.
     pub fn from_key(key: egui::Key, modifiers: egui::Modifiers) -> Option<Self> {
-        let modifier = if modifiers.is_none() {
-            ChordModifier::None
-        } else if modifiers.shift_only() {
-            ChordModifier::Shift
-        } else if modifiers.command_only() {
-            ChordModifier::Command
-        } else {
-            return None;
-        };
+        let modifier = ChordModifier::of_editor_press(modifiers)?;
         Self::ALL
             .into_iter()
             .find(|command| command.chord() == (modifier, key))

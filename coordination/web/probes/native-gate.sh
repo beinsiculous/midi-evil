@@ -1,8 +1,9 @@
 #!/bin/bash
-# Runs the native screen-reader gate's mechanical half for W-A1a and W-A1b (plan § W-A1a and
-# § W-A1b, Gate rows): the refusal rows first, then W0's whole sequence, the transport's step
-# included, and its five edges, then R-1 to R-22, every sequence in a fresh application through
-# run-probe.sh, and prints the transcript. Every
+# Runs the native screen-reader gate's mechanical half for W-A1 (plan § W-A1a, § W-A1b and
+# § W-A1c): the refusal rows first, then W0's whole sequence, the transport's step included, and
+# its five edges, then R-1 to R-22, then the record's nine steps, the per-surface sequences and a
+# row for each announced command that needs no dialog, every sequence in a fresh application
+# through run-probe.sh, and prints the transcript. Every
 # step a row names carries an expectation, so a run that exits 0 is a run in which each key did
 # what the row says. What keys cannot show from outside — which of two identical notes a Delete
 # took, a lane point clicked with a pointer — the crate's unit and integration tests prove; those
@@ -345,6 +346,7 @@ run_with same-pitch-overlap "R-17, second fixture: a same-pitch overlap that Cle
     --press "PIANO ROLL" "${reach_roll[@]}" \
     --key Right --expect "Piano roll, C 4, bar 1 beat 1, 2 beats" \
     --press "Clean overlaps" --expect-node "Unique timeline notes edited" \
+    --expect-announcement "Cleaned the overlaps of all 2 notes." \
     --key F6 --key F6 --key F6 --expect "Piano roll, C 4, bar 1 beat 1, 1 beat"
 
 # --burst sends its chords back to back, but nothing outside the application can show they were
@@ -451,6 +453,18 @@ run "The instrument list: Alt+Right and Alt+Left announce the sound a track now 
     --key F6 --key alt+Right --expect-announcement " 8 of 12 synth sounds" \
     --expect-node "Sound: " --expect-same-name \
     --key alt+Left --expect-announcement "Lead, 7 of 12 synth sounds"
+
+################ the arranger, the track panel, the files and the record's nine steps
+# Without set -e a missing or broken file would leave failed at 0 and these rows unrun, so the
+# file's last line is checked for.
+arranger_and_files_rows_ran=
+# shellcheck source=native-gate-arranger-and-files.sh
+source "$probes/native-gate-arranger-and-files.sh"
+if [ -z "$arranger_and_files_rows_ran" ]; then
+    echo
+    echo "################ FAILED: native-gate-arranger-and-files.sh is missing or did not run to its end"
+    failed=1
+fi
 
 echo
 if [ "$failed" -ne 0 ]; then

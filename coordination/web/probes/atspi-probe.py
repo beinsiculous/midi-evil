@@ -36,7 +36,9 @@ from probe_support import (  # noqa: E402
     ancestor_names,
     check_step_arguments,
     wait_for_node,
+    SETTLE_SECONDS,
     WindowKeySender,
+    open_in_running,
     poll,
     pump_events,
     verify_isolation,
@@ -341,6 +343,15 @@ def run(arguments):
             chord_text, _, text = value.partition("|")
             key_until(application, sender, chords[chord_text], text, recorder, expectations,
                       arguments.wait)
+        elif kind == "open_in_running":
+            expectations.before_step()
+            open_in_running(value, arguments.wait)
+            # The hand-over is heard when the running instance opens the file, at its next frame;
+            # wait for that announcement, so this step's own events hold it.
+            poll(SETTLE_SECONDS, lambda: recorder.announcements or None)
+            pump_events(EVENT_WINDOW_SECONDS)
+            print_focus(application, f"after a second launch handed over {value!r}")
+            recorder.print_and_clear()
         elif kind == "dump":
             for path, accessible in walk(application):
                 print("  " * len(path) + describe_if_present(accessible))
@@ -417,6 +428,9 @@ def main():
                        help="give focus to the node with this name through AT-SPI")
     steps.add_argument("--set-value", action=StepAction, metavar="NAME:VALUE",
                        help="set the value box named NAME to VALUE, without moving focus")
+    steps.add_argument("--open-in-running", action=StepAction, metavar="FILE",
+                       help="launch the application again with FILE, which hands it to the "
+                            "instance under test")
     steps.add_argument("--pause", action=StepAction, metavar="SECONDS",
                        help="wait, recording the application's events")
     steps.add_argument("--key-until", action=StepAction, metavar="CHORD|TEXT",

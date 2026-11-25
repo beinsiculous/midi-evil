@@ -159,6 +159,12 @@ impl Harness {
         );
     }
 
+    /// A key, then the frame its name waits for.
+    pub(super) fn key(&mut self, event: egui::Event) {
+        self.run(vec![event]);
+        self.run(vec![]);
+    }
+
     /// F6 until the roll has focus: three presses from nothing focused, fewer from a region.
     pub(super) fn focus_roll(&mut self) {
         for _ in 0..3 {

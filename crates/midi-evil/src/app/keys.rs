@@ -2,8 +2,11 @@
 //! focused editor when that editor takes the chord and to the application's commands when not,
 //! and is consumed by whoever handled it. Running the global commands first and the editors
 //! after would turn Delete then Control+Z, arriving in one frame, into an undo then a delete.
+//! The application's editors are the piano roll and the arranger; at most one is shown.
 
 use super::*;
+use crate::arranger::edits::SongCommand;
+use crate::key_help::AppCommand;
 use crate::piano_roll::{
     EditedSequence,
     edits::{Outcome, RollCommand},
@@ -19,9 +22,16 @@ impl StudioApp {
         let mut roll = self.roll.widget_id.filter(|_| {
             self.view == View::Notes && !self.project.tracks.is_empty() && !behind_a_popup
         });
+        let mut song = self.song.widget_id.filter(|_| {
+            self.view == View::Song && !self.project.tracks.is_empty() && !behind_a_popup
+        });
         let mut focused = context.memory(|memory| memory.focused());
-        if self.held_gesture.is_some() && (roll.is_none() || focused != roll) {
-            // Focus left the roll; whatever the held key does next is not the roll's gesture.
+        let editor_focused =
+            |focused: Option<egui::Id>, roll: Option<egui::Id>, song: Option<egui::Id>| {
+                focused.is_some() && (focused == roll || focused == song)
+            };
+        if self.held_gesture.is_some() && !editor_focused(focused, roll, song) {
+            // Focus left the editor; whatever the held key does next is not its gesture.
             self.end_gesture();
         }
         if roll.is_some() && focused.is_none() && self.roll.had_focus && self.roll_has_cursor() {
@@ -47,7 +57,7 @@ impl StudioApp {
         // editor that does not claim a chord leaves it to the application.
         let text_editing = context.text_edit_focused();
         let mut handled = vec![false; events.len()];
-        let mut last_focus_move_was_the_rolls = false;
+        let mut last_focus_move_was_an_editors = false;
         for (position, event) in events.iter().enumerate() {
             let egui::Event::Key {
                 key,
@@ -66,20 +76,23 @@ impl StudioApp {
                 continue;
             }
             if moves_egui_focus(key, modifiers) {
-                last_focus_move_was_the_rolls = false;
+                last_focus_move_was_an_editors = false;
             }
             let roll_focused = roll.is_some() && focused == roll;
+            let song_focused = song.is_some() && focused == song;
             let roll_command = RollCommand::from_key(key, modifiers).filter(|_| roll_focused);
+            let song_command = SongCommand::from_key(key, modifiers).filter(|_| song_focused);
             self.track_gesture(
                 key,
                 modifiers,
                 true,
                 repeat,
-                roll_command.is_some_and(RollCommand::repeats_when_held),
+                roll_command.is_some_and(RollCommand::repeats_when_held)
+                    || song_command.is_some_and(SongCommand::repeats_when_held),
             );
             if key == egui::Key::Tab && (modifiers.is_none() || modifiers.shift_only()) {
-                // Focus leaves at the end of the frame; nothing after the Tab is the roll's.
-                if roll_focused {
+                // Focus leaves at the end of the frame; nothing after the Tab is the editor's.
+                if roll_focused || song_focused {
                     focused = None;
                 }
                 continue;
@@ -100,8 +113,18 @@ impl StudioApp {
                 // roll or fill it, one repeat at a time.
                 if !repeat || command.repeats_when_held() {
                     self.roll_key(command);
-                    last_focus_move_was_the_rolls |= moves_egui_focus(key, modifiers);
+                    last_focus_move_was_an_editors |= moves_egui_focus(key, modifiers);
                 }
+                handled[position] = true;
+                continue;
+            }
+            if let Some(command) = song_command {
+                // A held key repeats a move or a nudge; a held Delete would empty the track.
+                if (!repeat || command.repeats_when_held()) && self.song_key(command) {
+                    // Opened in the roll: nothing after it in this frame is the arranger's.
+                    song = None;
+                }
+                last_focus_move_was_an_editors |= moves_egui_focus(key, modifiers);
                 handled[position] = true;
                 continue;
             }
@@ -109,7 +132,9 @@ impl StudioApp {
                 // Space is the transport's unless the focused widget acts on Space itself: a
                 // button or a checkbox does; the application's own editors do not.
                 let space_is_free = focused.is_none_or(|widget| {
-                    roll_focused || crate::custom_editors::was_registered(context, widget)
+                    roll_focused
+                        || song_focused
+                        || crate::custom_editors::was_registered(context, widget)
                 });
                 let showing =
                     piano_roll::sequence_context(&self.project, &self.roll, self.document);
@@ -126,6 +151,9 @@ impl StudioApp {
                 {
                     roll = None;
                 }
+                if handled[position] && (self.view != view || self.project.tracks.is_empty()) {
+                    song = None;
+                }
                 if handled[position] {
                     focused = context.memory(|memory| memory.focused());
                 }
@@ -139,9 +167,9 @@ impl StudioApp {
                 keep
             });
         });
-        if last_focus_move_was_the_rolls {
-            // egui chose a direction to move focus from this frame's keys before the roll could
-            // claim them; on the frame focus arrives its focus-lock filter is not yet in force.
+        if last_focus_move_was_an_editors {
+            // egui chose a direction to move focus from this frame's keys before the editor
+            // could claim them; on the frame focus arrives its focus-lock filter is not in force.
             context.memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
         }
     }
@@ -153,6 +181,7 @@ impl StudioApp {
             || self.show_about
             || self.sounds.open
             || self.recovery.open
+            || self.show_key_help
     }
 
     fn roll_has_cursor(&self) -> bool {
@@ -205,44 +234,36 @@ impl StudioApp {
         text_editing: bool,
         space_is_free: bool,
     ) -> bool {
-        if modifiers.command {
-            match key {
-                egui::Key::N => self.new_project(),
-                egui::Key::O => self.open_project(),
-                egui::Key::S if self.view == View::Pads => {
-                    self.beats.save();
-                    self.link_saved_beats_bank();
-                }
-                egui::Key::S => self.save_project(),
-                // A text field being edited keeps its own undo.
-                egui::Key::Z | egui::Key::Y if text_editing => return false,
-                egui::Key::Z if modifiers.shift => self.redo(),
-                egui::Key::Z => self.undo(),
-                egui::Key::Y => self.redo(),
-                _ => return false,
-            }
-            return true;
-        }
-        if text_editing {
+        let Some(command) = AppCommand::from_key(key, modifiers) else {
             return false;
-        }
-        if !self.show_about && modifiers.matches_logically(egui::Modifiers::ALT) {
-            match key {
-                egui::Key::ArrowLeft => self.cycle_sound(true),
-                egui::Key::ArrowRight => self.cycle_sound(false),
-                _ => return false,
+        };
+        match command {
+            AppCommand::NewProject => self.new_project(),
+            AppCommand::OpenProject => self.open_project(),
+            AppCommand::SaveProject if self.view == View::Pads => {
+                self.beats.save();
+                self.link_saved_beats_bank();
             }
-            return true;
-        }
-        if key == egui::Key::Space && space_is_free {
-            if self.preview.is_some() || self.render_job.is_some() {
-                self.stop_preview();
-            } else {
-                self.preview_project();
+            AppCommand::SaveProject => self.save_project(),
+            // A text field being edited keeps its own undo, and its own Space and arrows.
+            AppCommand::Undo | AppCommand::Redo if text_editing => return false,
+            AppCommand::Undo => self.undo(),
+            AppCommand::Redo => self.redo(),
+            _ if text_editing => return false,
+            AppCommand::PreviousSound | AppCommand::NextSound if self.show_about => return false,
+            AppCommand::PreviousSound => self.cycle_sound(true),
+            AppCommand::NextSound => self.cycle_sound(false),
+            AppCommand::PlayOrStop if !space_is_free => return false,
+            AppCommand::PlayOrStop => {
+                if self.preview.is_some() || self.render_job.is_some() {
+                    self.stop_preview();
+                } else {
+                    self.preview_project();
+                }
             }
-            return true;
+            AppCommand::NextRegion | AppCommand::PreviousRegion => return false,
         }
-        false
+        true
     }
 }
 

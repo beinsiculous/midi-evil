@@ -18,11 +18,32 @@ struct Hold {
     last_outcome: Option<String>,
 }
 
+#[derive(Debug)]
+struct AfterFocusMoves {
+    text: String,
+    frames_waited: u32,
+}
+
+/// How long an outcome waits for its focus move before it is said anyway: a move that never
+/// happens must not swallow what the command did.
+const FOCUS_MOVE_FRAMES: u32 = 10;
+
 #[derive(Debug, Default)]
 pub struct Announcer {
     published_names: HashMap<egui::Id, String>,
     /// The outcome to announce at the end of this frame.
     pending_outcome: Option<String>,
+    /// Outcomes that wait a frame, so that the focused name a command changed is heard first:
+    /// an outcome in the same frame would hold that name back.
+    next_frame_outcome: Option<String>,
+    /// An outcome that waits for a focus move to finish: it goes out the frame after the widget
+    /// that took the focus has published its name.
+    after_focus_moves: Option<AfterFocusMoves>,
+    /// What had focus when the last frame ended; `None` until a frame has ended, when every
+    /// widget is held to its name as a focused one would be.
+    focus_before: Option<Option<egui::Id>>,
+    /// The widgets that published their current name this frame.
+    named_this_frame: HashSet<egui::Id>,
     /// The outcome of the latest key press that was not a repeat, so a hold that follows it
     /// does not say it again.
     last_press_outcome: Option<String>,
@@ -92,12 +113,40 @@ impl Announcer {
         });
     }
 
+    /// Queues an outcome for the frame after this one, so that a focus move this frame is
+    /// heard first, with its name as it now is.
+    pub fn announce_next_frame(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        self.next_frame_outcome = Some(match self.next_frame_outcome.take() {
+            Some(earlier) if earlier != text => format!("{earlier} {text}"),
+            _ => text,
+        });
+    }
+
+    /// Queues an outcome for a command that moves focus to another widget, which may not be
+    /// drawn until a later frame: it is said the frame after a widget newly focused has
+    /// published its current name, so the listener hears where they are, then what happened.
+    pub fn announce_after_focus_moves(&mut self, text: impl Into<String>) {
+        self.after_focus_moves = Some(AfterFocusMoves {
+            text: text.into(),
+            frames_waited: 0,
+        });
+    }
+
+    fn was_focus_before(&self, widget: egui::Id) -> bool {
+        self.focus_before
+            .is_none_or(|focused| focused == Some(widget))
+    }
+
     /// The name to expose for a focused widget this frame, given what it is on now. It stays as
-    /// last published while an outcome goes out this frame or a key is held.
+    /// last published while an outcome goes out this frame or a key is held — but only for the
+    /// widget that had focus when the last frame ended: one arriving at focus is never held to
+    /// a name from an earlier visit.
     pub fn focused_name(&mut self, widget: egui::Id, current: String) -> String {
         let published = self.published_names.get(&widget);
-        let hold_back =
-            published.is_some() && (self.pending_outcome.is_some() || self.is_holding());
+        let hold_back = published.is_some()
+            && (self.pending_outcome.is_some() || self.is_holding())
+            && self.was_focus_before(widget);
         if hold_back {
             // A hold's end asks for its own frame; asking on every held frame would repaint
             // without pause until the key came up.
@@ -106,6 +155,7 @@ impl Announcer {
             }
         } else {
             self.published_names.insert(widget, current);
+            self.named_this_frame.insert(widget);
         }
         self.published_names
             .get(&widget)
@@ -162,6 +212,25 @@ impl Announcer {
             });
             self.name_waiting = true;
         }
+        if let Some(text) = self.next_frame_outcome.take() {
+            self.announce(text);
+            self.name_waiting = true;
+        }
+        let focus_now = context.memory(|memory| memory.focused());
+        if let Some(mut waiting) = self.after_focus_moves.take() {
+            let moved = focus_now.is_some_and(|focused| {
+                self.focus_before != Some(Some(focused)) && self.named_this_frame.contains(&focused)
+            });
+            if moved || waiting.frames_waited >= FOCUS_MOVE_FRAMES {
+                self.announce(waiting.text);
+            } else {
+                waiting.frames_waited += 1;
+                self.after_focus_moves = Some(waiting);
+            }
+            self.name_waiting = true;
+        }
+        self.focus_before = Some(focus_now);
+        self.named_this_frame.clear();
         if std::mem::take(&mut self.name_waiting) {
             context.request_repaint();
         }
@@ -299,6 +368,72 @@ mod tests {
             "a reading that changes nothing is announced"
         );
         assert_eq!(name(&mut announcer, false, "at 8", false), "at 8");
+    }
+
+    #[test]
+    fn an_outcome_for_the_next_frame_lets_this_frames_focused_name_through_first() {
+        let context = egui::Context::default();
+        let mut announcer = Announcer::default();
+        assert_eq!(announcer.focused_name(widget(), "before".into()), "before");
+        announcer.announce_next_frame("Opened.");
+        assert_eq!(announcer.focused_name(widget(), "after".into()), "after");
+        announcer.end_frame(&context);
+        assert_eq!(
+            announcer.take_pending_outcome().as_deref(),
+            Some("Opened."),
+            "announced at the end of the next frame"
+        );
+    }
+
+    #[test]
+    fn two_outcomes_for_the_next_frame_are_both_heard() {
+        let context = egui::Context::default();
+        let mut announcer = Announcer::default();
+        announcer.announce_next_frame("Undid the last edit.");
+        announcer.announce_next_frame("Redid the edit.");
+        announcer.end_frame(&context);
+        assert_eq!(
+            announcer.take_pending_outcome().as_deref(),
+            Some("Undid the last edit. Redid the edit.")
+        );
+    }
+
+    #[test]
+    fn a_widget_arriving_at_focus_is_named_afresh_and_the_outcome_waits_for_that_name() {
+        let context = egui::Context::default();
+        let mut announcer = Announcer::default();
+        let roll = egui::Id::new("roll");
+        let song = egui::Id::new("song");
+        let frame = |announcer: &mut Announcer, focus: egui::Id, names: &[(egui::Id, &str)]| {
+            let mut heard = Vec::new();
+            let _ = context.run_ui(egui::RawInput::default(), |ui| {
+                ui.memory_mut(|memory| memory.request_focus(focus));
+                for (widget, name) in names {
+                    heard.push(announcer.focused_name(*widget, (*name).to_owned()));
+                }
+                announcer.end_frame(ui.ctx());
+            });
+            heard
+        };
+        frame(&mut announcer, roll, &[(roll, "Piano roll, C 4")]);
+        frame(&mut announcer, song, &[(song, "Song, part 1")]);
+        announcer.announce_after_focus_moves("Beta, in the piano roll.");
+        frame(&mut announcer, song, &[(song, "Song, part 2")]);
+        assert_eq!(
+            announcer.take_pending_outcome(),
+            None,
+            "the focus has not moved"
+        );
+        assert_eq!(
+            frame(&mut announcer, roll, &[(roll, "Piano roll, empty")]),
+            ["Piano roll, empty"],
+            "never the name of an earlier visit"
+        );
+        assert_eq!(
+            announcer.take_pending_outcome().as_deref(),
+            Some("Beta, in the piano roll."),
+            "said the frame after the new focus was named"
+        );
     }
 
     #[test]

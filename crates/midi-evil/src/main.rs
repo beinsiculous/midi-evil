@@ -11,6 +11,7 @@ mod effect_ui;
 mod history;
 mod instance;
 mod instruments;
+mod key_help;
 mod keyboard;
 mod launch;
 mod live_player;

@@ -24,20 +24,11 @@ use crate::{
     theme,
 };
 
-#[derive(Debug, Clone, Copy)]
-pub struct PartDragState {
-    pub track: usize,
-    pub part: usize,
-    pub start_tick: u64,
-    pub press_x: f32,
-}
-
 #[derive(Debug)]
 pub struct RollState {
     pub selected_track: usize,
     pub selected_part: Option<usize>,
     pub cursor: CursorKeeper,
-    pub part_drag: Option<PartDragState>,
     clipboard: Vec<Note>,
     dragging_note: Option<usize>,
     resizing_note: Option<usize>,
@@ -48,6 +39,8 @@ pub struct RollState {
     pub widget_id: Option<egui::Id>,
     /// Whether the roll had focus when the last frame ended.
     pub had_focus: bool,
+    /// The arranger opened something here and focus follows it, the next time the roll is drawn.
+    pub focus_when_shown: bool,
 }
 
 impl Default for RollState {
@@ -56,7 +49,6 @@ impl Default for RollState {
             selected_track: 0,
             selected_part: None,
             cursor: CursorKeeper::default(),
-            part_drag: None,
             clipboard: Vec::new(),
             dragging_note: None,
             resizing_note: None,
@@ -65,6 +57,7 @@ impl Default for RollState {
             scroll_to_cursor: false,
             widget_id: None,
             had_focus: false,
+            focus_when_shown: false,
         }
     }
 }
@@ -224,12 +217,7 @@ impl EditedSequence {
         let beat = u64::from(project.ticks_per_quarter.max(1));
         let origin = match context.pattern {
             Some(pattern) => Origin::Pattern {
-                sharing_parts: project
-                    .tracks
-                    .iter()
-                    .flat_map(|track| &track.parts)
-                    .filter(|part| part.pattern == pattern)
-                    .count(),
+                sharing_parts: crate::arranger::cursor::parts_sharing(project, pattern),
             },
             None => Origin::Song,
         };
@@ -353,7 +341,10 @@ pub fn show(
         let (response, full_painter) = ui.allocate_painter(size, egui::Sense::click_and_drag());
         // egui gives focus on click only to text fields; without this a pointer selection is
         // something no key can act on.
-        if response.clicked_by(egui::PointerButton::Primary) || response.drag_started() {
+        if response.clicked_by(egui::PointerButton::Primary)
+            || response.drag_started()
+            || std::mem::take(&mut state.focus_when_shown)
+        {
             response.request_focus();
         }
         state.widget_id = Some(response.id);

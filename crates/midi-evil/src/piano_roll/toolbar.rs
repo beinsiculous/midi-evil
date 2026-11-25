@@ -43,7 +43,11 @@ pub fn show(
                 state,
                 edited,
                 announcer,
-                KeepsOrder::Yes,
+                Operation {
+                    done: "Quantized NOTES.",
+                    keeps_order: KeepsOrder::Yes,
+                    reach: Reach::SelectedNoteElseAll,
+                },
                 |sequence| {
                     let _ = evil_project::quantize_notes(
                         sequence,
@@ -61,7 +65,11 @@ pub fn show(
                     state,
                     edited,
                     announcer,
-                    KeepsOrder::Yes,
+                    Operation {
+                        done: transposed(semitones),
+                        keeps_order: KeepsOrder::Yes,
+                        reach: Reach::SelectedNoteElseAll,
+                    },
                     |sequence| {
                         let _ = evil_project::transpose_notes(sequence, semitones, cursor);
                     },
@@ -74,7 +82,11 @@ pub fn show(
                 state,
                 edited,
                 announcer,
-                KeepsOrder::No,
+                Operation {
+                    done: "Cleaned the overlaps of NOTES.",
+                    keeps_order: KeepsOrder::No,
+                    reach: Reach::AllNotes,
+                },
                 |sequence| {
                     evil_project::clean_overlaps(sequence);
                 },
@@ -85,6 +97,7 @@ pub fn show(
                 Some(note) => vec![*note],
                 None => sequence.notes().to_vec(),
             };
+            announcer.announce(format!("Copied {}.", notes_counted(state.clipboard.len())));
         }
         if !state.clipboard.is_empty() && ui.button("Paste").clicked() {
             let first_pasted = paste(
@@ -96,6 +109,11 @@ pub fn show(
             state
                 .cursor
                 .set(context, first_pasted.or(cursor), sequence.notes());
+            // After the roll's name, which the cursor's move to the first pasted note changes.
+            announcer.announce_next_frame(match first_pasted {
+                Some(_) => "Pasted.",
+                None => "Nothing pasted: the pattern ends here.",
+            });
         }
         ui.separator();
         for (command, label) in ONE_NOTE_BUTTONS {
@@ -146,6 +164,22 @@ enum KeepsOrder {
     No,
 }
 
+/// Which notes an operation acts on: the editor's own operations act on the selected note when
+/// there is one; Clean overlaps acts on every note whatever is selected.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reach {
+    SelectedNoteElseAll,
+    AllNotes,
+}
+
+/// A whole-sequence operation as the toolbar runs it.
+struct Operation {
+    /// What was done, with NOTES where the notes it was done to are named.
+    done: &'static str,
+    keeps_order: KeepsOrder,
+    reach: Reach,
+}
+
 /// Runs an operation on the whole sequence and keeps the cursor on its note. When the operation
 /// keeps the order and drops no note, the index still names the same note; otherwise — a
 /// re-sort, or Quantize dropping notes past a pattern's end — the cursor follows only a note it
@@ -155,7 +189,11 @@ fn whole_sequence(
     state: &mut RollState,
     edited: &EditedSequence,
     announcer: &mut Announcer,
-    keeps_order: KeepsOrder,
+    Operation {
+        done,
+        keeps_order,
+        reach,
+    }: Operation,
     operation: impl FnOnce(&mut dyn EventSequence),
 ) {
     let cursor = state.cursor.index(edited.context);
@@ -164,8 +202,15 @@ fn whole_sequence(
     let after = sequence.notes();
     if after == before.as_slice() {
         // Nothing changed, so nothing moved under the cursor.
+        announcer.announce("Nothing changed.");
         return;
     }
+    // A frame late, so that a selection reset, which a listener must hear, is heard first.
+    let notes = match (reach, cursor) {
+        (Reach::SelectedNoteElseAll, Some(_)) => "the selected note".to_owned(),
+        _ => format!("all {}", notes_counted(after.len())),
+    };
+    announcer.announce_next_frame(done.replace("NOTES", &notes));
     let kept = cursor.and_then(|index| {
         if keeps_order == KeepsOrder::Yes && after.len() == before.len() {
             Some(index)
@@ -183,12 +228,25 @@ fn whole_sequence(
     state.cursor.set(edited.context, kept, after);
 }
 
+fn transposed(semitones: i16) -> &'static str {
+    match semitones {
+        12 => "Moved NOTES an octave up.",
+        1 => "Moved NOTES a semitone up.",
+        -1 => "Moved NOTES a semitone down.",
+        _ => "Moved NOTES an octave down.",
+    }
+}
+
+fn notes_counted(count: usize) -> String {
+    if count == 1 {
+        "1 note".to_owned()
+    } else {
+        format!("{count} notes")
+    }
+}
+
 fn chord_hint(command: RollCommand, key: egui::Key) -> String {
-    let modifier = match command.chord().0 {
-        super::edits::ChordModifier::None => String::new(),
-        super::edits::ChordModifier::Shift => "Shift+".to_owned(),
-        super::edits::ChordModifier::Command => format!("{}+", speech::platform_command_key()),
-    };
+    let modifier = command.chord().0.prefix(speech::platform_command_key());
     format!("{modifier}{} in the roll", key.name())
 }
 

@@ -32,7 +32,7 @@ impl StudioApp {
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .add_enabled(self.recorder.is_none(), egui::Button::new("+"))
+                    .add_enabled(self.structure_refused().is_none(), egui::Button::new("+"))
                     .on_hover_text("Add synth track")
                     .named("Add a synth track")
                     .unavailable_because(Unavailable::WhileRecording)
@@ -41,7 +41,10 @@ impl StudioApp {
                     self.add_track();
                 }
                 if ui
-                    .add_enabled(self.recorder.is_none(), egui::Button::new("+KIT"))
+                    .add_enabled(
+                        self.structure_refused().is_none(),
+                        egui::Button::new("+KIT"),
+                    )
                     .on_hover_text("Add a Maxwell drum-kit track")
                     .named("Add a Maxwell drum-kit track")
                     .unavailable_because(Unavailable::WhileRecording)
@@ -110,8 +113,8 @@ impl StudioApp {
             });
         accessibility::name_scroll_bars(ui.ctx(), rack.id, "Track rack");
         if !self.project.tracks.is_empty() {
-            ui.horizontal(|ui| {
-                ui.add_enabled_ui(self.recorder.is_none(), |ui| {
+            let actions = ui.horizontal(|ui| {
+                ui.add_enabled_ui(self.structure_refused().is_none(), |ui| {
                     ui.menu_button("Track actions", |ui| {
                         if ui.button("Duplicate track").clicked() {
                             ui.close();
@@ -134,13 +137,18 @@ impl StudioApp {
                     .response
                     .unavailable_because(Unavailable::WhileRecording)
                 })
+                .inner
             });
+            accessibility::name_menu(ui.ctx(), &actions.inner, "Track actions menu");
         }
         ui.add_space(8.0);
         ui.separator();
         let mut open_patch = false;
         let mut open_pads = false;
         let mut synth_page = None;
+        let mut name_field = None;
+        let mut mute_toggled = false;
+        let mut browse = false;
         let settings = egui::ScrollArea::vertical()
             .id_salt("track-settings")
             .auto_shrink([false, false])
@@ -148,10 +156,13 @@ impl StudioApp {
                 if let Some(track) = self.project.tracks.get_mut(self.roll.selected_track) {
                     let instrument = &mut self.project.instruments[track.instrument];
                     theme::label(ui, "SELECTED TRACK");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut track.name).desired_width(f32::INFINITY),
-                    )
-                    .named("Track name");
+                    name_field = Some(
+                        ui.add(
+                            egui::TextEdit::singleline(&mut track.name)
+                                .desired_width(f32::INFINITY),
+                        )
+                        .named("Track name"),
+                    );
                     ui.add_space(4.0);
                     theme::label(ui, "INSTRUMENT");
                     if ui
@@ -161,7 +172,7 @@ impl StudioApp {
                         )
                         .clicked()
                     {
-                        self.sounds.open = true;
+                        browse = true;
                     }
                     open_pads = matches!(instrument.source, InstrumentSource::DrumKit { .. });
                     open_patch = ui
@@ -203,7 +214,7 @@ impl StudioApp {
                     theme::label(ui, "CHANNEL");
                     ui.add(egui::Slider::new(&mut instrument.gain, 0.0..=1.0).text("Gain"));
                     ui.add(egui::Slider::new(&mut instrument.pan, -1.0..=1.0).text("Pan"));
-                    ui.checkbox(&mut track.muted, "Mute track");
+                    mute_toggled = ui.checkbox(&mut track.muted, "Mute track").changed();
                     ui.add_space(6.0);
                     ui.collapsing("Performance", |ui| {
                         ui.horizontal(|ui| {
@@ -230,6 +241,16 @@ impl StudioApp {
                 }
             });
         accessibility::name_scroll_bars(ui.ctx(), settings.id, "Selected track settings");
+        let selected = self.roll.selected_track;
+        if let Some(field) = name_field {
+            self.track_name_edited(&field, selected);
+        }
+        if mute_toggled {
+            self.track_mute_toggled(selected);
+        }
+        if browse {
+            self.open_sound_library();
+        }
         if let Some(page) = synth_page {
             self.view = View::Synth;
             if self

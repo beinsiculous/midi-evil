@@ -12,6 +12,7 @@ impl StudioApp {
         let Some(track) = self.project.tracks.get(context.track) else {
             return;
         };
+        let mut to_arranger = false;
         ui.horizontal(|ui| {
             ui.heading(&track.name);
             if let Some(pattern) = context.pattern {
@@ -27,10 +28,15 @@ impl StudioApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.toggle_value(&mut self.show_automation, "Automation");
                 if ui.button("Arranger").clicked() {
-                    self.view = View::Song;
+                    to_arranger = true;
                 }
             });
         });
+        if to_arranger {
+            self.view = View::Song;
+            self.report("The arranger is shown; F6 reaches it.");
+            return;
+        }
         let edited = EditedSequence::new(&self.project, context);
         let Some(sequence) = piano_roll::sequence_mut(&mut self.project, context) else {
             return;

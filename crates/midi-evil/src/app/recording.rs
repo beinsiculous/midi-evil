@@ -12,7 +12,7 @@ impl StudioApp {
             return;
         }
         if self.project.tracks.is_empty() {
-            self.status = "Add a track before recording".to_owned();
+            self.report("Add a track before recording.");
             return;
         }
         self.transport.repeat = true;
@@ -33,14 +33,14 @@ impl StudioApp {
             grid,
         ));
         self.recording_started_at = Some(std::time::Instant::now());
-        self.status = match target {
+        self.report(match target {
             RecordingTarget::Track(_) => {
-                "Recording the unique timeline with the independent recording clock".to_owned()
+                "Recording the unique timeline with the independent recording clock."
             }
             RecordingTarget::Part { .. } => {
-                "Recording loop overdub into the selected shared pattern".to_owned()
+                "Recording loop overdub into the selected shared pattern."
             }
-        };
+        });
     }
 
     pub(super) fn record_note_events(&mut self, events: &[NoteEvent]) {
@@ -163,13 +163,11 @@ impl StudioApp {
         let tick = self.recording_tick();
         self.recording_started_at = None;
         match recorder.finish(tick, &mut self.project) {
-            Ok(take) => {
-                self.status = format!(
-                    "Recorded {} notes and {} controller events; Undo removes the take",
-                    take.notes, take.controllers
-                );
-            }
-            Err(error) => self.status = format!("Could not commit recording: {error}"),
+            Ok(take) => self.report(format!(
+                "Recorded {} notes and {} controller events; Undo removes the take.",
+                take.notes, take.controllers
+            )),
+            Err(error) => self.report(format!("Could not commit the recording: {error}.")),
         }
     }
 

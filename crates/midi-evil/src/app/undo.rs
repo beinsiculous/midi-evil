@@ -162,6 +162,8 @@ impl StudioApp {
     }
 
     pub(super) fn reset_history(&mut self) {
+        // A rename in progress belonged to the document being replaced.
+        self.track_name_before_edit = None;
         self.beats.discard_draft();
         self.history.clear();
         self.mixer.last_analysis = None;
@@ -198,7 +200,8 @@ impl StudioApp {
         let current = self.current_selection();
         if let Some(snapshot) = self.history.undo(&self.project, current) {
             self.restore_snapshot(snapshot, preserve_drafts, current);
-            self.status = "Undo".to_owned();
+            // After the focused editor's name, which the undo may have changed.
+            self.report_after_the_name("Undid the last edit.");
         }
     }
 
@@ -215,7 +218,7 @@ impl StudioApp {
         let current = self.current_selection();
         if let Some(snapshot) = self.history.redo(&self.project, current) {
             self.restore_snapshot(snapshot, preserve_drafts, current);
-            self.status = "Redo".to_owned();
+            self.report_after_the_name("Redid the edit.");
         }
     }
 
@@ -232,6 +235,11 @@ impl StudioApp {
             self.clear_all_sound_drafts();
         }
         self.project = snapshot.project;
+        // A rename in progress starts again from the name the restored project has.
+        self.track_name_before_edit = self
+            .track_name_before_edit
+            .take()
+            .and_then(|(track, _)| Some((track, self.project.tracks.get(track)?.name.clone())));
         self.invalidate_beats_link();
         // The workspace is where the person is; undo restores what was selected in it.
         let selection = snapshot.selection;

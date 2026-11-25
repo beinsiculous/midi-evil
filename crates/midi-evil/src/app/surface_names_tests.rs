@@ -227,3 +227,36 @@ fn alt_arrows_announce_the_sound_a_track_now_has_and_where_it_is_in_the_list() {
     );
     assert_ne!(named(&harness), before);
 }
+
+#[test]
+fn every_open_menu_and_window_on_the_shown_surfaces_is_named_too() {
+    let mut harness = Harness::new(project_with(&[&[note_at(60, 0, 480)]]));
+    harness.app.view = View::Song;
+    harness.run(vec![]);
+    harness.click("Project");
+    harness.run(vec![]);
+    harness.node("Project menu");
+    assert_eq!(
+        focusable_nodes_without_a_name(&harness),
+        Vec::<String>::new(),
+        "the Project menu open"
+    );
+    harness.run(vec![plain(egui::Key::Escape)]);
+    harness.app.sounds.open = true;
+    harness.app.show_key_help = true;
+    harness.app.recovery.open = true;
+    harness.app.show_about = true;
+    harness.run(vec![]);
+    harness.run(vec![]);
+    harness.node("Dr. Maxwell's studio");
+    for title in ["Sound library", "Keyboard notes", "Recover rhythm from WAV"] {
+        harness.node(&format!(
+            "{title}, title bar, dragged with a pointer to move it"
+        ));
+    }
+    assert_eq!(
+        focusable_nodes_without_a_name(&harness),
+        Vec::<String>::new(),
+        "the windows open"
+    );
+}

@@ -23,7 +23,7 @@ impl StudioApp {
                             .named("About MIDI Evil")
                             .clicked()
                         {
-                            self.show_about = true;
+                            self.open_about();
                         }
                         ui.vertical(|ui| {
                             ui.label(
@@ -39,7 +39,7 @@ impl StudioApp {
                             );
                         });
                         ui.add_space(8.0);
-                        ui.menu_button("Project", |ui| {
+                        let project_menu = ui.menu_button("Project", |ui| {
                             if ui.button("New                 Ctrl+N").clicked() {
                                 ui.close();
                                 self.new_project();
@@ -57,6 +57,9 @@ impl StudioApp {
                                 self.stop_keyboard();
                                 self.beats.stop();
                                 self.recovery.open = true;
+                                self.report(
+                                    "The Recover rhythm from WAV window is open; Tab reaches it.",
+                                );
                             }
                             ui.separator();
                             if ui.button("Save                Ctrl+S").clicked() {
@@ -93,11 +96,21 @@ impl StudioApp {
                                 self.render_arrangement_parts();
                             }
                             ui.separator();
+                            if ui.button("Keyboard notes…").clicked() {
+                                ui.close();
+                                self.show_key_help = true;
+                                self.report("The Keyboard notes window is open; Tab reaches it.");
+                            }
                             if ui.button("About MIDI Evil").clicked() {
                                 ui.close();
-                                self.show_about = true;
+                                self.open_about();
                             }
                         });
+                        crate::accessibility::name_menu(
+                            ui.ctx(),
+                            &project_menu.response,
+                            "Project menu",
+                        );
                         if ui
                             .add(egui::Button::image(art::control(&self.controls, 6)))
                             .on_hover_text("Save project · Ctrl/Cmd+S")
@@ -205,7 +218,11 @@ impl StudioApp {
                             }
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("Export").clicked() {
+                            // A toggle, so a screen reader hears whether the export row is shown.
+                            if ui
+                                .add(egui::Button::new("Export").selected(self.show_export))
+                                .clicked()
+                            {
                                 self.show_export = !self.show_export;
                             }
                             if ui
@@ -255,6 +272,11 @@ impl StudioApp {
             });
     }
 
+    fn open_about(&mut self) {
+        self.show_about = true;
+        self.report("The About window is open; Tab reaches it.");
+    }
+
     pub(super) fn about_window(&mut self, context: &egui::Context) {
         if !self.show_about {
             return;
@@ -263,6 +285,7 @@ impl StudioApp {
         let mut open = false;
         let mut import = false;
         egui::Window::new("Dr. Maxwell's studio")
+            .id(egui::Id::new("about"))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -294,9 +317,15 @@ impl StudioApp {
                     theme::label(ui, "MIDI EVIL   /   ORIGINAL SYNTHESIS   /   STEREO SOUND");
                 });
             });
+        // Anchored, the window draws no title bar to drag; named all the same, should it ever.
+        crate::accessibility::name_window_title_bar(context, egui::Id::new("about"), "About");
         if start {
             self.show_about = false;
             self.view = View::Notes;
+            self.report(
+                "The piano roll is open. F6 moves between the toolbar, the side panel and the \
+                 editor.",
+            );
         }
         if open {
             self.show_about = false;
@@ -306,6 +335,63 @@ impl StudioApp {
             self.show_about = false;
             self.import_midi();
         }
+    }
+
+    /// The keyboard notes, written from each surface's table of chords. One read-only text, so
+    /// a screen reader reads it line by line as it would any text.
+    pub(super) fn key_help_window(&mut self, context: &egui::Context) {
+        if !self.show_key_help {
+            return;
+        }
+        let notes = crate::key_help::help_text(crate::speech::platform_command_key(), |_| true);
+        egui::Window::new("Keyboard notes")
+            .id(egui::Id::new("keyboard-notes"))
+            .open(&mut self.show_key_help)
+            .default_width(520.0)
+            .default_height(420.0)
+            .collapsible(false)
+            .show(context, |ui| {
+                let scroll =
+                    egui::ScrollArea::vertical()
+                        .id_salt("keyboard-notes")
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::TextEdit::multiline(&mut notes.as_str())
+                                    .desired_width(f32::INFINITY),
+                            )
+                            .named("Keyboard notes, one chord a line");
+                        });
+                crate::accessibility::name_scroll_bars(ui.ctx(), scroll.id, "Keyboard notes");
+            });
+        crate::accessibility::name_window_title_bar(
+            context,
+            egui::Id::new("keyboard-notes"),
+            "Keyboard notes",
+        );
+    }
+
+    /// What a command did, said once: on the status line a sighted person reads, and to the
+    /// screen reader through the announcer. Every command reports through here.
+    pub(super) fn report(&mut self, outcome: impl Into<String>) {
+        let text = outcome.into();
+        self.announcer.announce(text.clone());
+        self.status = text;
+    }
+
+    /// The same for a command that changes what the focused editor says: the outcome is heard
+    /// a frame later, after the name.
+    pub(super) fn report_after_the_name(&mut self, outcome: impl Into<String>) {
+        let text = outcome.into();
+        self.announcer.announce_next_frame(text.clone());
+        self.status = text;
+    }
+
+    /// The same for a command that moves focus to another widget, perhaps not drawn yet: the
+    /// outcome is heard once that widget's name has been.
+    pub(super) fn report_after_focus_moves(&mut self, outcome: impl Into<String>) {
+        let text = outcome.into();
+        self.announcer.announce_after_focus_moves(text.clone());
+        self.status = text;
     }
 
     pub(super) fn status_bar(&self, ui: &mut egui::Ui) {

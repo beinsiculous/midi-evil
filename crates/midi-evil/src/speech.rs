@@ -4,7 +4,10 @@
 
 use evil_project::{Note, Project};
 
-use crate::piano_roll::edits::{ChordModifier, Outcome, RollCommand};
+use crate::arranger::cursor::{self as arranger_cursor, SongCursor};
+use crate::arranger::edits::{SongCommand, SongOutcome};
+use crate::key_help::{self, AppCommand};
+use crate::piano_roll::edits::{Outcome, RollCommand};
 
 const PITCH_CLASS_NAMES: [&str; 12] = [
     "C", "C sharp", "D", "D sharp", "E", "F", "F sharp", "G", "G sharp", "A", "A sharp", "B",
@@ -219,6 +222,7 @@ pub enum Unavailable {
     WhileRecording,
     NoTrack,
     NoOtherSound,
+    NoPartSelected,
 }
 
 pub fn unavailable_reason(reason: Unavailable) -> &'static str {
@@ -229,6 +233,7 @@ pub fn unavailable_reason(reason: Unavailable) -> &'static str {
         Unavailable::WhileRecording => "Not while recording.",
         Unavailable::NoTrack => "Add a track first.",
         Unavailable::NoOtherSound => "No other sound in this list.",
+        Unavailable::NoPartSelected => "Select a part first.",
     }
 }
 
@@ -243,57 +248,183 @@ pub fn describe_sound(name: &str, position: Option<usize>, count: usize, kind: &
     }
 }
 
-/// "Track 2, Bass, 12 unique notes, 3 parts, muted": an arranger lane.
-pub fn describe_track(
-    index: usize,
-    name: &str,
-    note_count: usize,
-    part_count: usize,
-    muted: bool,
-) -> String {
-    let notes = if note_count == 1 { "note" } else { "notes" };
-    let parts = if part_count == 1 { "part" } else { "parts" };
+/// "track 1 of 2, Lead, muted, sound Lead": which track the arranger's cursor is on.
+pub fn describe_track(index: usize, count: usize, name: &str, muted: bool, sound: &str) -> String {
     format!(
-        "Track {}, {name}, {note_count} unique {notes}, {part_count} {parts}{}",
+        "track {} of {count}, {name}{}, sound {sound}",
         index + 1,
         if muted { ", muted" } else { "" }
     )
 }
 
-/// "Part, Pattern 1, bar 3 beat 1, 4 beats": an arranger part, where it sits in the song.
-pub fn describe_part(
-    pattern_name: &str,
-    start_tick: u64,
-    length_ticks: u64,
-    meter: Meter,
-) -> String {
+/// "Added Track 2, a synth track with the Lead sound."
+pub fn track_added(name: &str, kind: &str, sound: &str) -> String {
+    format!("Added {name}, a {kind} track with the {sound} sound.")
+}
+
+/// "Removed Track 2; 1 track left."
+pub fn track_removed(name: &str, remaining: usize) -> String {
+    let tracks = if remaining == 1 { "track" } else { "tracks" };
+    format!("Removed {name}; {remaining} {tracks} left.")
+}
+
+/// One part as the arranger's cursor finds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PartPlace<'a> {
+    /// Its place among the track's parts in the order they play, from 0.
+    pub place: usize,
+    pub part_count: usize,
+    pub pattern: &'a str,
+    pub start_tick: u64,
+    pub length_ticks: u64,
+    /// How many parts, on any track, play its pattern.
+    pub sharing: usize,
+}
+
+/// "part 2 of 3, Pattern 1, bar 3 beat 1, 1 bar, shared by 2 parts": a part, where it sits in
+/// the song and how far an edit of its pattern reaches.
+pub fn describe_part(part: PartPlace<'_>, meter: Meter) -> String {
+    let bars = meter.bar_ticks();
+    let span = if part.length_ticks.is_multiple_of(bars) {
+        let count = part.length_ticks / bars;
+        format!("{count} {}", if count == 1 { "bar" } else { "bars" })
+    } else {
+        length(part.length_ticks, meter)
+    };
+    let sharing = if part.sharing > 1 {
+        format!("shared by {} parts", part.sharing)
+    } else {
+        "the only part playing it".to_owned()
+    };
     format!(
-        "Part, {pattern_name}, {}, {}",
-        position(start_tick, meter, Origin::Song),
-        length(length_ticks, meter)
+        "part {} of {}, {}, {}, {span}, {sharing}",
+        part.place + 1,
+        part.part_count,
+        part.pattern,
+        position(part.start_tick, meter, Origin::Song),
     )
+}
+
+/// The arranger's accessible name: the track the cursor is on and, on it, the part or the
+/// unique timeline. A track whose unique timeline holds notes says so wherever the cursor is.
+pub fn song_name(project: &Project, cursor: Option<SongCursor>, sound: &str) -> String {
+    let Some(cursor) = cursor else {
+        return "Song, no tracks".to_owned();
+    };
+    let track = &project.tracks[cursor.track];
+    let notes = track.notes.len();
+    let note_count = format!("{notes} {}", if notes == 1 { "note" } else { "notes" });
+    let parts = track.parts.len();
+    let part_count = match parts {
+        0 => "no parts".to_owned(),
+        1 => "1 part".to_owned(),
+        count => format!("{count} parts"),
+    };
+    let place = match cursor.part {
+        None if notes == 0 => format!("unique timeline, empty, {part_count}"),
+        None => format!("unique timeline, {note_count}, {part_count}"),
+        Some(index) => {
+            let part = track.parts[index];
+            let described = describe_part(
+                PartPlace {
+                    place: arranger_cursor::parts_in_time_order(track)
+                        .iter()
+                        .position(|&walked| walked == index)
+                        .unwrap_or(0),
+                    part_count: parts,
+                    pattern: &project.patterns[part.pattern].name,
+                    start_tick: part.start_tick,
+                    length_ticks: part.length_ticks,
+                    sharing: arranger_cursor::parts_sharing(project, part.pattern),
+                },
+                Meter::of(project),
+            );
+            if notes == 0 {
+                described
+            } else {
+                format!("{described}; the unique timeline has {note_count}")
+            }
+        }
+    };
+    format!(
+        "Song, {}, {place}",
+        describe_track(
+            cursor.track,
+            project.tracks.len(),
+            &track.name,
+            track.muted,
+            sound
+        )
+    )
+}
+
+/// What one arranger command did, for the polite announcement. `None` when the arranger's name
+/// alone says it: a move of the cursor, or a part moved to where its name now places it.
+pub fn describe_song_outcome(outcome: &SongOutcome, meter: Meter) -> Option<String> {
+    let text = match outcome {
+        SongOutcome::Moved | SongOutcome::Edited | SongOutcome::Opened => return None,
+        SongOutcome::AlreadyFirst => return describe_outcome(Outcome::AlreadyFirst, Origin::Song),
+        SongOutcome::AlreadyLast => return describe_outcome(Outcome::AlreadyLast, Origin::Song),
+        SongOutcome::AlreadyAtStart => {
+            return describe_outcome(Outcome::AlreadyAtStart, Origin::Song);
+        }
+        SongOutcome::NoTrackAbove => "No track above.".to_owned(),
+        SongOutcome::NoTrackBelow => "No track below.".to_owned(),
+        SongOutcome::NoPart => unavailable_reason(Unavailable::NoPartSelected).to_owned(),
+        SongOutcome::Removed => return describe_outcome(Outcome::Deleted, Origin::Song),
+        SongOutcome::PartAdded { pattern } => {
+            format!("Added a part playing the new {pattern}.")
+        }
+        SongOutcome::SectionDuplicated { copied: 0 } => {
+            "Nothing in the loop to duplicate.".to_owned()
+        }
+        SongOutcome::SectionDuplicated { copied } => format!(
+            "Duplicated {copied} {} after the loop.",
+            if *copied == 1 {
+                "event or part"
+            } else {
+                "events and parts"
+            }
+        ),
+        SongOutcome::Looping {
+            start_tick,
+            end_tick,
+        } => format!(
+            "Looping from {} to {}.",
+            position(*start_tick, meter, Origin::Song),
+            position(*end_tick, meter, Origin::Song)
+        ),
+        SongOutcome::PlaybackStartsAt { bar } => format!("Playback starts at bar {bar}."),
+        SongOutcome::PartDuplicated { sharing, pattern } => {
+            format!("Duplicated the part; {sharing} parts now play {pattern}.")
+        }
+        SongOutcome::MadeUnique { pattern } => {
+            format!("This part now plays its own pattern, {pattern}.")
+        }
+        SongOutcome::Merged => "Merged into the unique timeline.".to_owned(),
+        SongOutcome::Failed(error) => error.clone(),
+    };
+    Some(text)
+}
+
+/// "Pattern 1 of Track 1, in the piano roll": what the roll was opened on, said once focus has
+/// arrived there.
+pub fn opened_in_roll(track: &str, pattern: Option<&str>) -> String {
+    match pattern {
+        Some(pattern) => format!("{pattern} of {track}, in the piano roll."),
+        None => format!("The unique timeline of {track}, in the piano roll."),
+    }
 }
 
 /// The roll's accessible description: every chord of its keyboard model, read once on focus.
 /// `command_key` is what the platform calls the key that `Modifiers::command` means.
 pub fn roll_key_help(command_key: &str) -> String {
-    let chords: Vec<String> = RollCommand::ALL
-        .into_iter()
-        .map(|command| {
-            let (modifier, key) = command.chord();
-            let modifier = match modifier {
-                ChordModifier::None => String::new(),
-                ChordModifier::Shift => "Shift+".to_owned(),
-                ChordModifier::Command => format!("{command_key}+"),
-            };
-            format!("{modifier}{} {}", key.name(), command_action(command))
-        })
-        .collect();
-    format!(
-        "{}. F6 and Shift+F6 move between the toolbar, the side panel and the editor; Tab leaves \
-         the roll.",
-        chords.join(", ")
-    )
+    key_help::editor_description(key_help::Surface::Roll, command_key)
+}
+
+/// The arranger's accessible description, from the same kind of table.
+pub fn song_key_help(command_key: &str) -> String {
+    key_help::editor_description(key_help::Surface::Song, command_key)
 }
 
 /// The name of the key that `Modifiers::command` stands for on this platform.
@@ -305,7 +436,7 @@ pub fn platform_command_key() -> &'static str {
     }
 }
 
-fn command_action(command: RollCommand) -> &'static str {
+pub fn roll_command_action(command: RollCommand) -> &'static str {
     match command {
         RollCommand::Previous => "previous note",
         RollCommand::Next => "next note",
@@ -326,6 +457,51 @@ fn command_action(command: RollCommand) -> &'static str {
     }
 }
 
+pub fn song_command_action(command: SongCommand) -> &'static str {
+    match command {
+        SongCommand::Previous => "previous part, then the track's unique timeline",
+        SongCommand::Next => "next part",
+        SongCommand::TrackAbove => "track above, at the same point in the song",
+        SongCommand::TrackBelow => "track below, at the same point in the song",
+        SongCommand::First => "the track's unique timeline",
+        SongCommand::Last => "the track's last part",
+        SongCommand::Earlier => "moves the part a bar earlier",
+        SongCommand::Later => "moves the part a bar later",
+        SongCommand::Open => "opens it in the piano roll",
+        SongCommand::Delete => "removes the part",
+        SongCommand::StartHere => "starts playback at the part's first bar",
+        SongCommand::ReadTransport => "reads the transport",
+        SongCommand::AddPatternPart => "adds a part with a new pattern",
+        SongCommand::DuplicateLoop => "duplicates the loop",
+        SongCommand::UniqueTimeline => "opens the track's unique timeline",
+        SongCommand::LoopPart => "loops the part",
+        SongCommand::DuplicateShared => "duplicates the part",
+        SongCommand::MakeUnique => "gives the part its own pattern",
+        SongCommand::MergeToTimeline => "merges the part into the unique timeline",
+        SongCommand::Select(_) => "selects",
+        SongCommand::MoveTo(_) => "moves the part",
+        SongCommand::Resize(_) => "resizes the part",
+        SongCommand::StartAtBar(_) => "starts playback at the bar",
+    }
+}
+
+pub fn app_command_action(command: AppCommand) -> &'static str {
+    match command {
+        AppCommand::NewProject => "a new project",
+        AppCommand::OpenProject => "opens a project",
+        AppCommand::SaveProject => "saves the project",
+        AppCommand::Undo => "undoes the last edit",
+        AppCommand::Redo => "redoes it",
+        AppCommand::PreviousSound => "the previous sound for the selected track",
+        AppCommand::NextSound => "the next sound for the selected track",
+        AppCommand::PlayOrStop => {
+            "plays or stops the song, where the focused control does not take Space"
+        }
+        AppCommand::NextRegion => "the next region: the toolbar, the side panel, the editor",
+        AppCommand::PreviousRegion => "the region before",
+    }
+}
+
 /// A number with at most three decimals and no trailing zeros: 1, 2.5, 1.333.
 fn decimal(value: f64) -> String {
     let text = format!("{value:.3}");
@@ -333,222 +509,4 @@ fn decimal(value: f64) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    const COMMON_TIME: Meter = Meter {
-        ticks_per_quarter: 480,
-        beats_per_bar: 4,
-        beat_unit: 4,
-    };
-
-    const SIX_EIGHT: Meter = Meter {
-        ticks_per_quarter: 480,
-        beats_per_bar: 6,
-        beat_unit: 8,
-    };
-
-    fn note_at(pitch: u8, start_tick: u64, duration_ticks: u64) -> Note {
-        Note {
-            pitch,
-            velocity: 100,
-            start_tick,
-            duration_ticks,
-        }
-    }
-
-    #[test]
-    fn pitch_names_cover_the_midi_range_with_middle_c_as_c_4() {
-        assert_eq!(pitch_name(60), "C 4");
-        assert_eq!(pitch_name(61), "C sharp 4");
-        assert_eq!(pitch_name(0), "C minus 1");
-        assert_eq!(pitch_name(127), "G 9");
-    }
-
-    #[test]
-    fn a_note_in_the_song_is_described_by_bar_beat_length_and_velocity() {
-        let described = describe_note(&note_at(64, 1_920 + 720, 240), COMMON_TIME, Origin::Song);
-        assert_eq!(described, "E 4, bar 2 beat 2.5, 0.5 beats, velocity 100");
-    }
-
-    #[test]
-    fn six_eight_counts_eighth_note_beats_in_six_beat_bars() {
-        assert_eq!(SIX_EIGHT.bar_ticks(), 1_440);
-        assert_eq!(
-            position(1_440 + 240, SIX_EIGHT, Origin::Song),
-            "bar 2 beat 2"
-        );
-        assert_eq!(position(1_200, SIX_EIGHT, Origin::Song), "bar 1 beat 6");
-        assert_eq!(length(240, SIX_EIGHT), "1 beat");
-        assert_eq!(length(480, SIX_EIGHT), "2 beats");
-    }
-
-    #[test]
-    fn a_shared_pattern_counts_from_the_pattern_and_an_edit_says_how_far_it_reaches() {
-        let origin = Origin::Pattern { sharing_parts: 3 };
-        let note = note_at(62, 960, 480);
-        assert_eq!(
-            roll_name(Some(&note), 1, COMMON_TIME, origin),
-            "Piano roll, D 4, pattern bar 1 beat 3, 1 beat, velocity 100"
-        );
-        assert_eq!(
-            describe_outcome(Outcome::Deleted, origin).as_deref(),
-            Some("Removed from 3 parts.")
-        );
-        assert_eq!(
-            describe_outcome(Outcome::Edited, origin).as_deref(),
-            Some("Changed in 3 parts.")
-        );
-        assert_eq!(
-            describe_outcome(Outcome::Added, Origin::Pattern { sharing_parts: 1 }).as_deref(),
-            Some("Added.")
-        );
-        assert_eq!(describe_outcome(Outcome::Edited, Origin::Song), None);
-    }
-
-    #[test]
-    fn the_name_carries_state_only_and_never_an_outcome() {
-        let note = note_at(60, 0, 480);
-        assert_eq!(
-            roll_name(None, 0, COMMON_TIME, Origin::Song),
-            "Piano roll, empty"
-        );
-        assert_eq!(
-            roll_name(None, 4, COMMON_TIME, Origin::Song),
-            "Piano roll, no note selected"
-        );
-        let name = roll_name(Some(&note), 1, COMMON_TIME, Origin::Song).to_lowercase();
-        for word in [
-            "deleted", "removed", "already", "added", "cannot", "nothing",
-        ] {
-            assert!(!name.contains(word), "{word:?} in {name:?}");
-        }
-    }
-
-    #[test]
-    fn every_outcome_that_changes_no_note_has_words_of_its_own() {
-        for outcome in [
-            Outcome::AlreadyFirst,
-            Outcome::AlreadyLast,
-            Outcome::AlreadyHighest,
-            Outcome::AlreadyLowest,
-            Outcome::AlreadyAtStart,
-            Outcome::AlreadyAtEnd,
-            Outcome::AlreadyShortest,
-            Outcome::AlreadyLongest,
-            Outcome::NoRoom,
-            Outcome::NoSelection,
-            Outcome::Empty,
-            Outcome::Cleared,
-            Outcome::SelectionReset,
-        ] {
-            assert!(
-                describe_outcome(outcome, Origin::Song).is_some(),
-                "{outcome:?} would be silent"
-            );
-        }
-        assert_eq!(
-            describe_outcome(Outcome::Cleared, Origin::Song).as_deref(),
-            Some("No note selected; Quantize, transpose and Copy apply to all notes.")
-        );
-    }
-
-    #[test]
-    fn a_lane_says_what_it_automates_and_how_many_points_it_holds() {
-        assert_eq!(
-            describe_lane("Automation lane", "Pitch bend", 1),
-            "Automation lane, Pitch bend, 1 point"
-        );
-        assert_eq!(
-            describe_lane("Mixer automation lane", "Channel gain", 0),
-            "Mixer automation lane, Channel gain, 0 points"
-        );
-    }
-
-    #[test]
-    fn the_transport_says_its_state_tempo_meter_and_position_in_bars_and_in_time() {
-        let mut transport = TransportState {
-            playing: PlayingState::Stopped,
-            tempo_beats_per_minute: 64.0,
-            meter: COMMON_TIME,
-            position_tick: 0,
-            position_milliseconds: 0,
-        };
-        assert_eq!(
-            describe_transport(&transport),
-            "Transport, stopped, tempo 64 beats per minute, 4 4 time, bar 1 beat 1, \
-             position 0 minutes, 0 seconds"
-        );
-        transport.playing = PlayingState::Playing;
-        transport.tempo_beats_per_minute = 120.5;
-        transport.position_tick = 1_920 + 480 + 300;
-        transport.position_milliseconds = 61_900;
-        assert_eq!(
-            describe_transport(&transport),
-            "Transport, playing, tempo 120.5 beats per minute, 4 4 time, bar 2 beat 2, \
-             position 1 minute, 1 second"
-        );
-        transport.meter = SIX_EIGHT;
-        transport.position_tick = 1_440 + 5 * 240;
-        assert!(describe_transport(&transport).contains("6 8 time, bar 2 beat 6,"));
-    }
-
-    #[test]
-    fn every_unavailable_control_has_a_reason() {
-        for reason in [
-            Unavailable::NoNoteSelected,
-            Unavailable::NothingToUndo,
-            Unavailable::NothingToRedo,
-            Unavailable::WhileRecording,
-            Unavailable::NoTrack,
-            Unavailable::NoOtherSound,
-        ] {
-            assert!(!unavailable_reason(reason).is_empty(), "{reason:?}");
-        }
-        assert_eq!(
-            Some(unavailable_reason(Unavailable::NoNoteSelected)),
-            describe_outcome(Outcome::NoSelection, Origin::Song).as_deref(),
-            "a disabled one-note button and its chord give the same reason"
-        );
-    }
-
-    #[test]
-    fn a_sound_says_where_it_is_in_the_list_and_an_arranger_lane_and_part_say_what_they_hold() {
-        assert_eq!(
-            describe_sound("Bass", Some(3), 12, "Synth"),
-            "Bass, 4 of 12 synth sounds"
-        );
-        assert_eq!(
-            describe_sound("Mine", None, 1, "Drum kit"),
-            "Mine, not one of the 1 drum kit sound listed"
-        );
-        assert_eq!(
-            describe_track(1, "Bass", 1, 3, true),
-            "Track 2, Bass, 1 unique note, 3 parts, muted"
-        );
-        assert_eq!(
-            describe_part("Pattern 1", 1_920 * 2, 1_920, COMMON_TIME),
-            "Part, Pattern 1, bar 3 beat 1, 4 beats"
-        );
-    }
-
-    #[test]
-    fn the_key_help_names_every_chord_of_the_model_with_the_platform_command_key() {
-        for command_key in ["Control", "Command"] {
-            let help = roll_key_help(command_key);
-            for command in RollCommand::ALL {
-                let (modifier, key) = command.chord();
-                let chord = match modifier {
-                    ChordModifier::None => key.name().to_owned(),
-                    ChordModifier::Shift => format!("Shift+{}", key.name()),
-                    ChordModifier::Command => format!("{command_key}+{}", key.name()),
-                };
-                assert!(help.contains(&chord), "{chord:?} missing from {help:?}");
-            }
-            for chord in ["Home", "End", "Shift+Up", "Shift+Down", "Escape", "F6"] {
-                assert!(help.contains(chord), "{chord:?} missing from {help:?}");
-            }
-        }
-        assert!(!roll_key_help("Command").contains("Control"));
-    }
-}
+mod tests;

@@ -3,7 +3,10 @@ use std::path::{Path, PathBuf};
 use eframe::egui::{self, RichText, TextureHandle};
 
 mod chrome;
+#[cfg(test)]
+mod command_outcome_tests;
 mod drafts;
+mod files;
 #[cfg(test)]
 mod key_dispatch_tests;
 #[cfg(test)]
@@ -12,19 +15,24 @@ mod keyboard_page;
 mod keys;
 mod notes_view;
 mod recording;
+#[cfg(test)]
+mod song_tests;
+mod song_view;
+mod sound_library;
 mod sounds;
 #[cfg(test)]
 mod surface_names_tests;
 #[cfg(test)]
 mod test_harness;
 mod track_rack;
+mod tracks;
 mod transport_readout;
 mod undo;
 
 use crate::{
     mixer::{self, MixerState},
     theme,
-    workspace::{self, View},
+    workspace::View,
 };
 use evil_project::{Instrument, InstrumentSource, Project, Track};
 
@@ -96,6 +104,9 @@ pub struct StudioApp {
     frame_start: Option<undo::FrameStart>,
     held_gesture: Option<undo::HeldGesture>,
     gestures_started: u64,
+    song: crate::arranger::SongState,
+    track_name_before_edit: Option<(usize, String)>,
+    show_key_help: bool,
 }
 
 enum PendingRender {
@@ -194,8 +205,13 @@ impl StudioApp {
             frame_start: None,
             held_gesture: None,
             gestures_started: 0,
+            song: crate::arranger::SongState::default(),
+            track_name_before_edit: None,
+            show_key_help: false,
         };
-        app.add_track();
+        if let Err(error) = app.add_track_quietly() {
+            app.status = format!("Could not add a track: {error}");
+        }
         app.dirty = false;
         app.open_launch(options);
         app
@@ -258,171 +274,9 @@ impl StudioApp {
         }
     }
 
-    fn structural_edit_allowed(&mut self) -> bool {
-        if self.recorder.is_some() {
-            self.status = "Commit the current take before changing tracks".to_owned();
-            self.announcer.announce(self.status.clone());
-            false
-        } else {
-            true
-        }
-    }
-
     fn invalidate_beats_link(&mut self) {
         self.beats_binding = None;
         self.beats.clear_instrument_link();
-    }
-
-    fn remove_selected_track(&mut self) {
-        if !self.can_replace_sound() {
-            return;
-        }
-        let index = self.roll.selected_track;
-        if self.project.remove_track(index).is_ok() {
-            self.invalidate_beats_link();
-            self.automation.clear_selection();
-            let new_index = if self.project.tracks.is_empty() {
-                0
-            } else {
-                index.min(self.project.tracks.len() - 1)
-            };
-            self.discard_sound_drafts();
-            self.roll.select_track(new_index);
-            self.dirty = true;
-            self.status = format!("Deleted track {index}");
-        }
-    }
-
-    fn duplicate_selected_track(&mut self) {
-        if !self.structural_edit_allowed() {
-            return;
-        }
-        match self.project.duplicate_track(self.roll.selected_track) {
-            Ok(index) => {
-                self.roll.select_track(index);
-                self.sync_sound_drafts();
-                self.dirty = true;
-                self.status = format!("Duplicated track {index}");
-            }
-            Err(error) => self.status = format!("Could not duplicate track: {error}"),
-        }
-    }
-
-    fn move_selected_track(&mut self, offset: isize) {
-        if !self.structural_edit_allowed() {
-            return;
-        }
-        let index = self.roll.selected_track;
-        let new_index = index as isize + offset;
-        if new_index < 0 || new_index >= self.project.tracks.len() as isize {
-            return;
-        }
-        if self.project.move_track(index, new_index as usize).is_ok() {
-            self.roll.select_track(new_index as usize);
-            self.sync_sound_drafts();
-            self.dirty = true;
-        }
-    }
-
-    /// Whether anything would be lost, an edit still in progress included: a held key must not
-    /// let New or Open replace the project without asking.
-    fn unsaved_changes(&mut self) -> bool {
-        self.record_pending_edit();
-        self.dirty || self.recorder.is_some() || self.has_sound_drafts()
-    }
-
-    fn can_discard_changes(&mut self) -> bool {
-        let unsaved = self.unsaved_changes();
-        if unsaved {
-            self.stop_keyboard();
-            self.beats.stop();
-        }
-        !unsaved
-            || rfd::MessageDialog::new()
-                .set_title("Unsaved changes")
-                .set_description("Discard unsaved changes?")
-                .set_buttons(rfd::MessageButtons::YesNo)
-                .show()
-                == rfd::MessageDialogResult::Yes
-    }
-
-    fn add_track(&mut self) {
-        if !self.structural_edit_allowed() {
-            return;
-        }
-        let number = self.project.tracks.len() + 1;
-        let name = format!("Track {number}");
-        let result = self
-            .project
-            .add_instrument(Instrument::synth(&name, "lead"))
-            .and_then(|instrument| {
-                self.project.add_track(Track {
-                    name,
-                    instrument,
-                    ..Track::default()
-                })
-            });
-        match result {
-            Ok(index) => {
-                self.roll.select_track(index);
-                self.sync_sound_drafts();
-                self.dirty = true;
-                if self.view == View::Pads {
-                    self.view = View::Synth;
-                }
-                self.status = "Track added".to_owned();
-            }
-            Err(error) => self.status = format!("Could not add track: {error}"),
-        }
-    }
-
-    fn add_drum_track(&mut self) {
-        if !self.structural_edit_allowed() {
-            return;
-        }
-        let number = self.project.tracks.len() + 1;
-        let name = format!("Drums {number}");
-        let result = self
-            .project
-            .add_instrument(Instrument::drum_kit(&name, "maxwell"))
-            .and_then(|instrument| {
-                self.project.add_track(Track {
-                    name,
-                    instrument,
-                    ..Track::default()
-                })
-            });
-        match result {
-            Ok(index) => {
-                self.roll.select_track(index);
-                self.sync_sound_drafts();
-                self.view = View::Pads;
-                self.dirty = true;
-                self.status = "Drum track added with the Maxwell kit".to_owned();
-            }
-            Err(error) => self.status = format!("Could not add drum track: {error}"),
-        }
-    }
-
-    fn new_project(&mut self) {
-        if !self.can_discard_changes() {
-            return;
-        }
-        self.stop_preview();
-        self.clear_all_sound_drafts();
-        self.project = Project::new("Untitled");
-        self.imported_track_indices = None;
-        self.show_about = false;
-        self.project_path = None;
-        self.source_midi = None;
-        self.roll = RollState::default();
-        self.transport = Transport::new(piano_roll::bar_ticks(&self.project));
-        self.automation = AutomationState::default();
-        self.invalidate_beats_link();
-        self.add_track();
-        self.reset_history();
-        self.dirty = false;
-        self.status = "New project".to_owned();
     }
 
     fn open_patch_lab(&mut self) -> bool {
@@ -691,248 +545,6 @@ impl StudioApp {
         });
     }
 
-    fn open_project(&mut self) {
-        let Some(path) = self
-            .file_dialog()
-            .add_filter("MIDI Evil Projects", &["evil", "rmp"])
-            .pick_file()
-        else {
-            return;
-        };
-        self.open_project_path(&path);
-    }
-
-    fn open_project_path(&mut self, path: &Path) {
-        if !self.can_discard_changes() {
-            return;
-        }
-        self.stop_preview();
-        match Project::load(path) {
-            Ok(project) => {
-                self.clear_all_sound_drafts();
-                self.project = project;
-                self.imported_track_indices = None;
-                self.show_about = false;
-                self.source_midi = self.project.source_midi.as_ref().map(PathBuf::from);
-                self.roll = RollState::default();
-                self.transport = Transport::new(piano_roll::bar_ticks(&self.project));
-                self.automation = AutomationState::default();
-                self.invalidate_beats_link();
-                self.project_path = Some(path.to_path_buf());
-                self.reset_history();
-                self.dirty = false;
-                self.status = format!("Opened {}", path.display());
-            }
-            Err(error) => self.status = format!("Could not open project: {error}"),
-        }
-    }
-
-    fn save_project(&mut self) {
-        let Some(path) = self.project_path.clone() else {
-            self.save_project_as();
-            return;
-        };
-        self.save_to(path);
-    }
-
-    fn save_project_as(&mut self) {
-        let Some(path) = self
-            .file_dialog()
-            .add_filter("MIDI Evil Projects", &["evil", "rmp"])
-            .set_file_name("Untitled.evil")
-            .save_file()
-        else {
-            return;
-        };
-        self.source_midi = None;
-        self.project.source_midi = None;
-        self.save_to(path);
-    }
-
-    fn save_to(&mut self, path: PathBuf) {
-        let midi_output = match &self.source_midi {
-            Some(midi_path) => {
-                match evil_exports::export_native_project(&self.project, self.patch_base()) {
-                    Ok(report) => Some((midi_path.clone(), report)),
-                    Err(error) => {
-                        self.status = format!("Could not export MIDI: {error}");
-                        return;
-                    }
-                }
-            }
-            None => None,
-        };
-        self.project.source_midi = self
-            .source_midi
-            .as_ref()
-            .map(|path| path.to_string_lossy().into_owned());
-        let old_base = self.patch_base().to_path_buf();
-        let new_base = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        let mut saved_project = self.project.clone();
-        rebase_project_sources(&mut saved_project, &old_base, new_base);
-        if let Err(error) = saved_project.save(&path) {
-            self.status = format!("Could not save project: {error}");
-            return;
-        }
-        if let Some((midi_path, report)) = midi_output {
-            if let Err(error) = evil_project::atomic_write(&midi_path, &report.data) {
-                self.status = format!("Could not save MIDI {}: {error}", midi_path.display());
-                return;
-            }
-            self.status = automation::midi_export_status(
-                format!(
-                    "Saved {} and exported {} notes to {}",
-                    path.display(),
-                    report.note_count,
-                    midi_path.display()
-                ),
-                report.native_only_mixer_automation_events,
-            );
-        } else {
-            self.status = format!("Saved {}", path.display());
-        }
-        self.history.rebase_instruments(&old_base, new_base);
-        self.project = saved_project;
-        self.saved_this_frame = Some(self.project.clone());
-        self.stop_keyboard();
-        self.beats_binding = None;
-        self.project_path = Some(path);
-        self.dirty = false;
-    }
-
-    fn relink_midi(&mut self) {
-        if self.source_midi.is_none() {
-            self.status = "This project has no linked MIDI file".to_owned();
-            return;
-        }
-        let Some(path) = self
-            .file_dialog()
-            .add_filter("Standard MIDI File", &["mid", "midi"])
-            .pick_file()
-        else {
-            return;
-        };
-        self.source_midi = Some(path.clone());
-        self.project.source_midi = Some(path.to_string_lossy().into_owned());
-        self.dirty = true;
-        self.status = format!("Relinked MIDI to {}", path.display());
-    }
-
-    fn export_midi(&mut self) {
-        let Some(output) = self
-            .file_dialog()
-            .add_filter("Standard MIDI File", &["mid"])
-            .set_file_name("Untitled.mid")
-            .save_file()
-        else {
-            return;
-        };
-        match evil_exports::export_native_project_to_path(&self.project, self.patch_base(), &output)
-        {
-            Ok(report) => {
-                self.status = automation::midi_export_status(
-                    format!(
-                        "Exported {} notes from {} tracks to {}",
-                        report.note_count,
-                        report.track_count,
-                        output.display()
-                    ),
-                    report.native_only_mixer_automation_events,
-                );
-            }
-            Err(error) => self.status = format!("Could not export MIDI: {error}"),
-        }
-    }
-
-    fn import_midi(&mut self) {
-        let Some(path) = self
-            .file_dialog()
-            .add_filter("Standard MIDI File", &["mid", "midi"])
-            .pick_file()
-        else {
-            return;
-        };
-        self.import_midi_path(&path);
-    }
-
-    fn import_midi_path(&mut self, path: &Path) {
-        if !self.can_discard_changes() {
-            return;
-        }
-        let name = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or("Imported MIDI")
-            .to_owned();
-        let result = evil_imports::import_midi_file(path)
-            .map_err(|error| error.to_string())
-            .and_then(|performance| {
-                let skipped = performance.skipped_controller_events();
-                let bends = performance.pitch_bend_count();
-                let pressure = performance.aftertouch_count();
-                let controllers = performance.controller_count();
-                let file_indices: Vec<usize> = performance
-                    .tracks
-                    .iter()
-                    .map(|track| track.track_index)
-                    .collect();
-                Project::from_performance(name, &performance)
-                    .map(|project| (project, file_indices, skipped, bends, pressure, controllers))
-                    .map_err(|error| error.to_string())
-            });
-        match result {
-            Ok((project, file_indices, skipped, bends, pressure, controllers)) => {
-                self.stop_preview();
-                self.clear_all_sound_drafts();
-                self.project = project;
-                self.imported_track_indices = Some(file_indices);
-                self.show_about = false;
-                self.source_midi = Some(path.to_path_buf());
-                self.project.source_midi = Some(path.to_string_lossy().into_owned());
-                self.project_path = Some(path.with_extension("evil"));
-                self.roll = RollState::default();
-                self.transport = Transport::new(piano_roll::bar_ticks(&self.project));
-                self.automation = AutomationState::default();
-                self.invalidate_beats_link();
-                self.reset_history();
-                self.dirty = true;
-                self.status = format!(
-                    "Imported {} — {} notes{}{}{}{}",
-                    path.display(),
-                    self.project
-                        .tracks
-                        .iter()
-                        .map(|track| track.notes.len())
-                        .sum::<usize>(),
-                    if bends > 0 {
-                        format!("; {bends} pitch-bend events preserved")
-                    } else {
-                        String::new()
-                    },
-                    if pressure > 0 {
-                        format!("; {pressure} aftertouch events preserved")
-                    } else {
-                        String::new()
-                    },
-                    if controllers > 0 {
-                        format!("; {controllers} controller events preserved")
-                    } else {
-                        String::new()
-                    },
-                    if skipped > 0 {
-                        format!("; {skipped} controller/automation events not rendered")
-                    } else {
-                        String::new()
-                    }
-                );
-            }
-            Err(error) => self.status = format!("Could not import MIDI: {error}"),
-        }
-    }
-
     fn preview_project(&mut self) {
         let (start_tick, end_tick) = self.transport.range();
         self.start_render(PendingRender::Preview {
@@ -944,7 +556,7 @@ impl StudioApp {
 
     fn start_render(&mut self, action: PendingRender) {
         if self.render_job.is_some() {
-            self.status = "Already rendering; cancel it before starting another".to_owned();
+            self.report("Already rendering; cancel it before starting another.");
             return;
         }
         self.stop_preview();
@@ -988,7 +600,7 @@ impl StudioApp {
             ),
         };
         self.render_job = Some(job);
-        self.status = match &action {
+        let status = match &action {
             PendingRender::Resample { .. } => {
                 "Resampling the section in the background…".to_owned()
             }
@@ -1002,6 +614,13 @@ impl StudioApp {
                 current.file_name
             ),
         };
+        // A render the person asked for says it has begun; playback and the later items of an
+        // export are the transport's and the queue's to show.
+        match &action {
+            PendingRender::Wav(_) | PendingRender::RangeWav { .. } => self.report(status),
+            PendingRender::WavExport { queue, .. } if queue.completed == 0 => self.report(status),
+            _ => self.status = status,
+        }
         self.pending_render = Some(action);
     }
 
@@ -1050,17 +669,20 @@ impl StudioApp {
                 Some(PendingRender::Wav(output) | PendingRender::RangeWav { output, .. }),
                 Ok(rendered),
             ) => {
-                self.status = automation::render_status(
+                self.report(automation::render_status(
                     format!(
                         "Rendered {} notes from {} tracks to {}",
                         rendered.note_count,
                         rendered.track_count,
-                        output.display()
+                        output.file_name().map_or_else(
+                            || output.display().to_string(),
+                            |name| name.to_string_lossy().into_owned()
+                        )
                     ),
                     rendered.unsupported_controller_events,
                     rendered.unsupported_mixer_automation_events,
                     rendered.skipped_drum_notes,
-                );
+                ));
             }
             (
                 Some(PendingRender::WavExport {
@@ -1080,7 +702,7 @@ impl StudioApp {
                 if let Some(current) = queue.next_spec() {
                     self.start_render(PendingRender::WavExport { current, queue });
                 } else {
-                    self.status = automation::render_status(
+                    self.report(automation::render_status(
                         format!(
                             "Exported {} WAV file(s); skipped {} noteless item(s)",
                             queue.completed, queue.skipped
@@ -1088,23 +710,23 @@ impl StudioApp {
                         warnings.0,
                         warnings.1,
                         warnings.2,
-                    );
+                    ));
                 }
             }
             (Some(PendingRender::WavExport { current, queue }), Err(error)) => {
-                self.status = format!(
+                self.report(format!(
                     "Could not export {} after completing {} of {} file(s): {error}",
                     current.file_name, queue.completed, queue.total
-                );
+                ));
             }
             (_, Err(error)) => {
-                self.status = if self.recorder.is_some() {
+                self.report(if self.recorder.is_some() {
                     format!(
                         "Recording with the independent clock; audio preview unavailable: {error}"
                     )
                 } else {
                     format!("Could not render audio: {error}")
-                };
+                });
             }
             _ => {}
         }
@@ -1213,78 +835,6 @@ impl StudioApp {
         }
     }
 
-    fn file_dialog(&mut self) -> rfd::FileDialog {
-        // Native dialogs block UI note-off processing until they close.
-        self.stop_keyboard();
-        self.beats.stop();
-        let mut dialog = rfd::FileDialog::new();
-        if let Some(project) = &self.project_base {
-            dialog = dialog.set_directory(project);
-        }
-        dialog
-    }
-
-    fn render_audio(&mut self) {
-        let Some(output) = self
-            .file_dialog()
-            .add_filter("WAV audio", &["wav"])
-            .set_file_name("Untitled.wav")
-            .save_file()
-        else {
-            return;
-        };
-        self.start_render(PendingRender::Wav(output));
-    }
-
-    fn render_section_audio(&mut self) {
-        let Some(output) = self
-            .file_dialog()
-            .add_filter("WAV audio", &["wav"])
-            .set_file_name("Section.wav")
-            .save_file()
-        else {
-            return;
-        };
-        let (start_tick, end_tick) = self.transport.range();
-        self.start_render(PendingRender::RangeWav {
-            output,
-            start_tick,
-            end_tick,
-        });
-    }
-
-    fn render_track_stems(&mut self) {
-        let Some(output_directory) = self.file_dialog().pick_folder() else {
-            return;
-        };
-        match evil_render::stem_export_plan(&self.project, None) {
-            Ok(plan) => self.start_wav_export_plan(output_directory, plan),
-            Err(error) => self.status = format!("Could not plan track stems: {error}"),
-        }
-    }
-
-    fn render_arrangement_parts(&mut self) {
-        let Some(output_directory) = self.file_dialog().pick_folder() else {
-            return;
-        };
-        match evil_render::part_export_plan(&self.project, None, None) {
-            Ok(plan) => self.start_wav_export_plan(output_directory, plan),
-            Err(error) => self.status = format!("Could not plan arrangement parts: {error}"),
-        }
-    }
-
-    fn start_wav_export_plan(&mut self, output_directory: PathBuf, plan: evil_render::ExportPlan) {
-        let mut queue = WavExportQueue::new(output_directory, plan);
-        if queue.is_empty() {
-            self.status = "No note-containing tracks or arrangement parts to export".to_owned();
-            return;
-        }
-        let current = queue
-            .next_spec()
-            .expect("a nonempty export queue has a first item");
-        self.start_render(PendingRender::WavExport { current, queue });
-    }
-
     fn poll_instance(&mut self, context: &egui::Context) {
         for _ in 0..4 {
             let message = match &self.instance {
@@ -1361,16 +911,21 @@ impl eframe::App for StudioApp {
         self.sync_sound_drafts();
         self.about_window(root.ctx());
         self.sound_browser(root.ctx());
+        self.key_help_window(root.ctx());
         if let Some(path) = self.recovery.show(root.ctx()) {
             self.open_project_path(&path);
+        }
+        if let Some(outcome) = self.recovery.take_outcome() {
+            self.report(outcome);
         }
         crate::accessibility::name_window(root.ctx());
         self.announcer.end_frame(root.ctx());
         regions::end_frame(root.ctx());
-        self.roll.had_focus = self
-            .roll
-            .widget_id
-            .is_some_and(|roll| root.ctx().memory(|memory| memory.has_focus(roll)));
+        let has_focus = |widget: Option<egui::Id>| {
+            widget.is_some_and(|widget| root.ctx().memory(|memory| memory.has_focus(widget)))
+        };
+        self.roll.had_focus = has_focus(self.roll.widget_id);
+        self.song.had_focus = has_focus(self.song.widget_id);
         if let Some(start) = self.frame_start.take() {
             self.finish_project_frame(start, &previous_base);
         }
@@ -1388,28 +943,7 @@ impl StudioApp {
             return;
         }
         match self.view {
-            View::Song => {
-                let previous_transport = self.transport;
-                let playhead_tick = self.song_playhead_tick();
-                let allow_structural_edits = self.recorder.is_none();
-                let result = workspace::song(
-                    ui,
-                    &mut self.project,
-                    &mut self.roll,
-                    &mut self.transport,
-                    playhead_tick,
-                    allow_structural_edits,
-                );
-                if result.edit_notes {
-                    self.view = View::Notes;
-                }
-                if let Some(status) = result.status {
-                    self.status = status;
-                }
-                if self.transport != previous_transport {
-                    self.stop_preview();
-                }
-            }
+            View::Song => self.song_view(ui),
             View::Notes => self.notes_view(ui),
             View::Mixer => {
                 let mut selected = self.roll.selected_track;

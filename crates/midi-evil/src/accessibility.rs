@@ -15,9 +15,6 @@ pub trait Accessible: Sized {
     /// Sets the control's accessible name.
     fn named(self, name: impl Into<String>) -> Self;
 
-    /// Sets the role and the name of a widget egui gives neither, such as a painted lane.
-    fn named_as(self, role: accesskit::Role, name: impl Into<String>) -> Self;
-
     /// While the control is disabled, says why.
     fn unavailable_because(self, reason: Unavailable) -> Self;
 
@@ -31,12 +28,6 @@ impl Accessible for egui::Response {
         self.ctx
             .accesskit_node_builder(self.id, |node| node.set_label(name));
         self
-    }
-
-    fn named_as(self, role: accesskit::Role, name: impl Into<String>) -> Self {
-        self.ctx
-            .accesskit_node_builder(self.id, |node| node.set_role(role));
-        self.named(name)
     }
 
     fn unavailable_because(self, reason: Unavailable) -> Self {
@@ -85,6 +76,31 @@ pub fn name_resize_handle(context: &egui::Context, panel: egui::Id, name: &str) 
         context.accesskit_node_builder(handle, |node| {
             node.set_role(accesskit::Role::Splitter);
             node.set_label(name);
+        });
+    }
+}
+
+/// Names the popup a menu button opened, which egui leaves an unnamed Tab stop: "Project menu".
+pub fn name_menu(context: &egui::Context, button: &egui::Response, name: &str) {
+    let popup = egui::Popup::default_response_id(button);
+    for node in [popup, popup.with("move")] {
+        if drawn_this_frame(context, node) {
+            context.accesskit_node_builder(node, |builder| {
+                builder.set_role(accesskit::Role::Menu);
+                builder.set_label(name);
+            });
+        }
+    }
+}
+
+/// Names a movable window's title bar, a Tab stop that only a pointer can drag.
+pub fn name_window_title_bar(context: &egui::Context, window: egui::Id, title: &str) {
+    let bar = window.with("__title_click");
+    if drawn_this_frame(context, bar) {
+        context.accesskit_node_builder(bar, |node| {
+            node.set_label(format!(
+                "{title}, title bar, dragged with a pointer to move it"
+            ));
         });
     }
 }

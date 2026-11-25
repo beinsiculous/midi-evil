@@ -58,8 +58,13 @@ credential configured"). Deepseek stood in, as the `roles` skill allows.
 | 20 | W-A1b probe v1 (diff) | gemini | 4 | 2 | 1 | 1 | "`key_until` … breaks on timeout … and returns normally without asserting that `text` was ever present" | 7:55 |
 | 20 | W-A1b probe v1 (diff) | deepseek | 8 | 5 | 3 | 0 | "`--key space --expect \"Transport, playing\" --expect-quiet 5` is enough: the `--expect` poll pumps events while waiting … `expect_quiet` then fails although the five-second window itself was silent" — its two Criticals were the missing application half it had not been shown | 10:15 |
 | 21 | W-A1b code v2 (diff) | codex | 1 | 1 | 0 | 0 | "It now calls `Project::timing()`, which accepts the unordered changes. `Performance::seconds_at(1440)` subsequently subtracts `960` from `480` in unsigned arithmetic." — in the planner's own fix | 2:27 |
+| 22 | W-A1c code v1 (diff) | codex | 3 | 3 | 0 | 0 | "`run_song_command` selects track B without synchronizing sound drafts" — and the same missing call let Up and Down change the track during a take | 3:21 |
+| 22 | W-A1c code v1 (diff) | deepseek | 4 | 4 | 0 | 0 | "`lost_focus()` now fires carrying the stale `(0, \"Track 1\")` … the screen reader says 'Renamed Track 1 to Bass.' while the rename the user actually just made on Track 2 is never announced" | 14:58 |
+| 22 | W-A1c probe v1 (diff) | gemini | 6 | 4 | 1 | 1 | "`open_in_running` only pumps events for a fixed `2 * EVENT_WINDOW_SECONDS` … before `recorder.print_and_clear()`" | 7:42 |
+| 22 | W-A1c probe v1 (diff) | deepseek | 6 | 3 | 2 | 1 | "If `native-gate-arranger-and-files.sh` is renamed, unreadable, or has a syntax error, `source` returns non-zero, the script continues, `failed` stays 0" — a false green; its two "the gate cannot pass" findings came from being shown the probe's diff alone, the planner's error a second time | 9:42 |
+| 23 | W-A1c code v2 (diff) | codex | 1 | 1 | 0 | 0 | "Delete removes A and shifts B to index 0, but `SongState.part_drag` still identifies index 0 … queues `MoveTo(1920)` against B" | 3:46 |
 
-Totals so far (through W-A1a; W-A1b's nineteen findings are in the rows above): codex 47 findings, 44 real, two refuted (a lockfile left out of a diff) and one
+Totals so far (through W-A1a; W-A1b's nineteen findings and W-A1c's twenty are in the rows above): codex 47 findings, 44 real, two refuted (a lockfile left out of a diff) and one
 the planner's own excerpt; deepseek 178 findings, 158 real, thirteen refuted, the rest rebutted on
 policy; gemini 51 findings, 32 real, thirteen refuted. On production code the pattern sharpened:
 codex found, in three or four minutes a round, every defect that could lose a person's work — the

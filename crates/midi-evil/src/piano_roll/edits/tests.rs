@@ -221,6 +221,9 @@ fn chords_are_told_apart_by_their_modifiers() {
             ChordModifier::None => none,
             ChordModifier::Shift => shift,
             ChordModifier::Command => egui::Modifiers::COMMAND,
+            ChordModifier::CommandShift | ChordModifier::Alt => {
+                unreachable!("the roll binds no {modifier:?} chord")
+            }
         };
         assert_eq!(RollCommand::from_key(key, modifiers), Some(command));
     }

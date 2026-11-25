@@ -646,7 +646,36 @@ hearing a name at every stop; a tempo typed and committed.
 Delete line — held back from the web build under D12, each its own issue in the milestone, filed
 by the planner before W-A1 reports done.
 
-### W-A1c — the arranger, the files, and the nine steps
+### W-A1c — the arranger, the files, and the nine steps — BUILT 2026-11-25, sitting pending
+
+Built by Claude Opus 5.5 in two passes; 502 tests and the native gate at 455
+expectations. What differed from the section below:
+
+- **The arranger is one widget**, "Song, …", whose cursor is the roll's own selection: a track
+  and one of its parts, or its unique timeline. The lanes and parts W-A1b named as buttons are
+  gone; the pointer hit-tests the one widget and sends the same commands as the keys. Home is the
+  timeline, End the last part; B is the ruler's click; I reads the transport.
+- **The ruler's click was never "place the playhead"**: it sets the start bar and loops the bar
+  after it. B does the same from the cursor's part.
+- **One boundary**, `run_song_command`, takes every arranger command from a key, a button, the
+  inspector or the pointer; a take refuses the ones that change parts, and a change of track,
+  with "Not while recording." A track is selected in one place, `select_sound_track`.
+- **One way to report**: `report` writes the status line and the announcer together. An outcome
+  that follows a focus move waits until the newly focused widget has published its name.
+- **The gate cannot hear a project opened by launch argument** — it announces before any
+  listener is on the bus. The probe's `--open-in-running` hands a file to the running instance
+  through its socket instead, as a second launch from a file manager does. The saved file lives
+  in the gate's own fixture directory, since a relaunch must outlive one run. A new project's
+  Save is Save As, so the nine steps' save row runs on an opened project; Save As on a new one
+  is the sitting's, under the waiver.
+- **The inventory** is `coordination/web/w-a1-inventory.md`, not a section of the result file:
+  65 announced, 9 opening a held-back surface, 40 standard, and six failing items — Refresh MIDI
+  inputs (W3's), three commands with no test past their dialog, the side panel's width handle,
+  and moving a window by its title bar. The five that are not W3's are one issue in the
+  milestone.
+- **The keyboard notes** come from `key_help.rs`, one table per surface, shown by Project ›
+  Keyboard notes…; the key dispatch reads the same tables.
+
 
 **Files:** `arranger.rs` (536 lines — the cursor and edits to `arranger/cursor.rs`); `app.rs` and
 `app/chrome.rs` for the file commands' announcements and the help; the probe and gate.

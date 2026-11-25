@@ -53,6 +53,14 @@ Steps, run in command-line order:
 - `--set-value NAME:VALUE` sets the value box named NAME (`Velocity`, `Tempo in beats per
   minute`) through AT-SPI's Value interface, which AccessKit turns into the widget's SetValue
   action, as a screen reader's value change would be. Focus does not move.
+- `--open-in-running FILE` launches the application a second time with FILE, as opening a project
+  from a file manager or a terminal does; the second launch hands the file to the running
+  instance through the single-instance socket in the private runtime directory and exits. A
+  project opened at launch says so before any listener is on the bus, so this is how a row hears
+  a project load; the step waits, up to three seconds, until that load is heard. The probe
+  refuses unless that socket is there, and the second launch runs with no display at all — no
+  `DISPLAY`, no `WAYLAND_DISPLAY` — and the empty ALSA configuration, so should the hand-over fail
+  it can open no window and no device.
 - `--pause SECONDS` waits, printing the application's events; `--key-until "CHORD|TEXT"` sends
   CHORD every half second until the focused name contains TEXT (bounded by `--wait`) — Enter on
   the transport readout until a render has finished and it says playing.
@@ -110,14 +118,21 @@ name and is itself pressable, so a guess would press the wrong one and say it ha
 
 ## `native-gate.sh` — the native gate's mechanical half
 
-Runs the native gate of W-A1a and W-A1b (plan § W-A1a and § W-A1b, *Gate rows*) and prints the
+Runs the native gate of W-A1 (plan § W-A1a, § W-A1b and § W-A1c) and prints the
 transcript: first the
 refusal rows — the inner entry with the desktop's own environment; one row per clause of its
 check, each with every other clause satisfied so only that clause can refuse; a control with all
 of them satisfied, which must get past the check; and the probe's own check called without the
 launcher — each requiring the desktop's screen-reader flag and settings files to be unchanged;
 then W0's sequence, the transport's step included, and its five edges; then the rows found in
-W0's review, R-1 to R-22, and the instrument list's, each in a fresh application. Every step a row names carries an
+W0's review, R-1 to R-22, and the instrument list's; then, from
+`native-gate-arranger-and-files.sh`, which it sources, the record's nine steps, the Song, track
+panel and file sequences, and a row for each announced command that needs no dialog — each in a
+fresh application. The ninth step, save, is two rows of its own: an edit saved with Control+S to
+the file the project was opened from, and a relaunch on that file that finds the edit, both in
+the gate's private fixture directory, removed on exit. Open from the menu and Save As on a new
+project open the desktop's own dialog, which keys sent to the application's window cannot drive;
+those two are the sitting's alone, under Jesse's written waiver. Every step a row names carries an
 expectation, so exit status 0 means each key did what the row says. Rows that need a project of
 their own — two identical notes, a bass part, two tracks — write it as a small `.evil` file into a
 private temporary directory, removed on exit. What keys cannot show from outside (which of two

@@ -2,6 +2,8 @@ use std::{path::PathBuf, sync::mpsc};
 
 use eframe::egui;
 
+use crate::accessibility::Accessible;
+
 /// The recovery worker writes a separate draft; opening it is an explicit document action.
 pub struct RecoveryWindow {
     pub open: bool,
@@ -12,6 +14,8 @@ pub struct RecoveryWindow {
     worker: Option<mpsc::Receiver<Result<evil_imports::DraftReport, String>>>,
     report: Option<evil_imports::DraftReport>,
     error: Option<String>,
+    /// What the window's last action came to, for the application to report once.
+    outcome: Option<String>,
 }
 
 impl Default for RecoveryWindow {
@@ -25,6 +29,7 @@ impl Default for RecoveryWindow {
             worker: None,
             report: None,
             error: None,
+            outcome: None,
         }
     }
 }
@@ -42,8 +47,17 @@ impl RecoveryWindow {
             if let Some(result) = result {
                 self.worker = None;
                 match result {
-                    Ok(report) => self.report = Some(report),
-                    Err(error) => self.error = Some(error),
+                    Ok(report) => {
+                        self.outcome = Some(format!(
+                            "Draft created: {} notes at {:.1} beats per minute; Open recovered draft opens it.",
+                            report.note_count, report.bpm
+                        ));
+                        self.report = Some(report);
+                    }
+                    Err(error) => {
+                        self.outcome = Some(format!("Could not create the draft: {error}"));
+                        self.error = Some(error);
+                    }
                 }
             }
         }
@@ -51,6 +65,7 @@ impl RecoveryWindow {
         let mut open_draft = None;
         if open {
             egui::Window::new("Recover rhythm from WAV")
+                .id(egui::Id::new("recover-rhythm"))
                 .open(&mut open).collapsible(false).default_width(440.0)
                 .show(context, |ui| {
                     ui.label("Detect onsets and tempo from a recording, then create an editable rhythm draft.");
@@ -59,6 +74,7 @@ impl RecoveryWindow {
                     ui.add_enabled_ui(self.worker.is_none(), |ui| {
                         if ui.button("Choose WAV…").clicked()
                             && let Some(path) = rfd::FileDialog::new().add_filter("WAV audio", &["wav"]).pick_file() {
+                            self.outcome = Some(format!("Chose {}.", path.display()));
                             self.source = Some(path);
                             self.report = None;
                             self.error = None;
@@ -66,7 +82,8 @@ impl RecoveryWindow {
                         if let Some(source) = &self.source { ui.label(source.display().to_string()); }
                         ui.checkbox(&mut self.detect_tempo, "Detect tempo automatically");
                         ui.add_enabled(!self.detect_tempo,
-                            egui::DragValue::new(&mut self.tempo_bpm).range(1.0..=999.0).suffix(" BPM"));
+                            egui::DragValue::new(&mut self.tempo_bpm).range(1.0..=999.0).suffix(" BPM"))
+                            .named("Draft tempo in beats per minute");
                         egui::ComboBox::from_label("Quantize grid")
                             .selected_text(format!("1/{}", self.grid))
                             .show_ui(ui, |ui| {
@@ -82,6 +99,7 @@ impl RecoveryWindow {
                             self.worker = Some(receiver);
                             self.report = None;
                             self.error = None;
+                            self.outcome = Some("Analyzing the audio and creating the draft…".to_owned());
                             std::thread::spawn(move || {
                                 let result = recover(&source, &output, tempo, grid);
                                 let _ = sender.send(result);
@@ -98,8 +116,18 @@ impl RecoveryWindow {
                     }
                 });
         }
+        crate::accessibility::name_window_title_bar(
+            context,
+            egui::Id::new("recover-rhythm"),
+            "Recover rhythm from WAV",
+        );
         self.open = open;
         open_draft
+    }
+
+    /// What the window's last action came to, once.
+    pub fn take_outcome(&mut self) -> Option<String> {
+        self.outcome.take()
     }
 }
 

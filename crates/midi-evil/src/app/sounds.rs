@@ -4,7 +4,7 @@ use crate::instruments::{Collection, LoadedSound, Sound, cycle};
 use crate::speech::{self, Unavailable};
 
 impl StudioApp {
-    fn selected_sound(&self) -> Option<Sound> {
+    pub(super) fn selected_sound(&self) -> Option<Sound> {
         self.project
             .instrument_for_track(self.roll.selected_track)
             .ok()
@@ -35,14 +35,22 @@ impl StudioApp {
             .show() == rfd::MessageDialogResult::Yes
     }
 
-    pub(super) fn select_sound_track(&mut self, index: usize) {
-        if index != self.roll.selected_track && self.structural_edit_allowed() {
-            self.stop_keyboard();
-            self.beats.stop();
-            self.roll.select_track(index);
-            self.sync_sound_drafts();
-            self.keep_view_with_sound_kind();
+    /// The one place the selected track changes, from whichever control asks: refused, and
+    /// said, during a take; the sound drafts follow at once. Returns whether the track is now
+    /// the one asked for.
+    pub(super) fn select_sound_track(&mut self, index: usize) -> bool {
+        if index == self.roll.selected_track {
+            return true;
         }
+        if !self.structural_edit_allowed() {
+            return false;
+        }
+        self.stop_keyboard();
+        self.beats.stop();
+        self.roll.select_track(index);
+        self.sync_sound_drafts();
+        self.keep_view_with_sound_kind();
+        true
     }
 
     /// A synth track is never shown in Pads, nor a drum kit in Synth or Keyboard.
@@ -76,18 +84,26 @@ impl StudioApp {
         if !self.structural_edit_allowed() {
             return;
         }
-        let Some(paths) = self
+        let paths = self
             .file_dialog()
             .add_filter(current.kind.label(), &[current.kind.extension()])
             .pick_files()
-        else {
-            return;
-        };
+            .unwrap_or_default();
+        self.load_sound_paths(&paths, current.kind);
+    }
+
+    /// Remembers the sounds the dialog picked and assigns the first to the selected track,
+    /// reporting what this load came to and nothing older.
+    pub(super) fn load_sound_paths(
+        &mut self,
+        paths: &[PathBuf],
+        kind: crate::instruments::SoundKind,
+    ) {
         let mut first = None;
         let mut errors = Vec::new();
         let mut count = 0;
         for path in paths {
-            let mut sound = Sound::file(&path, current.kind);
+            let mut sound = Sound::file(path, kind);
             match sound.load() {
                 Ok(loaded) => {
                     sound.name = match loaded {
@@ -101,18 +117,27 @@ impl StudioApp {
                 Err(error) => errors.push(format!("{}: {error}", path.display())),
             }
         }
-        if let Some(sound) = first {
-            self.sounds.query.clear();
-            self.sounds.collection = Collection::User;
-            if self.assign_sound(sound) {
-                self.status = format!(
-                    "Loaded {count} user instrument(s); Previous / Next cycles your library"
-                );
+        let mut outcome = match first {
+            None => "Nothing loaded".to_owned(),
+            Some(sound) => {
+                self.sounds.query.clear();
+                self.sounds.collection = Collection::User;
+                if self.assign_sound(sound) {
+                    format!(
+                        "Loaded {count} user instrument(s); Previous / Next cycles your library"
+                    )
+                } else {
+                    format!(
+                        "Loaded {count} user instrument(s) into your library; the track's sound \
+                         is unchanged"
+                    )
+                }
             }
-        }
+        };
         if !errors.is_empty() {
-            self.status = format!("Loaded {count}; could not load {}", errors.join("; "));
+            outcome.push_str(&format!("; could not load {}", errors.join("; ")));
         }
+        self.report(format!("{outcome}."));
     }
 
     pub(super) fn load_patch_draft(&mut self) {
@@ -148,7 +173,7 @@ impl StudioApp {
         self.status = "Patch opened as a draft; Save & assign updates the song".into();
     }
 
-    fn assign_sound(&mut self, sound: Sound) -> bool {
+    pub(super) fn assign_sound(&mut self, sound: Sound) -> bool {
         if self
             .selected_sound()
             .is_none_or(|current| current.kind != sound.kind)
@@ -160,7 +185,7 @@ impl StudioApp {
         let loaded = match sound.load() {
             Ok(loaded) => loaded,
             Err(error) => {
-                self.status = format!("Could not load {}: {error}", sound.name);
+                self.report(format!("Could not load {}: {error}", sound.name));
                 return false;
             }
         };
@@ -231,25 +256,26 @@ impl StudioApp {
             match sound.load() {
                 Ok(loaded) => {
                     if self.assign_loaded_sound(sound.clone(), loaded) {
+                        let mut text = self
+                            .describe_selected_sound()
+                            .unwrap_or_else(|| self.status.clone());
                         if skipped > 0 {
-                            self.status
-                                .push_str(&format!(" · skipped {skipped} unavailable sound(s)"));
+                            text.push_str(&format!(" · skipped {skipped} unavailable sound(s)"));
                         }
-                        self.announce_selected_sound();
+                        self.report(text);
                     }
                     return;
                 }
                 Err(_) => skipped += 1,
             }
         }
-        if skipped > 0 {
-            self.status = format!(
+        self.report(if skipped > 0 {
+            format!(
                 "No other loadable sound; {skipped} unavailable file(s). Load files or remove them from the library."
-            );
+            )
         } else {
-            self.status = speech::unavailable_reason(Unavailable::NoOtherSound).to_owned();
-        }
-        self.announcer.announce(self.status.clone());
+            speech::unavailable_reason(Unavailable::NoOtherSound).to_owned()
+        });
     }
 
     /// Which sound the selected track has and where it is in the list Previous and Next walk,
@@ -267,12 +293,6 @@ impl StudioApp {
             choices.len(),
             current.kind.label(),
         ))
-    }
-
-    fn announce_selected_sound(&mut self) {
-        if let Some(description) = self.describe_selected_sound() {
-            self.announcer.announce(description);
-        }
     }
 
     pub(super) fn sound_bar(&mut self, ui: &mut egui::Ui) {
@@ -305,12 +325,13 @@ impl StudioApp {
                                     );
                                 }
                             });
-                        sound_track.response.named("Track whose sound is shown");
+                        let sound_track = sound_track.response.named("Track whose sound is shown");
+                        crate::accessibility::name_menu(ui.ctx(), &sound_track, "Tracks");
                         if next_track != selected_track {
                             self.select_sound_track(next_track);
                         }
-                        ui.menu_button("+ Track", |ui| {
-                            let enabled = self.recorder.is_none();
+                        let add_menu = ui.menu_button("+ Track", |ui| {
+                            let enabled = self.structure_refused().is_none();
                             if ui
                                 .add_enabled(enabled, egui::Button::new("Synth track"))
                                 .unavailable_because(Unavailable::WhileRecording)
@@ -328,6 +349,11 @@ impl StudioApp {
                                 self.add_drum_track();
                             }
                         });
+                        crate::accessibility::name_menu(
+                            ui.ctx(),
+                            &add_menu.response,
+                            "+ Track menu",
+                        );
                         let Some(current) = self.selected_sound() else {
                             ui.label("Add a synth or drum track to load sounds.");
                             return;
@@ -372,7 +398,12 @@ impl StudioApp {
                             .named(format!("Sound: {described}; opens the sound library"))
                             .clicked()
                         {
-                            self.sounds.open = !self.sounds.open;
+                            if self.sounds.open {
+                                self.sounds.open = false;
+                                self.report("The Sound library window is closed.");
+                            } else {
+                                self.open_sound_library();
+                            }
                         }
                         if ui
                             .add_enabled(can_cycle, egui::Button::new("Next ›"))
@@ -403,86 +434,6 @@ impl StudioApp {
                     });
                 });
             });
-    }
-
-    pub(super) fn sound_browser(&mut self, context: &egui::Context) {
-        if !self.sounds.open {
-            return;
-        }
-        let Some(current) = self.selected_sound() else {
-            return;
-        };
-        let mut open = true;
-        let mut selected = None;
-        let mut forgotten = None;
-        let mut load = false;
-        egui::Window::new(format!("Sound library / {}", current.kind.label()))
-            .id(egui::Id::new("sound-library"))
-            .open(&mut open)
-            .default_width(540.0)
-            .default_height(400.0)
-            .default_pos(context.content_rect().center() - egui::vec2(270.0, 250.0))
-            .collapsible(false)
-            .show(context, |ui| {
-                ui.add(egui::TextEdit::singleline(&mut self.sounds.query)
-                    .hint_text("Search sounds or file paths…").desired_width(f32::INFINITY))
-                    .named("Search sounds or file paths");
-                ui.horizontal_wrapped(|ui| {
-                    for (collection, title) in [(Collection::All, "All sounds"), (Collection::Factory, "Factory"), (Collection::User, "User loaded")] {
-                        ui.selectable_value(&mut self.sounds.collection, collection, title);
-                    }
-                    load = ui.add_enabled(self.recorder.is_none(), egui::Button::new("Load files…"))
-                        .unavailable_because(Unavailable::WhileRecording).clicked();
-                });
-                ui.separator();
-                let choices = self.sounds.choices(&self.project, self.patch_base(), current.kind);
-                let list = egui::ScrollArea::vertical().id_salt("sound-list")
-                    .max_height(320.0).auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        if choices.is_empty() {
-                            ui.label("No matching sounds. Clear the search or load an instrument file.");
-                        }
-                        for sound in &choices {
-                            let origin = if sound.user { "USER" } else { "FACTORY" };
-                            let detail = if sound.user { sound.reference.as_str() } else { sound.kind.label() };
-                            if ui.add_enabled(self.recorder.is_none(), egui::Button::new(
-                                format!("{}   ·   {origin}", sound.name))
-                                .selected(sound.same_source(&current))
-                                .min_size(egui::vec2(ui.available_width(), 36.0))
-                                .truncate())
-                                .on_hover_text(&sound.reference)
-                                .unavailable_because(Unavailable::WhileRecording).clicked() {
-                                selected = Some(sound.clone());
-                            }
-                            if sound.user {
-                                ui.add(egui::Label::new(RichText::new(detail).small().color(theme::MUTED)).truncate()).on_hover_text(detail);
-                                if self.sounds.is_remembered(sound)
-                                    && ui.small_button("Forget library entry").on_hover_text("Keeps the file and project references; removes it from your remembered library").clicked() {
-                                    forgotten = Some(sound.clone());
-                                }
-                            }
-                        }
-                    });
-                crate::accessibility::name_scroll_bars(ui.ctx(), list.id, "Sound list");
-                ui.separator();
-                ui.label("Select a sound to assign it. Previous / Next follows this search and collection.");
-                let instrument_index = self.project.tracks[self.roll.selected_track].instrument;
-                let shared = self.project.tracks.iter().filter(|track| track.instrument == instrument_index).count();
-                if shared > 1 {
-                    ui.colored_label(theme::IVORY, format!("This instrument is shared by {shared} tracks; they change together."));
-                }
-                ui.small("JSON synth patches · EVILKIT drum banks · User files stay in their original locations.");
-            });
-        self.sounds.open = open;
-        if let Some(sound) = forgotten {
-            self.sounds.forget(&sound);
-        }
-        if load {
-            self.load_sound_files();
-        }
-        if let Some(sound) = selected {
-            self.assign_sound(sound);
-        }
     }
 }
 

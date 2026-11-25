@@ -6,6 +6,9 @@ import ctypes
 import ctypes.util
 import math
 import os
+import re
+import stat
+import subprocess
 import time
 
 from gi.repository import GLib
@@ -398,6 +401,13 @@ def check_step_arguments(steps):
             # A description's text may be empty, to say it has none; a key's target may not.
             if not (first and separator) or (kind == "key_until" and not second):
                 raise ProbeError(f"--{kind.replace('_', '-')} {value!r}: give FIRST|SECOND")
+        elif kind == "open_in_running":
+            if not os.path.isfile(value):
+                raise ProbeError(f"--open-in-running {value!r}: no such file")
+            for variable in ("MIDI_EVIL_BINARY", "XDG_RUNTIME_DIR"):
+                if not os.environ.get(variable):
+                    raise ProbeError(f"--open-in-running {value!r}: {variable} is not set; "
+                                     f"run the probe through run-probe.sh")
         elif kind == "expect_unfocused_name_change":
             if not value:
                 raise ProbeError("--expect-unfocused-name-change: give a non-empty prefix")
@@ -408,3 +418,50 @@ def check_step_arguments(steps):
             if not text:
                 raise ProbeError(f"--expect-announcement-count {value!r}: give TEXT:COUNT")
             whole_number(count, f"--expect-announcement-count {value!r}")
+
+
+def running_instance_socket():
+    """The socket the application under test listens on for a second launch, in the private
+    runtime directory: the path instance.rs makes, with the user's name kept to the characters
+    it keeps."""
+    user = re.sub(r"[^A-Za-z0-9_-]", "_", os.environ.get("USER", "default"))
+    return os.path.join(os.environ.get("XDG_RUNTIME_DIR", ""), f"midi-evil-{user}.sock")
+
+
+def second_launch(path, environment):
+    """The second launch's command and environment: no display at all, X or Wayland, no audio
+    device, and the file's absolute path, since the running instance resolves it from its own
+    working directory."""
+    launch_environment = dict(environment, ALSA_CONFIG_PATH=os.path.join(
+        environment["XDG_RUNTIME_DIR"], "silent-asound.conf"))
+    for display in ("DISPLAY", "WAYLAND_DISPLAY"):
+        launch_environment.pop(display, None)
+    return [launch_environment["MIDI_EVIL_BINARY"], os.path.abspath(path)], launch_environment
+
+
+def open_in_running(path, wait_seconds):
+    """Launches the application a second time with a file, as a person opening a project from a
+    file manager or a terminal would; the second launch hands the file to the instance under
+    test through its socket and exits. It is refused unless that socket is there, in the
+    private runtime directory verify_isolation has checked. Should the hand-over fail anyway,
+    the second launch can reach nothing: it is given no display at all, X or Wayland, and no
+    audio device.
+    """
+    socket = running_instance_socket()
+    try:
+        is_socket = stat.S_ISSOCK(os.stat(socket).st_mode)
+    except OSError:
+        is_socket = False
+    if not is_socket:
+        raise ProbeError(f"--open-in-running: no running instance's socket at {socket}")
+    command, environment = second_launch(path, os.environ)
+    try:
+        finished = subprocess.run(command, env=environment,
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+                                  timeout=wait_seconds)
+    except subprocess.TimeoutExpired:
+        raise ProbeError(f"--open-in-running {path!r}: the second launch did not hand the file "
+                         f"over and exit within {wait_seconds:g} seconds") from None
+    if finished.returncode != 0:
+        raise ProbeError(f"--open-in-running {path!r}: the second launch exited "
+                         f"{finished.returncode}: {finished.stderr.strip()}")
