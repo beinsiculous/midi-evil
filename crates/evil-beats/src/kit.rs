@@ -136,12 +136,35 @@ impl DrumKit {
 }
 
 impl DrumPad {
-    /// Import PCM/float mono or stereo WAV, downmixing stereo to a mono pad.
+    /// Import WAV or uncompressed AIFF/AIFC audio based on file extension, preserving stereo.
+    pub fn read(path: impl AsRef<Path>) -> Result<Self, Error> {
+        let path = path.as_ref();
+        let audio =
+            evil_synth::read_audio(path).map_err(|error| Error::InvalidPad(error.to_string()))?;
+        Self::from_decoded(path, audio)
+    }
+
+    /// Import PCM/float mono or stereo WAV, preserving stereo channels.
     pub fn read_wav(path: impl AsRef<Path>) -> Result<Self, Error> {
         let path = path.as_ref();
-        let sound = evil_synth::read_mono_wav(path)
-            .map_err(|error| Error::InvalidPad(error.to_string()))?;
-        let mut pad = Self::new(sound.samples, sound.sample_rate);
+        let audio =
+            evil_synth::read_wav(path).map_err(|error| Error::InvalidPad(error.to_string()))?;
+        Self::from_decoded(path, audio)
+    }
+
+    /// Import mono or stereo uncompressed AIFF/AIFC, preserving stereo channels.
+    pub fn read_aiff(path: impl AsRef<Path>) -> Result<Self, Error> {
+        let path = path.as_ref();
+        let audio =
+            evil_synth::read_aiff(path).map_err(|error| Error::InvalidPad(error.to_string()))?;
+        Self::from_decoded(path, audio)
+    }
+
+    fn from_decoded(path: &Path, audio: evil_synth::DecodedAudio) -> Result<Self, Error> {
+        let mut pad = match audio.right_samples {
+            Some(right) => Self::new_stereo(audio.samples, right, audio.sample_rate),
+            None => Self::new(audio.samples, audio.sample_rate),
+        };
         pad.name = path
             .file_stem()
             .unwrap_or_default()
@@ -244,7 +267,7 @@ mod tests {
     }
 
     #[test]
-    fn imports_pcm_stereo_and_rejects_nonfinite_float_audio() {
+    fn imports_pcm_stereo_and_aiff_and_rejects_nonfinite_float_audio() {
         let path = std::env::temp_dir().join(format!("evil-beats-wav-{}.wav", std::process::id()));
         let spec = hound::WavSpec {
             channels: 2,
@@ -253,11 +276,62 @@ mod tests {
             sample_format: hound::SampleFormat::Int,
         };
         let mut writer = hound::WavWriter::create(&path, spec).unwrap();
-        for sample in [16384_i16, 0, -16384, 0] {
+        for sample in [16384_i16, 0, -16384, 8192] {
             writer.write_sample(sample).unwrap();
         }
         writer.finalize().unwrap();
-        assert_eq!(DrumPad::read_wav(&path).unwrap().samples, vec![0.25, -0.25]);
+        let stereo_pad = DrumPad::read_wav(&path).unwrap();
+        assert_eq!(stereo_pad.samples, vec![0.5, -0.5]);
+        assert_eq!(stereo_pad.right_samples, Some(vec![0.0, 0.25]));
+        assert!(stereo_pad.is_stereo());
+
+        let mut kit = DrumKit::empty("Stereo");
+        kit.pads[0] = Some(KitPad::new(stereo_pad.clone()));
+        let kit_json = kit.to_json().unwrap();
+        assert_eq!(DrumKit::from_json(&kit_json).unwrap(), kit);
+        let mono_kit = {
+            let mut mono = DrumKit::empty("Mono");
+            mono.pads[0] = Some(KitPad::new(DrumPad::new(vec![0.25], 48_000)));
+            mono
+        };
+        assert!(!mono_kit.to_json().unwrap().contains("right_samples"));
+
+        let aiff_path =
+            std::env::temp_dir().join(format!("evil-beats-aiff-{}.aiff", std::process::id()));
+        let mut pcm = Vec::new();
+        for value in [16_384_i16, -8_192, -16_384, 8_192] {
+            pcm.extend(value.to_be_bytes());
+        }
+        let mut comm = Vec::new();
+        comm.extend(2_u16.to_be_bytes());
+        comm.extend(2_u32.to_be_bytes());
+        comm.extend(16_u16.to_be_bytes());
+        let mut rate = [0_u8; 10];
+        let exp = 31 - 48_000_u32.leading_zeros();
+        let sig = u64::from(48_000_u32) << (63 - exp);
+        rate[0..2].copy_from_slice(&(16_383 + exp as u16).to_be_bytes());
+        rate[2..10].copy_from_slice(&sig.to_be_bytes());
+        comm.extend(rate);
+        let mut ssnd = vec![0_u8; 8];
+        ssnd.extend(pcm);
+        let mut chunks = Vec::new();
+        for (id, data) in [(b"COMM", &comm), (b"SSND", &ssnd)] {
+            chunks.extend(id);
+            chunks.extend((data.len() as u32).to_be_bytes());
+            chunks.extend(data);
+        }
+        let mut aiff = Vec::new();
+        aiff.extend(b"FORM");
+        aiff.extend((chunks.len() as u32 + 4).to_be_bytes());
+        aiff.extend(b"AIFF");
+        aiff.extend(chunks);
+        std::fs::write(&aiff_path, aiff).unwrap();
+        let aiff_pad = DrumPad::read(&aiff_path).unwrap();
+        assert_eq!(aiff_pad.samples, vec![0.5, -0.5]);
+        assert_eq!(aiff_pad.right_samples, Some(vec![-0.25, 0.25]));
+        assert_eq!(DrumPad::read_aiff(&aiff_path).unwrap(), aiff_pad);
+        std::fs::remove_file(aiff_path).unwrap();
+
         let mut writer = hound::WavWriter::create(
             &path,
             hound::WavSpec {

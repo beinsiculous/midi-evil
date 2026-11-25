@@ -2,7 +2,7 @@ use std::{ops::Range, path::Path};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Error, RenderedSound, StereoSound, read_mono_aiff, read_mono_wav};
+use crate::{DecodedAudio, Error, StereoSound, read_aiff, read_audio, read_wav};
 
 pub const MAX_SAMPLE_SECONDS: u32 = 30;
 
@@ -70,12 +70,14 @@ impl SampleDirection {
     }
 }
 
-/// Embedded mono audio for one sample oscillator.
+/// Embedded mono or stereo audio for one sample oscillator.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SampleOscillator {
     pub name: String,
     pub samples: Vec<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right_samples: Option<Vec<f32>>,
     pub sample_rate: u32,
     /// Source fundamental corresponding to the oscillator's base frequency.
     pub root_frequency_hz: f32,
@@ -98,6 +100,7 @@ impl Default for SampleOscillator {
         Self {
             name: "Sample".to_owned(),
             samples: Vec::new(),
+            right_samples: None,
             sample_rate: 48_000,
             root_frequency_hz: 440.0,
             playback_start_frame: 0,
@@ -119,59 +122,85 @@ impl SampleOscillator {
         }
     }
 
-    /// Downmix a rendered stereo section into a portable embedded sample.
+    pub fn new_stereo(left: Vec<f32>, right: Vec<f32>, sample_rate: u32) -> Self {
+        Self {
+            samples: left,
+            right_samples: Some(right),
+            sample_rate,
+            ..Self::default()
+        }
+    }
+
+    pub fn is_stereo(&self) -> bool {
+        self.right_samples.is_some()
+    }
+
+    /// Peak amplitude across mono or stereo channels in `start..end` for mono waveform views.
+    pub fn mono_display_peak(&self, start: usize, end: usize) -> f32 {
+        let end = end.min(self.samples.len());
+        let start = start.min(end);
+        let left_peak = self.samples[start..end]
+            .iter()
+            .fold(0.0_f32, |peak, value| peak.max(value.abs()));
+        let Some(right) = &self.right_samples else {
+            return left_peak;
+        };
+        let right_end = end.min(right.len());
+        let right_start = start.min(right_end);
+        right[right_start..right_end]
+            .iter()
+            .fold(left_peak, |peak, value| peak.max(value.abs()))
+    }
+
+    /// Preserve stereo channels when embedding a rendered stereo section.
     pub fn from_stereo(name: impl Into<String>, sound: &StereoSound) -> Result<Self, Error> {
         if sound.left.len() != sound.right.len() {
             return Err(Error::InvalidMix(
                 "resampled audio channels must have the same frame count".to_owned(),
             ));
         }
-        let samples = sound
-            .left
-            .iter()
-            .zip(&sound.right)
-            .map(|(left, right)| (left + right) * 0.5)
-            .collect();
-        let mut sample = Self::new(samples, sound.sample_rate);
+        let mut sample =
+            Self::new_stereo(sound.left.clone(), sound.right.clone(), sound.sample_rate);
         sample.name = name.into();
         sample.validate()?;
         Ok(sample)
     }
 
-    /// Import a WAV or AIFF/AIFC source based on its file extension.
+    /// Import a WAV or AIFF/AIFC source based on its file extension, preserving stereo.
     pub fn read(path: impl AsRef<Path>) -> Result<Self, Error> {
         let path = path.as_ref();
-        if path
-            .extension()
-            .is_some_and(|extension| matches!(extension.to_str(), Some("aif" | "aiff" | "aifc")))
-        {
-            Self::read_aiff(path)
-        } else {
-            Self::read_wav(path)
-        }
+        Self::from_decoded(Self::stem_name(path), read_audio(path)?)
     }
 
-    /// Import mono/stereo PCM or float WAV, downmixing stereo to mono.
+    /// Import mono/stereo PCM or float WAV, preserving stereo channels.
     pub fn read_wav(path: impl AsRef<Path>) -> Result<Self, Error> {
         let path = path.as_ref();
-        Self::from_rendered(path, read_mono_wav(path)?)
+        Self::from_decoded(Self::stem_name(path), read_wav(path)?)
     }
 
-    /// Import mono/stereo uncompressed AIFF/AIFC, downmixing stereo to mono.
+    /// Import mono/stereo uncompressed AIFF/AIFC, preserving stereo channels.
     pub fn read_aiff(path: impl AsRef<Path>) -> Result<Self, Error> {
         let path = path.as_ref();
-        Self::from_rendered(path, read_mono_aiff(path)?)
+        Self::from_decoded(Self::stem_name(path), read_aiff(path)?)
     }
 
-    fn from_rendered(path: &Path, sound: RenderedSound) -> Result<Self, Error> {
-        let mut sample = Self::new(sound.samples, sound.sample_rate);
-        sample.name = path
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
+    pub fn from_decoded(name: impl Into<String>, audio: DecodedAudio) -> Result<Self, Error> {
+        let sample = Self {
+            name: name.into(),
+            samples: audio.samples,
+            right_samples: audio.right_samples,
+            sample_rate: audio.sample_rate,
+            ..Self::default()
+        };
         sample.validate()?;
         Ok(sample)
+    }
+
+    fn stem_name(path: &Path) -> String {
+        path.file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned()
     }
 
     pub fn validate(&self) -> Result<(), Error> {
@@ -179,6 +208,9 @@ impl SampleOscillator {
             || self.samples.is_empty()
             || self.samples.len() > self.sample_rate as usize * MAX_SAMPLE_SECONDS as usize
             || self.samples.iter().any(|sample| !sample.is_finite())
+            || self.right_samples.as_ref().is_some_and(|right| {
+                right.len() != self.samples.len() || right.iter().any(|sample| !sample.is_finite())
+            })
             || !self.root_frequency_hz.is_finite()
             || self.root_frequency_hz <= 0.0
             || self.root_frequency_hz > self.sample_rate as f32 / 2.0
@@ -288,22 +320,67 @@ impl SampleOscillator {
     }
 
     pub(crate) fn at(&self, position: f64) -> f32 {
+        let [left, right] = self.at_stereo(position);
+        if self.right_samples.is_some() {
+            (left + right) * 0.5
+        } else {
+            left
+        }
+    }
+
+    pub(crate) fn at_stereo(&self, position: f64) -> [f32; 2] {
+        let Some((index, next, fraction)) = self.interpolation_points(position) else {
+            return [0.0, 0.0];
+        };
+        let left = self.samples[index] + (self.samples[next] - self.samples[index]) * fraction;
+        let right = match &self.right_samples {
+            Some(right) => right[index] + (right[next] - right[index]) * fraction,
+            None => left,
+        };
+        [left, right]
+    }
+
+    fn interpolation_points(&self, position: f64) -> Option<(usize, usize, f32)> {
         let len = self.samples.len();
         if len == 0 || position < 0.0 {
-            return 0.0;
-        }
-        if self.loop_enabled && self.direction.is_bidirectional() {
-            let (position, reverse) = self.bidirectional_position(position);
-            return self.at_bidirectional(position, reverse);
+            return None;
         }
         let playback_range = self.playback_range();
+        if self.loop_enabled && self.direction.is_bidirectional() {
+            let (position, reverse) = self.bidirectional_position(position);
+            if position < playback_range.start as f64 || position >= playback_range.end as f64 {
+                return None;
+            }
+            let reverse_fractional = reverse && position.fract() > 0.0;
+            let index = if reverse_fractional {
+                position.ceil() as usize
+            } else {
+                position.floor() as usize
+            };
+            let next = if reverse {
+                index.saturating_sub(1)
+            } else {
+                index + 1
+            };
+            let next = if playback_range.contains(&next) {
+                next
+            } else {
+                index
+            };
+            let fraction = if reverse_fractional {
+                index as f64 - position
+            } else {
+                position.fract()
+            } as f32;
+            return Some((index, next, fraction));
+        }
         let position = if self.loop_enabled {
             self.loop_position(position)
         } else {
             position
         };
         if position < playback_range.start as f64 || position >= playback_range.end as f64 {
-            return 0.0;
+            return None;
         }
         let index = position.floor() as usize;
         let loop_range = self.loop_range();
@@ -316,37 +393,7 @@ impl SampleOscillator {
         } else {
             index
         };
-        let fraction = position.fract() as f32;
-        self.samples[index] + (self.samples[next] - self.samples[index]) * fraction
-    }
-
-    fn at_bidirectional(&self, position: f64, reverse: bool) -> f32 {
-        let playback_range = self.playback_range();
-        if position < playback_range.start as f64 || position >= playback_range.end as f64 {
-            return 0.0;
-        }
-        let reverse_fractional = reverse && position.fract() > 0.0;
-        let index = if reverse_fractional {
-            position.ceil() as usize
-        } else {
-            position.floor() as usize
-        };
-        let next = if reverse {
-            index.saturating_sub(1)
-        } else {
-            index + 1
-        };
-        let next = if playback_range.contains(&next) {
-            next
-        } else {
-            index
-        };
-        let fraction = if reverse_fractional {
-            index as f64 - position
-        } else {
-            position.fract()
-        } as f32;
-        self.samples[index] + (self.samples[next] - self.samples[index]) * fraction
+        Some((index, next, position.fract() as f32))
     }
 
     fn bidirectional_position(&self, position: f64) -> (f64, bool) {
@@ -394,7 +441,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wav_import_downmixes_stereo_and_embeds_the_source() {
+    fn wav_import_preserves_stereo_and_embeds_mono_without_right_channel() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("source.wav");
         let mut writer = hound::WavWriter::create(
@@ -407,7 +454,7 @@ mod tests {
             },
         )
         .unwrap();
-        for value in [16_384_i16, 0, -16_384, 0] {
+        for value in [16_384_i16, -8_192, -16_384, 8_192] {
             writer.write_sample(value).unwrap();
         }
         writer.finalize().unwrap();
@@ -415,13 +462,27 @@ mod tests {
         let sample = SampleOscillator::read_wav(&path).unwrap();
         assert_eq!(sample.name, "source");
         assert_eq!(sample.sample_rate, 48_000);
-        assert_eq!(sample.samples, vec![0.25, -0.25]);
+        assert_eq!(sample.samples, vec![0.5, -0.5]);
+        assert_eq!(sample.right_samples, Some(vec![-0.25, 0.25]));
+        assert!(sample.is_stereo());
         assert!(!sample.loop_enabled);
         assert_eq!(sample.loop_range(), 0..2);
+
+        let right_only = SampleOscillator::new_stereo(vec![0.0, 0.1], vec![0.0, -0.75], 48_000);
+        assert_eq!(right_only.mono_display_peak(0, 2), 0.75);
+
+        let mono = SampleOscillator::new(vec![0.25, -0.5], 48_000);
+        assert!(!mono.is_stereo());
+        let json = serde_json::to_string(&mono).unwrap();
+        assert!(!json.contains("right_samples"));
+        assert_eq!(
+            serde_json::from_str::<SampleOscillator>(&json).unwrap(),
+            mono
+        );
     }
 
     #[test]
-    fn stereo_resampling_downmixes_and_validates_embedded_audio() {
+    fn stereo_resampling_preserves_channels_and_validates_embedded_audio() {
         let sound = crate::StereoSound {
             left: vec![0.5, -0.25],
             right: vec![0.25, 0.75],
@@ -429,13 +490,49 @@ mod tests {
         };
         let sample = SampleOscillator::from_stereo("Section", &sound).unwrap();
         assert_eq!(sample.name, "Section");
-        assert_eq!(sample.samples, vec![0.375, 0.25]);
+        assert_eq!(sample.samples, vec![0.5, -0.25]);
+        assert_eq!(sample.right_samples, Some(vec![0.25, 0.75]));
         assert_eq!(sample.sample_rate, 48_000);
+        assert!(sample.is_stereo());
         let mismatched = crate::StereoSound {
             right: Vec::new(),
             ..sound
         };
         assert!(SampleOscillator::from_stereo("Invalid", &mismatched).is_err());
+
+        let stereo_json = serde_json::to_string(&sample).unwrap();
+        assert_eq!(
+            serde_json::from_str::<SampleOscillator>(&stereo_json).unwrap(),
+            sample
+        );
+    }
+
+    #[test]
+    fn stereo_samples_interpolate_loop_bidirectionally_and_slice_across_keys() {
+        let mut sample = SampleOscillator {
+            loop_enabled: true,
+            direction: SampleDirection::ForwardReverse,
+            ..SampleOscillator::new_stereo(
+                vec![0.0, 0.25, 0.5, 0.75],
+                vec![-0.1, -0.2, -0.3, -0.4],
+                8_000,
+            )
+        };
+        assert_eq!(sample.at_stereo(0.5), [0.125, -0.15]);
+        let next = sample.advance(3.0, 1.0);
+        let at_rev = sample.at_stereo(next);
+        assert!((at_rev[0] - 0.5).abs() < 1e-6);
+        assert!((at_rev[1] + 0.3).abs() < 1e-6);
+        assert!((sample.at(0.5) - (0.125 - 0.15) * 0.5).abs() < 1e-6);
+
+        let slices = sample.keyboard_slices(36, 37, 2).unwrap();
+        assert_eq!(slices.len(), 2);
+        for zone in slices {
+            assert!(zone.sample.is_stereo());
+            assert_eq!(zone.sample.right_samples, sample.right_samples);
+        }
+        sample.right_samples = Some(vec![0.0]);
+        assert!(sample.validate().is_err());
     }
 
     #[test]

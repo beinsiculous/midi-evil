@@ -58,6 +58,7 @@ enum Action {
 struct SampleUndo {
     slot: usize,
     samples: Vec<f32>,
+    right_samples: Option<Vec<f32>>,
     playback_start_frame: usize,
     playback_end_frame: Option<usize>,
     label: &'static str,
@@ -68,6 +69,7 @@ impl SampleUndo {
         Self {
             slot,
             samples: pad.samples.clone(),
+            right_samples: pad.right_samples.clone(),
             playback_start_frame: pad.playback_start_frame,
             playback_end_frame: pad.playback_end_frame,
             label,
@@ -76,6 +78,7 @@ impl SampleUndo {
 
     fn restore(self, pad: &mut DrumPad) {
         pad.samples = self.samples;
+        pad.right_samples = self.right_samples;
         pad.playback_start_frame = self.playback_start_frame;
         pad.playback_end_frame = self.playback_end_frame;
     }
@@ -323,7 +326,8 @@ impl BeatsPage {
                             if self.page == Page::Edit {
                                 self.dirty |= ui.text_edit_singleline(&mut pad.voice.name).changed();
                                 waveform(ui, &self.peaks[self.selected], 54.0, theme::track_color(self.selected / 4));
-                                ui.label(RichText::new(format!("{:.2} s / {} Hz / mono", pad.voice.samples.len() as f32 / pad.voice.sample_rate as f32, pad.voice.sample_rate)).small().color(theme::MUTED));
+                                let channels = if pad.voice.is_stereo() { "stereo" } else { "mono" };
+                                ui.label(RichText::new(format!("{:.2} s / {} Hz / {}", pad.voice.samples.len() as f32 / pad.voice.sample_rate as f32, pad.voice.sample_rate, channels)).small().color(theme::MUTED));
                                 let frame_count = pad.voice.samples.len();
                                 let mut trim_start = pad.voice.playback_start_frame;
                                 let mut trim_end = pad.voice.playback_range().end;
@@ -400,11 +404,11 @@ impl BeatsPage {
                                 }
                             }
                         } else {
-                            ui.label("Empty pad. Load a WAV to give it a voice.");
+                            ui.label("Empty pad. Load a WAV or AIFF to give it a voice.");
                         }
                         if self.page == Page::Edit {
                             ui.horizontal(|ui| {
-                                if ui.button("Load WAV").clicked() { action = Some(Action::Import); }
+                                if ui.button("Load WAV/AIFF").clicked() { action = Some(Action::Import); }
                                 if ui.add_enabled(self.kit.pads[self.selected].is_some(), egui::Button::new("Save WAV")).clicked() { action = Some(Action::Export); }
                             });
                             ui.horizontal_wrapped(|ui| {
@@ -605,13 +609,23 @@ fn filter_controls(ui: &mut egui::Ui, filter: &mut Option<DrumFilter>, id: &str)
 fn kit_peaks(kit: &DrumKit) -> [Vec<f32>; PAD_COUNT] {
     std::array::from_fn(|slot| {
         kit.pads[slot].as_ref().map_or_else(Vec::new, |pad| {
+            let chunk_size = pad.voice.samples.len().div_ceil(100).max(1);
             pad.voice
                 .samples
-                .chunks(pad.voice.samples.len().div_ceil(100).max(1))
-                .map(|chunk| {
-                    chunk
+                .chunks(chunk_size)
+                .enumerate()
+                .map(|(index, left_chunk)| {
+                    let left_peak = left_chunk
                         .iter()
-                        .fold(0.0_f32, |peak, sample| peak.max(sample.abs()))
+                        .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+                    let Some(right) = &pad.voice.right_samples else {
+                        return left_peak;
+                    };
+                    let start = index * chunk_size;
+                    let end = (start + left_chunk.len()).min(right.len());
+                    right[start..end]
+                        .iter()
+                        .fold(left_peak, |peak, sample| peak.max(sample.abs()))
                 })
                 .collect()
         })
@@ -665,5 +679,33 @@ mod tests {
         assert_eq!(pad.playback_range(), 1..3);
         assert_eq!(pad.direction, SampleDirection::Reverse);
         assert_eq!(pad.gain, 0.25);
+
+        let mut stereo_pad = DrumPad::new_stereo(
+            vec![0.0, 0.25, -0.5, 0.0],
+            vec![0.0, -0.75, 0.25, 0.0],
+            8_000,
+        );
+        stereo_pad.playback_start_frame = 1;
+        stereo_pad.playback_end_frame = Some(3);
+        let original_left = stereo_pad.samples.clone();
+        let original_right = stereo_pad.right_samples.clone();
+        let undo = SampleUndo::capture(2, &stereo_pad, "crop");
+        assert!(stereo_pad.crop_to_playback_range().unwrap());
+        assert!(stereo_pad.normalize().unwrap());
+        assert_ne!(stereo_pad.samples, original_left);
+        assert_ne!(stereo_pad.right_samples, original_right);
+        undo.restore(&mut stereo_pad);
+        assert_eq!(stereo_pad.samples, original_left);
+        assert_eq!(stereo_pad.right_samples, original_right);
+        assert_eq!(stereo_pad.playback_range(), 1..3);
+
+        let mut kit = DrumKit::empty("Right only");
+        kit.pads[0] = Some(evil_beats::KitPad::new(DrumPad::new_stereo(
+            vec![0.0, 0.0],
+            vec![0.0, 0.9],
+            48_000,
+        )));
+        let peaks = kit_peaks(&kit);
+        assert_eq!(peaks[0], vec![0.0, 0.9]);
     }
 }

@@ -8,7 +8,9 @@ use crate::insert_automation::{
 use crate::polyphony;
 use crate::voice::{VoiceControls, VoiceState};
 use crate::waveshaper::apply_waveshaper;
-use crate::{Error, Lfo, LfoDestination, LfoPhaseSync, LfoWaveform, Patch, VoiceMode, Waveform};
+use crate::{
+    Error, Lfo, LfoDestination, LfoPhaseSync, LfoWaveform, Patch, StereoSound, VoiceMode, Waveform,
+};
 
 const MAX_PERFORMANCE_SECONDS: f64 = 3_600.0;
 
@@ -203,6 +205,112 @@ pub fn render_notes_dry_with_tempo_and_full_automation(
     )
 }
 
+/// Render overlapping notes as independent stereo synth voices without insert effects.
+pub fn render_notes_stereo_dry(patch: &Patch, notes: &[SynthNote]) -> Result<StereoSound, Error> {
+    render_notes_stereo_dry_with_tempo_and_full_automation(patch, notes, &[], &[], &[], &[])
+}
+
+/// Render overlapping stereo notes with tempo and controller automation, without insert effects.
+pub fn render_notes_stereo_dry_with_tempo_and_full_automation(
+    patch: &Patch,
+    notes: &[SynthNote],
+    pitch_bends: &[SynthPitchBend],
+    aftertouch: &[SynthAftertouch],
+    controllers: &[SynthController],
+    tempo_changes: &[SynthTempoChange],
+) -> Result<StereoSound, Error> {
+    let RenderBuffers::Stereo {
+        mut left,
+        mut right,
+    } = render_notes_channels::<true>(
+        patch,
+        notes,
+        pitch_bends,
+        aftertouch,
+        controllers,
+        tempo_changes,
+    )?
+    else {
+        unreachable!("stereo render returns stereo buffers");
+    };
+    soft_limit(&mut left);
+    soft_limit(&mut right);
+    Ok(StereoSound {
+        left,
+        right,
+        sample_rate: patch.sample_rate,
+    })
+}
+
+enum RenderBuffers {
+    Mono(Vec<f32>),
+    Stereo { left: Vec<f32>, right: Vec<f32> },
+}
+
+impl RenderBuffers {
+    fn new(stereo: bool) -> Self {
+        if stereo {
+            Self::Stereo {
+                left: Vec::new(),
+                right: Vec::new(),
+            }
+        } else {
+            Self::Mono(Vec::new())
+        }
+    }
+
+    fn with_len(stereo: bool, len: usize) -> Self {
+        if stereo {
+            Self::Stereo {
+                left: vec![0.0; len],
+                right: vec![0.0; len],
+            }
+        } else {
+            Self::Mono(vec![0.0; len])
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Mono(samples) => samples.len(),
+            Self::Stereo { left, .. } => left.len(),
+        }
+    }
+
+    fn resize(&mut self, len: usize) {
+        match self {
+            Self::Mono(samples) => samples.resize(len, 0.0),
+            Self::Stereo { left, right } => {
+                left.resize(len, 0.0);
+                right.resize(len, 0.0);
+            }
+        }
+    }
+
+    fn add_slice(&mut self, start_frame: usize, count: usize, slice: &Self) {
+        match (self, slice) {
+            (Self::Mono(dst), Self::Mono(src)) => {
+                for (offset, sample) in src.iter().take(count).enumerate() {
+                    dst[start_frame + offset] += sample;
+                }
+            }
+            (
+                Self::Stereo { left, right },
+                Self::Stereo {
+                    left: src_left,
+                    right: src_right,
+                },
+            ) => {
+                for offset in 0..count.min(src_left.len()) {
+                    left[start_frame + offset] += src_left[offset];
+                    right[start_frame + offset] += src_right[offset];
+                }
+            }
+            _ => unreachable!("mismatched mono/stereo render buffers"),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct VoiceRenderTiming {
     gate_frame_count: usize,
@@ -219,6 +327,39 @@ fn render_notes_inner(
     tempo_changes: &[SynthTempoChange],
     apply_insert_effects: bool,
 ) -> Result<RenderedSound, Error> {
+    let RenderBuffers::Mono(mut samples) = render_notes_channels::<false>(
+        patch,
+        notes,
+        pitch_bends,
+        aftertouch,
+        controllers,
+        tempo_changes,
+    )?
+    else {
+        unreachable!("mono render returns mono buffers");
+    };
+    if apply_insert_effects {
+        apply_waveshaper_insert(patch, &mut samples, controllers);
+        apply_delay_insert(patch, &mut samples, controllers, tempo_changes);
+    }
+    soft_limit(&mut samples);
+    if apply_insert_effects && patch.uses_output_dc_block() {
+        block_dc(&mut samples, patch.sample_rate);
+    }
+    Ok(RenderedSound {
+        samples,
+        sample_rate: patch.sample_rate,
+    })
+}
+
+fn render_notes_channels<const STEREO: bool>(
+    patch: &Patch,
+    notes: &[SynthNote],
+    pitch_bends: &[SynthPitchBend],
+    aftertouch: &[SynthAftertouch],
+    controllers: &[SynthController],
+    tempo_changes: &[SynthTempoChange],
+) -> Result<RenderBuffers, Error> {
     patch.validate()?;
     validate_pitch_bends(pitch_bends)?;
     validate_aftertouch(aftertouch)?;
@@ -228,26 +369,14 @@ fn render_notes_inner(
         for (index, note) in notes.iter().enumerate() {
             validate_note(note, index)?;
         }
-        let mut samples = render_single_voice(
+        return render_single_voice::<STEREO>(
             patch,
             notes,
             pitch_bends,
             aftertouch,
             controllers,
             tempo_changes,
-        )?;
-        if apply_insert_effects {
-            apply_waveshaper_insert(patch, &mut samples, controllers);
-            apply_delay_insert(patch, &mut samples, controllers, tempo_changes);
-        }
-        soft_limit(&mut samples);
-        if apply_insert_effects && patch.uses_output_dc_block() {
-            block_dc(&mut samples, patch.sample_rate);
-        }
-        return Ok(RenderedSound {
-            samples,
-            sample_rate: patch.sample_rate,
-        });
+        );
     }
     let sample_rate = patch.sample_rate;
     if patch.polyphony.is_some() {
@@ -268,8 +397,8 @@ fn render_notes_inner(
             .oscillators
             .iter()
             .all(|oscillator| !matches!(oscillator.waveform, Waveform::Noise));
-    let mut cache = HashMap::new();
-    let mut samples = Vec::new();
+    let mut cache = HashMap::<(u8, u32, u32, u32, u8), RenderBuffers>::new();
+    let mut buffers = RenderBuffers::new(STEREO);
     for (index, note) in notes.iter().enumerate() {
         validate_note(note, index)?;
 
@@ -278,8 +407,8 @@ fn render_notes_inner(
         let required_frames = ((end_seconds + f64::from(patch.envelope.release_seconds))
             * f64::from(sample_rate))
         .round() as usize;
-        if samples.len() < required_frames {
-            samples.resize(required_frames, 0.0);
+        if buffers.len() < required_frames {
+            buffers.resize(required_frames);
         }
         let start_frame = (note.start_seconds * f64::from(sample_rate)).round() as usize;
         let timing = allocations.as_ref().map(|allocations| {
@@ -301,7 +430,7 @@ fn render_notes_inner(
         let gate_seconds = timing.map_or(voice.duration_seconds, |timing| {
             timing.gate_frame_count as f32 / sample_rate as f32
         });
-        let mix_frame_count = |rendered: &[f32]| {
+        let mix_frame_count = |rendered: &RenderBuffers| {
             timing.map_or(rendered.len(), |timing| {
                 timing
                     .audible_end_frame
@@ -309,8 +438,8 @@ fn render_notes_inner(
                     .min(rendered.len())
             })
         };
-        if samples.len() < end_frame {
-            samples.resize(end_frame, 0.0);
+        if buffers.len() < end_frame {
+            buffers.resize(end_frame);
         }
         if cacheable && cache.len() < 128 {
             let key = (
@@ -321,8 +450,8 @@ fn render_notes_inner(
                 note.velocity,
             );
             let rendered = cache.entry(key).or_insert_with(|| {
-                let mut rendered = vec![0.0; render_frame_count];
-                render_voice_into_with_timing(
+                let mut rendered = RenderBuffers::with_len(STEREO, render_frame_count);
+                render_voice_into_with_timing::<STEREO>(
                     &voice,
                     0,
                     &mut rendered,
@@ -341,12 +470,10 @@ fn render_notes_inner(
                 );
                 rendered
             });
-            for (offset, sample) in rendered.iter().take(mix_frame_count(rendered)).enumerate() {
-                samples[start_frame + offset] += sample;
-            }
+            buffers.add_slice(start_frame, mix_frame_count(rendered), rendered);
         } else if timing.is_some() {
-            let mut rendered = vec![0.0; render_frame_count];
-            render_voice_into_with_timing(
+            let mut rendered = RenderBuffers::with_len(STEREO, render_frame_count);
+            render_voice_into_with_timing::<STEREO>(
                 &voice,
                 0,
                 &mut rendered,
@@ -367,14 +494,12 @@ fn render_notes_inner(
                 gate_seconds,
                 render_frame_count,
             );
-            for (offset, sample) in rendered.iter().take(mix_frame_count(&rendered)).enumerate() {
-                samples[start_frame + offset] += sample;
-            }
+            buffers.add_slice(start_frame, mix_frame_count(&rendered), &rendered);
         } else {
-            render_voice_into(
+            render_voice_into_channels::<STEREO>(
                 &voice,
                 start_frame,
-                &mut samples,
+                &mut buffers,
                 VoiceAutomation {
                     note_start_seconds: note.start_seconds,
                     note_pitch: note.pitch,
@@ -392,18 +517,7 @@ fn render_notes_inner(
             );
         }
     }
-    if apply_insert_effects {
-        apply_waveshaper_insert(patch, &mut samples, controllers);
-        apply_delay_insert(patch, &mut samples, controllers, tempo_changes);
-    }
-    soft_limit(&mut samples);
-    if apply_insert_effects && patch.uses_output_dc_block() {
-        block_dc(&mut samples, sample_rate);
-    }
-    Ok(RenderedSound {
-        samples,
-        sample_rate,
-    })
+    Ok(buffers)
 }
 
 fn voice_patch(patch: &Patch, note: &SynthNote, index: usize) -> Result<Patch, Error> {
@@ -510,14 +624,14 @@ impl SingleVoice {
     }
 }
 
-fn render_single_voice(
+fn render_single_voice<const STEREO: bool>(
     patch: &Patch,
     notes: &[SynthNote],
     pitch_bends: &[SynthPitchBend],
     aftertouch: &[SynthAftertouch],
     controllers: &[SynthController],
     tempo_changes: &[SynthTempoChange],
-) -> Result<Vec<f32>, Error> {
+) -> Result<RenderBuffers, Error> {
     let sample_rate = patch.sample_rate;
     let mut events = BTreeMap::<usize, Vec<SingleVoiceEvent>>::new();
     let mut frame_count = 0;
@@ -545,9 +659,9 @@ fn render_single_voice(
         frame_count = frame_count.max(required_frames).max(voice_end);
     }
     let first_frame = events.keys().next().copied().unwrap_or(0);
-    let mut samples = vec![0.0; frame_count];
+    let mut buffers = RenderBuffers::with_len(STEREO, frame_count);
     let mut voice = None::<SingleVoice>;
-    for (frame, output) in samples.iter_mut().enumerate().skip(first_frame) {
+    for frame in first_frame..frame_count {
         if voice.as_ref().is_some_and(SingleVoice::finished) {
             voice = None;
         }
@@ -626,16 +740,23 @@ fn render_single_voice(
                 pressure: aftertouch_gain(aftertouch, current.pitch, absolute_time),
                 expression: expression_gain(controllers, absolute_time),
             };
-            *output = current.state.sample(
-                &current.patch,
-                time,
-                current.gate.unwrap_or(f32::INFINITY),
-                controls,
-            );
+            let gate = current.gate.unwrap_or(f32::INFINITY);
+            match &mut buffers {
+                RenderBuffers::Mono(samples) => {
+                    samples[frame] = current.state.sample(&current.patch, time, gate, controls);
+                }
+                RenderBuffers::Stereo { left, right } => {
+                    let [l, r] = current
+                        .state
+                        .sample_stereo(&current.patch, time, gate, controls);
+                    left[frame] = l;
+                    right[frame] = r;
+                }
+            }
             current.frame += 1;
         }
     }
-    Ok(samples)
+    Ok(buffers)
 }
 
 fn validate_pitch_bends(pitch_bends: &[SynthPitchBend]) -> Result<(), Error> {
@@ -1086,20 +1207,48 @@ fn render_voice_into(
     samples: &mut [f32],
     automation: VoiceAutomation<'_>,
 ) {
-    render_voice_into_with_timing(
+    let mut voice = VoiceState::new(patch, automation.note_pitch);
+    let mut modulation_state = ModulationState::at_with_seed(
+        patch,
+        automation.lfo_seed,
+        automation.note_start_seconds,
+        beats_at(automation.tempo_changes, automation.note_start_seconds),
+    );
+    let gate_seconds = patch.duration_seconds;
+    let frame_count = voice_frame_count(patch);
+    for frame in 0..frame_count {
+        let time = frame as f32 / patch.sample_rate as f32;
+        let controls = voice_controls_at(
+            patch,
+            &mut modulation_state,
+            &automation,
+            time,
+            gate_seconds,
+        );
+        samples[start_frame + frame] += voice.sample(patch, time, gate_seconds, controls);
+    }
+}
+
+fn render_voice_into_channels<const STEREO: bool>(
+    patch: &Patch,
+    start_frame: usize,
+    buffers: &mut RenderBuffers,
+    automation: VoiceAutomation<'_>,
+) {
+    render_voice_into_with_timing::<STEREO>(
         patch,
         start_frame,
-        samples,
+        buffers,
         automation,
         patch.duration_seconds,
         voice_frame_count(patch),
     );
 }
 
-fn render_voice_into_with_timing(
+fn render_voice_into_with_timing<const STEREO: bool>(
     patch: &Patch,
     start_frame: usize,
-    samples: &mut [f32],
+    buffers: &mut RenderBuffers,
     automation: VoiceAutomation<'_>,
     gate_seconds: f32,
     frame_count: usize,
@@ -1113,27 +1262,52 @@ fn render_voice_into_with_timing(
     );
     for frame in 0..frame_count {
         let time = frame as f32 / patch.sample_rate as f32;
-        let absolute_time = automation.note_start_seconds + f64::from(time);
-        let modulation = modulation_state.next(
+        let controls = voice_controls_at(
             patch,
-            patch.sample_rate,
+            &mut modulation_state,
+            &automation,
             time,
             gate_seconds,
-            modulation_depth(automation.controllers, absolute_time),
-            tempo_bpm_at(automation.tempo_changes, absolute_time) / 60.0,
         );
-        let controls = VoiceControls {
-            modulation,
-            bend_semitones: f32::from(pitch_bend_at(automation.pitch_bends, absolute_time))
-                * patch.pitch_bend_range_semitones
-                / 8192.0,
-            glide_from_semitones: automation.glide_from_pitch.map_or(0.0, |pitch| {
-                f32::from(pitch) - f32::from(automation.note_pitch)
-            }),
-            pressure: aftertouch_gain(automation.aftertouch, automation.note_pitch, absolute_time),
-            expression: expression_gain(automation.controllers, absolute_time),
-        };
-        samples[start_frame + frame] += voice.sample(patch, time, gate_seconds, controls);
+        match buffers {
+            RenderBuffers::Mono(samples) => {
+                samples[start_frame + frame] += voice.sample(patch, time, gate_seconds, controls);
+            }
+            RenderBuffers::Stereo { left, right } => {
+                let [l, r] = voice.sample_stereo(patch, time, gate_seconds, controls);
+                left[start_frame + frame] += l;
+                right[start_frame + frame] += r;
+            }
+        }
+    }
+}
+
+fn voice_controls_at(
+    patch: &Patch,
+    modulation_state: &mut ModulationState,
+    automation: &VoiceAutomation<'_>,
+    time: f32,
+    gate_seconds: f32,
+) -> VoiceControls {
+    let absolute_time = automation.note_start_seconds + f64::from(time);
+    let modulation = modulation_state.next(
+        patch,
+        patch.sample_rate,
+        time,
+        gate_seconds,
+        modulation_depth(automation.controllers, absolute_time),
+        tempo_bpm_at(automation.tempo_changes, absolute_time) / 60.0,
+    );
+    VoiceControls {
+        modulation,
+        bend_semitones: f32::from(pitch_bend_at(automation.pitch_bends, absolute_time))
+            * patch.pitch_bend_range_semitones
+            / 8192.0,
+        glide_from_semitones: automation.glide_from_pitch.map_or(0.0, |pitch| {
+            f32::from(pitch) - f32::from(automation.note_pitch)
+        }),
+        pressure: aftertouch_gain(automation.aftertouch, automation.note_pitch, absolute_time),
+        expression: expression_gain(automation.controllers, absolute_time),
     }
 }
 

@@ -96,51 +96,70 @@ impl DrumBus {
 #[derive(Default)]
 pub(crate) struct VoiceMix {
     direct: [f32; 2],
-    sends: [f32; BUS_COUNT],
+    sends: [[f32; 2]; BUS_COUNT],
 }
 
 impl VoiceMix {
-    pub(crate) fn add(&mut self, pad: &PreparedPad, sample: f32) {
-        let sample = sample * pad.voice.gain;
-        let angle = (pad.pan + 1.0) * std::f32::consts::FRAC_PI_4;
-        self.direct[0] += sample * angle.cos();
-        self.direct[1] += sample * angle.sin();
+    pub(crate) fn add(&mut self, pad: &PreparedPad, frame: [f32; 2]) {
+        let left = frame[0] * pad.voice.gain;
+        let right = frame[1] * pad.voice.gain;
+        if pad.voice.is_stereo() {
+            let left_balance = if pad.pan < 0.0 { 1.0 } else { 1.0 - pad.pan };
+            let right_balance = if pad.pan > 0.0 { 1.0 } else { 1.0 + pad.pan };
+            self.direct[0] += left * left_balance;
+            self.direct[1] += right * right_balance;
+        } else {
+            let angle = (pad.pan + 1.0) * std::f32::consts::FRAC_PI_4;
+            self.direct[0] += left * angle.cos();
+            self.direct[1] += left * angle.sin();
+        }
         for (send, amount) in self.sends.iter_mut().zip(pad.bus_sends) {
-            *send += sample * amount;
+            send[0] += left * amount;
+            send[1] += right * amount;
         }
     }
 }
 
-/// Mono sends feed three filtered, panned buses; the direct path stays stereo.
+/// Stereo sends feed three filtered, panned buses; the direct path stays stereo.
 pub(crate) struct BusMixer {
     buses: [DrumBus; BUS_COUNT],
-    filters: [Option<FilterProcessor>; BUS_COUNT],
+    filters: [Option<[FilterProcessor; 2]>; BUS_COUNT],
 }
 
 impl BusMixer {
     pub(crate) fn new(buses: [DrumBus; BUS_COUNT]) -> Self {
         Self {
-            filters: std::array::from_fn(|index| buses[index].filter.map(DrumFilter::processor)),
+            filters: std::array::from_fn(|index| {
+                buses[index]
+                    .filter
+                    .map(|filter| [filter.processor(), filter.processor()])
+            }),
             buses,
         }
     }
 
     pub(crate) fn is_quiet(&self) -> bool {
-        self.filters.iter().flatten().all(FilterProcessor::is_quiet)
+        self.filters
+            .iter()
+            .flatten()
+            .all(|pair| pair[0].is_quiet() && pair[1].is_quiet())
     }
 
     pub(crate) fn set_buses(&mut self, buses: [DrumBus; BUS_COUNT]) {
         for (index, bus) in buses.iter().enumerate() {
             if self.buses[index].filter != bus.filter {
-                self.filters[index] = bus.filter.map(DrumFilter::processor);
+                self.filters[index] = bus
+                    .filter
+                    .map(|filter| [filter.processor(), filter.processor()]);
             }
         }
         self.buses = buses;
     }
 
     pub(crate) fn reset(&mut self) {
-        for filter in self.filters.iter_mut().flatten() {
-            filter.reset();
+        for pair in self.filters.iter_mut().flatten() {
+            pair[0].reset();
+            pair[1].reset();
         }
     }
 
@@ -153,20 +172,23 @@ impl BusMixer {
         let mut output = voice_mix.direct;
         for (index, bus) in self.buses.iter().enumerate() {
             let input = if bus.muted {
-                0.0
+                [0.0, 0.0]
             } else {
                 voice_mix.sends[index]
             };
-            let sample = self.filters[index]
-                .as_mut()
-                .map_or(input, |filter| filter.process(input, sample_rate));
+            let [left, right] = match self.filters[index].as_mut() {
+                Some([left_filter, right_filter]) => [
+                    left_filter.process(input[0], sample_rate),
+                    right_filter.process(input[1], sample_rate),
+                ],
+                None => input,
+            };
             if bus.muted {
                 continue;
             }
-            let sample = sample * bus.gain;
             let angle = (bus.pan + 1.0) * std::f32::consts::FRAC_PI_4;
-            output[0] += sample * angle.cos();
-            output[1] += sample * angle.sin();
+            output[0] += left * bus.gain * angle.cos();
+            output[1] += right * bus.gain * angle.sin();
         }
         output.map(|sample| sample * master_gain)
     }

@@ -183,10 +183,10 @@ impl DrumMachine {
         let mut voice_mix = VoiceMix::default();
         self.voices.retain(|voice| !voice.is_finished());
         for voice in &mut self.voices {
-            if let Some(sample) = voice.next_sample()
+            if let Some(frame) = voice.next_frame()
                 && let Some(pad) = &self.pads[voice.slot]
             {
-                voice_mix.add(pad, sample);
+                voice_mix.add(pad, frame);
             }
         }
         let output = self

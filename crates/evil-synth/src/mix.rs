@@ -81,9 +81,14 @@ pub struct StereoTrack<'a> {
     pub gain: f32,
     /// Stereo balance from -1 (left) to 1 (right).
     pub pan: f32,
+    pub waveshaper: Option<&'a Waveshaper>,
+    pub delay: Option<&'a Delay>,
+    pub controllers: &'a [SynthController],
     pub automation: &'a [SynthMixerAutomation],
     pub inserts: &'a [InsertEffect],
     pub send_gains: [f32; SEND_COUNT],
+    /// Remove DC introduced by oscillator sync and nonlinear limiting.
+    pub dc_block: bool,
 }
 
 #[derive(Default)]
@@ -440,41 +445,15 @@ pub fn mix_stereo_with_sends_and_tempo_analyzed_range(
             track_left[frame] = sample * left_gain;
             track_right[frame] = sample * right_gain;
         }
-        if let Some(waveshaper) = track.waveshaper {
-            waveshaper.validate()?;
-            if has_waveshaper_automation(track.controllers) {
-                apply_stereo_waveshaper_automation(
-                    &mut track_left,
-                    &mut track_right,
-                    sample_rate,
-                    waveshaper,
-                    track.controllers,
-                );
-            } else {
-                apply_stereo_waveshaper(&mut track_left, &mut track_right, waveshaper);
-            }
-        }
-        if let Some(delay) = track.delay {
-            delay.validate()?;
-            if has_delay_automation(track.controllers) {
-                apply_stereo_delay_automation_with_tempo(
-                    &mut track_left,
-                    &mut track_right,
-                    sample_rate,
-                    delay,
-                    track.controllers,
-                    tempo_changes,
-                );
-            } else {
-                apply_stereo_delay_with_tempo(
-                    &mut track_left,
-                    &mut track_right,
-                    sample_rate,
-                    delay,
-                    tempo_changes,
-                );
-            }
-        }
+        apply_instrument_inserts(
+            &mut track_left,
+            &mut track_right,
+            sample_rate,
+            track.waveshaper,
+            track.delay,
+            track.controllers,
+            tempo_changes,
+        )?;
         channel_meters.push(mix_channel(
             &mut buffers,
             ProcessedChannel {
@@ -540,6 +519,15 @@ pub fn mix_stereo_with_sends_and_tempo_analyzed_range(
             track_left[frame] *= gain * master_gain * left_balance;
             track_right[frame] *= gain * master_gain * right_balance;
         }
+        apply_instrument_inserts(
+            &mut track_left,
+            &mut track_right,
+            sample_rate,
+            track.waveshaper,
+            track.delay,
+            track.controllers,
+            tempo_changes,
+        )?;
         channel_meters.push(mix_channel(
             &mut buffers,
             ProcessedChannel {
@@ -597,7 +585,8 @@ pub fn mix_stereo_with_sends_and_tempo_analyzed_range(
         *left = left.tanh();
         *right = right.tanh();
     }
-    if tracks.iter().any(|track| track.dc_block) {
+    if tracks.iter().any(|track| track.dc_block) || stereo_tracks.iter().any(|track| track.dc_block)
+    {
         block_dc(&mut buffers.left, sample_rate);
         block_dc(&mut buffers.right, sample_rate);
     }
@@ -611,6 +600,41 @@ pub fn mix_stereo_with_sends_and_tempo_analyzed_range(
         channel_meters,
         unsupported_mixer_automation_events,
     })
+}
+
+fn apply_instrument_inserts(
+    left: &mut Vec<f32>,
+    right: &mut Vec<f32>,
+    sample_rate: u32,
+    waveshaper: Option<&Waveshaper>,
+    delay: Option<&Delay>,
+    controllers: &[SynthController],
+    tempo_changes: &[SynthTempoChange],
+) -> Result<(), Error> {
+    if let Some(waveshaper) = waveshaper {
+        waveshaper.validate()?;
+        if has_waveshaper_automation(controllers) {
+            apply_stereo_waveshaper_automation(left, right, sample_rate, waveshaper, controllers);
+        } else {
+            apply_stereo_waveshaper(left, right, waveshaper);
+        }
+    }
+    if let Some(delay) = delay {
+        delay.validate()?;
+        if has_delay_automation(controllers) {
+            apply_stereo_delay_automation_with_tempo(
+                left,
+                right,
+                sample_rate,
+                delay,
+                controllers,
+                tempo_changes,
+            );
+        } else {
+            apply_stereo_delay_with_tempo(left, right, sample_rate, delay, tempo_changes);
+        }
+    }
+    Ok(())
 }
 
 struct MixBuffers {
@@ -907,9 +931,13 @@ mod tests {
                 sound: &sound,
                 gain: 1.0,
                 pan: 0.0,
+                waveshaper: None,
+                delay: None,
+                controllers: &[],
                 automation: &[],
                 inserts: &[],
                 send_gains: [0.0; SEND_COUNT],
+                dc_block: false,
             }],
             1.0,
         )
@@ -922,9 +950,13 @@ mod tests {
                 sound: &sound,
                 gain: 1.0,
                 pan: -1.0,
+                waveshaper: None,
+                delay: None,
+                controllers: &[],
                 automation: &[],
                 inserts: &[],
                 send_gains: [0.0; SEND_COUNT],
+                dc_block: false,
             }],
             1.0,
         )
@@ -1250,9 +1282,13 @@ mod tests {
                 sound: &sound,
                 gain: 1.0,
                 pan: 0.0,
+                waveshaper: None,
+                delay: None,
+                controllers: &[],
                 automation: &automation,
                 inserts: &[],
                 send_gains: [0.0; SEND_COUNT],
+                dc_block: false,
             }],
             1.0,
         )

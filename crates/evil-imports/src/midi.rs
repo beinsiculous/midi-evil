@@ -23,6 +23,24 @@ pub fn import_midi_file(path: impl AsRef<Path>) -> Result<Performance, Error> {
     import_midi(&data)
 }
 
+/// Append Standard MIDI tracks and tempo transitions onto an existing project at the next bar.
+pub fn append_midi(
+    project: &mut evil_project::Project,
+    data: &[u8],
+) -> Result<evil_project::AppendReport, Error> {
+    let performance = import_midi(data)?;
+    Ok(project.append_performance(&performance)?)
+}
+
+/// Append a Standard MIDI file onto an existing project at the next bar boundary.
+pub fn append_midi_file(
+    project: &mut evil_project::Project,
+    path: impl AsRef<Path>,
+) -> Result<evil_project::AppendReport, Error> {
+    let performance = import_midi_file(path)?;
+    Ok(project.append_performance(&performance)?)
+}
+
 pub fn import_midi(data: &[u8]) -> Result<Performance, Error> {
     let smf = Smf::parse(data)?;
     if smf.header.format == Format::Sequential {
@@ -525,5 +543,38 @@ mod tests {
         let mut data = Vec::new();
         smf.write(&mut data).unwrap();
         data
+    }
+
+    #[test]
+    fn append_midi_file_merges_bach_fixture_after_existing_bar_with_tpq_scaling() {
+        let mut project = evil_project::Project::new("Existing");
+        project.tempo_bpm = 110.0;
+        project
+            .add_track(evil_project::Track {
+                name: "Intro".into(),
+                notes: vec![evil_project::Note {
+                    start_tick: 0,
+                    duration_ticks: 480,
+                    ..evil_project::Note::default()
+                }],
+                ..evil_project::Track::default()
+            })
+            .unwrap();
+        let bach_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/public-domain/bach-invention-02/bach-invention-02.mid");
+        let report = append_midi_file(&mut project, &bach_path).unwrap();
+        assert_eq!(report.offset_ticks, 1920);
+        assert_eq!(report.added_tracks, 2);
+        assert_eq!(report.added_notes, 634);
+        assert_eq!(project.tracks.len(), 3);
+        assert_eq!(project.tracks[0].notes.len(), 1);
+        assert_eq!(project.tracks[0].notes[0].start_tick, 0);
+        assert!(
+            project.tracks[1..]
+                .iter()
+                .flat_map(|track| &track.notes)
+                .all(|note| note.start_tick >= 1920)
+        );
+        project.to_performance().unwrap();
     }
 }

@@ -333,15 +333,32 @@ pub fn apply_mono_insert(
     effect: &InsertEffect,
     tempo_bpm: f32,
 ) -> Result<(), Error> {
+    let mut right = samples.clone();
+    apply_stereo_insert(samples, &mut right, sample_rate, effect, tempo_bpm)
+}
+
+/// Destructively preprocess stereo sample audio with one native insert effect.
+/// Effect tails are retained and beat-synced delays use `tempo_bpm` throughout.
+pub fn apply_stereo_insert(
+    left: &mut Vec<f32>,
+    right: &mut Vec<f32>,
+    sample_rate: u32,
+    effect: &InsertEffect,
+    tempo_bpm: f32,
+) -> Result<(), Error> {
+    if left.len() != right.len() {
+        return Err(Error::InvalidMix(
+            "stereo sample channels must have the same frame count".to_owned(),
+        ));
+    }
     if !tempo_bpm.is_finite() || tempo_bpm <= 0.0 {
         return Err(Error::InvalidMix(
             "sample effect tempo must be finite and positive".to_owned(),
         ));
     }
-    let mut right = samples.clone();
     apply_insert_with_tempo(
-        samples,
-        &mut right,
+        left,
+        right,
         sample_rate,
         effect,
         &[SynthTempoChange {

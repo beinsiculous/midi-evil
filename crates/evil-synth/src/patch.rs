@@ -136,6 +136,23 @@ impl Patch {
         self.effective_oscillator_mode() == OscillatorMode::Sync
     }
 
+    /// Whether any sample oscillator or key zone carries discrete stereo audio.
+    pub fn has_stereo_sample(&self) -> bool {
+        self.oscillators
+            .iter()
+            .filter(|oscillator| oscillator.waveform == crate::Waveform::Sample)
+            .any(|oscillator| {
+                oscillator
+                    .sample
+                    .as_ref()
+                    .is_some_and(crate::SampleOscillator::is_stereo)
+                    || oscillator
+                        .sample_zones
+                        .iter()
+                        .any(|zone| zone.sample.is_stereo())
+            })
+    }
+
     /// Whether the output stage should apply the legacy post-limiter DC blocker
     /// for synced oscillators that do not block DC per voice.
     pub fn uses_output_dc_block(&self) -> bool {
@@ -635,6 +652,7 @@ mod tests {
         patch.oscillators[0].sample = Some(crate::SampleOscillator {
             name: "Embedded source".to_owned(),
             samples: vec![0.0, 0.5, -0.5, 0.0],
+            right_samples: None,
             sample_rate: 48_000,
             root_frequency_hz: 220.0,
             direction: crate::SampleDirection::ForwardReverse,
@@ -1010,6 +1028,14 @@ mod tests {
                 loop_start_frame: 3,
                 ..valid.clone()
             },
+            crate::SampleOscillator {
+                right_samples: Some(vec![0.0, 0.5]),
+                ..valid.clone()
+            },
+            crate::SampleOscillator {
+                right_samples: Some(vec![0.0, f32::NAN, 0.0]),
+                ..valid.clone()
+            },
         ];
         for sample in invalid {
             let mut patch = Patch::default();
@@ -1021,7 +1047,14 @@ mod tests {
         let mut patch = Patch::default();
         patch.oscillators[0].waveform = Waveform::Sample;
         patch.oscillators[0].sample = Some(valid.clone());
+        assert!(!patch.has_stereo_sample());
         assert!(patch.validate().is_ok());
+        patch.oscillators[0].sample = Some(crate::SampleOscillator::new_stereo(
+            vec![0.0, 0.5, -0.5],
+            vec![0.5, 0.0, 0.25],
+            8_000,
+        ));
+        assert!(patch.has_stereo_sample());
         patch.oscillators.push(patch.oscillators[0].clone());
         assert!(patch.validate().is_err());
     }

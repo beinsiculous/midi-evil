@@ -336,34 +336,76 @@ impl LiveSynth {
 
     pub fn next_frame(&mut self) -> [f32; 2] {
         self.voices.retain(|voice| !voice.finished());
-        let mut mono = 0.0;
-        for voice in &mut self.voices {
-            let time = voice.time();
-            let modulation = voice.modulation.next(
-                &voice.patch,
-                self.patch.sample_rate,
-                time,
-                voice.gate.unwrap_or(f32::INFINITY),
-                1.0,
-                self.controls.tempo_bpm / 60.0,
-            );
-            mono += voice.state.sample(
-                &voice.patch,
-                time,
-                voice.gate.unwrap_or(f32::INFINITY),
-                VoiceControls {
-                    modulation,
-                    bend_semitones: self.controls.bend * self.controls.bend_range_semitones,
-                    glide_from_semitones: voice.glide_from_semitones,
-                    pressure: 1.0,
-                    expression: 1.0,
-                },
-            );
-            voice.frame += 1;
-        }
-        let mono = mono.tanh() * self.controls.gain;
-        let angle = (self.controls.pan + 1.0) * std::f32::consts::FRAC_PI_4;
-        let mut stereo = [mono * angle.cos(), mono * angle.sin()];
+        let stereo_voices = self.patch.has_stereo_sample()
+            || self
+                .voices
+                .iter()
+                .any(|voice| voice.patch.has_stereo_sample());
+        let mut stereo = if stereo_voices {
+            let mut sum = [0.0_f32; 2];
+            for voice in &mut self.voices {
+                let time = voice.time();
+                let modulation = voice.modulation.next(
+                    &voice.patch,
+                    self.patch.sample_rate,
+                    time,
+                    voice.gate.unwrap_or(f32::INFINITY),
+                    1.0,
+                    self.controls.tempo_bpm / 60.0,
+                );
+                let frame = voice.state.sample_stereo(
+                    &voice.patch,
+                    time,
+                    voice.gate.unwrap_or(f32::INFINITY),
+                    VoiceControls {
+                        modulation,
+                        bend_semitones: self.controls.bend * self.controls.bend_range_semitones,
+                        glide_from_semitones: voice.glide_from_semitones,
+                        pressure: 1.0,
+                        expression: 1.0,
+                    },
+                );
+                sum[0] += frame[0];
+                sum[1] += frame[1];
+                voice.frame += 1;
+            }
+            let pan = self.controls.pan;
+            let left_balance = if pan < 0.0 { 1.0 } else { 1.0 - pan };
+            let right_balance = if pan > 0.0 { 1.0 } else { 1.0 + pan };
+            [
+                sum[0].tanh() * self.controls.gain * left_balance,
+                sum[1].tanh() * self.controls.gain * right_balance,
+            ]
+        } else {
+            let mut mono = 0.0;
+            for voice in &mut self.voices {
+                let time = voice.time();
+                let modulation = voice.modulation.next(
+                    &voice.patch,
+                    self.patch.sample_rate,
+                    time,
+                    voice.gate.unwrap_or(f32::INFINITY),
+                    1.0,
+                    self.controls.tempo_bpm / 60.0,
+                );
+                mono += voice.state.sample(
+                    &voice.patch,
+                    time,
+                    voice.gate.unwrap_or(f32::INFINITY),
+                    VoiceControls {
+                        modulation,
+                        bend_semitones: self.controls.bend * self.controls.bend_range_semitones,
+                        glide_from_semitones: voice.glide_from_semitones,
+                        pressure: 1.0,
+                        expression: 1.0,
+                    },
+                );
+                voice.frame += 1;
+            }
+            let mono = mono.tanh() * self.controls.gain;
+            let angle = (self.controls.pan + 1.0) * std::f32::consts::FRAC_PI_4;
+            [mono * angle.cos(), mono * angle.sin()]
+        };
         if let Some(waveshaper) = &self.controls.waveshaper {
             for sample in &mut stereo {
                 *sample = waveshaper.process(*sample);
@@ -1390,6 +1432,7 @@ mod tests {
         let low = crate::SampleOscillator {
             name: "low".to_owned(),
             samples: (0..32).map(|index| index as f32 / 64.0 - 0.25).collect(),
+            right_samples: None,
             sample_rate: 8_000,
             root_frequency_hz: 220.0,
             playback_start_frame: 0,
@@ -1402,6 +1445,7 @@ mod tests {
         let high = crate::SampleOscillator {
             name: "high".to_owned(),
             samples: (0..32).map(|index| 0.5 - index as f32 / 64.0).collect(),
+            right_samples: None,
             sample_rate: 8_000,
             root_frequency_hz: 440.0,
             playback_start_frame: 0,
@@ -1618,6 +1662,115 @@ mod tests {
                 (actual - expected).abs() < 0.00001,
                 "offline/live mismatch at frame {frame}: {actual} != {expected}"
             );
+        }
+    }
+
+    #[test]
+    fn stereo_sample_patch_matches_offline_rendering_across_modes() {
+        use crate::{Delay, Envelope, Filter, Oscillator, SampleOscillator, SampleZone, Waveform};
+
+        let low = SampleOscillator {
+            root_frequency_hz: 440.0,
+            loop_enabled: true,
+            ..SampleOscillator::new_stereo(
+                (0..16).map(|index| (index as f32 / 15.0) - 0.5).collect(),
+                (0..16).map(|index| 0.5 - (index as f32 / 15.0)).collect(),
+                8_000,
+            )
+        };
+        let high = SampleOscillator {
+            root_frequency_hz: 440.0,
+            loop_enabled: true,
+            ..SampleOscillator::new_stereo(vec![0.4; 16], [-0.25, 0.25].repeat(8), 8_000)
+        };
+        for voice_mode in [VoiceMode::Poly, VoiceMode::Mono, VoiceMode::Legato] {
+            let patch = Patch {
+                sample_rate: 8_000,
+                duration_seconds: 0.01,
+                voice_mode,
+                oscillators: vec![Oscillator {
+                    waveform: Waveform::Sample,
+                    sample_zones: vec![
+                        SampleZone::new(0, 64, low.clone()),
+                        SampleZone::new(65, 127, high.clone()),
+                    ],
+                    ..Oscillator::default()
+                }],
+                filter: Some(Filter {
+                    cutoff_hz: 1_800.0,
+                    resonance: 0.2,
+                    stages: 2,
+                    ..Filter::default()
+                }),
+                delay: Some(Delay {
+                    time_seconds: 0.002,
+                    feedback: 0.3,
+                    mix: 0.4,
+                    ..Delay::default()
+                }),
+                envelope: Envelope {
+                    attack_seconds: 0.0,
+                    decay_seconds: 0.0,
+                    sustain_level: 1.0,
+                    release_seconds: 0.004,
+                },
+                ..Patch::default()
+            };
+            let notes = [test_note(60, 0.0, 0.006), test_note(67, 0.003, 0.006)];
+            let dry = crate::render_notes_stereo_dry(&patch, &notes).unwrap();
+            assert_ne!(dry.left, dry.right);
+            let offline = crate::mix_stereo_with_sends(
+                &[],
+                &[crate::StereoTrack {
+                    sound: &dry,
+                    gain: 0.8,
+                    pan: -0.25,
+                    waveshaper: None,
+                    delay: patch.delay.as_ref(),
+                    controllers: &[],
+                    automation: &[],
+                    inserts: &[],
+                    send_gains: [0.0; crate::SEND_COUNT],
+                    dc_block: false,
+                }],
+                &[crate::SendBus::default(), crate::SendBus::default()],
+                1.0,
+            )
+            .unwrap();
+            let mut live = LiveSynth::new(patch).unwrap();
+            let mut controls = LiveControls::for_patch(&live.patch);
+            controls.pan = -0.25;
+            live.set_controls(controls).unwrap();
+            for frame in 0..dry.left.len() {
+                for note in notes {
+                    let end = ((note.start_seconds + note.duration_seconds)
+                        * f64::from(live.sample_rate()))
+                    .round() as usize;
+                    if end == frame {
+                        live.note_off(note.pitch);
+                    }
+                }
+                for note in notes {
+                    let start =
+                        (note.start_seconds * f64::from(live.sample_rate())).round() as usize;
+                    if start == frame {
+                        live.note_on(note.pitch, note.velocity).unwrap();
+                    }
+                }
+                let actual = live.next_frame();
+                assert!(
+                    (actual[0] - offline.left[frame]).abs() < 1e-5,
+                    "left mismatch in {voice_mode:?} at {frame}: {} != {}",
+                    actual[0],
+                    offline.left[frame]
+                );
+                assert!(
+                    (actual[1] - offline.right[frame]).abs() < 1e-5,
+                    "right mismatch in {voice_mode:?} at {frame}: {} != {}",
+                    actual[1],
+                    offline.right[frame]
+                );
+            }
         }
     }
 }

@@ -7,7 +7,7 @@ pub use evil_performance::{
     Aftertouch, ControllerEvent, Performance, PerformanceNote, PerformanceTrack, PitchBend,
     TempoChange,
 };
-pub use midi::{import_midi, import_midi_file};
+pub use midi::{append_midi, append_midi_file, import_midi, import_midi_file};
 pub use wav::{
     AudioAnalysis, AudioBuffer, DraftReport, TempoCandidate, analyze, analyze_file, create_draft,
     read_wav,
