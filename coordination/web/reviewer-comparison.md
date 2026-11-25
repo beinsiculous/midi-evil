@@ -73,6 +73,12 @@ credential configured"). Deepseek stood in, as the `roles` skill allows.
 | 27 | W2 code and scripts (diff) | gemini | 4 | 2 | 1 | 1 | "`watchCanvas` loops for the entire `DRAW_DEADLINE_MILLISECONDS` … with no awareness of the `errors` array"; that `actions/checkout@v5` does not exist was wrong | 15:00 |
 | 27 | W2 code and scripts (diff) | deepseek | 8 | 6 | 1 | 1 | "`MidiInput::default()` … On wasm this is midir's Web MIDI path" — the page asked for MIDI on load, which the executor also found; that the runner is dropped after one frame was wrong | 13:00 |
 | 28 | W2 code and scripts v2 (diff) | codex | 1 | 1 | 0 | 0 | "B executes `mv -- \"$staging\" \"$dist\"` against that now-existing directory, so `mv` succeeds by placing B's staging directory **inside** A's bundle" — two builds at once; run by the planner, the second exited 1 | 3:10 |
+| 29 | W-A2 section v1 (plan) | codex | 5 | 5 | 0 | 0 | "eframe 0.35's `should_prevent_default_for_key` still prevents Ctrl+O and all arrow keys, including Alt+Left/Right … The application does nothing, but neither does the browser" | 1:37 |
+| 29 | W-A2 section v1 (plan) | gemini | 7 | 4 | 2 | 1 | "`Ctrl+Alt+Period` and `Ctrl+Alt+Comma` collide with AltGr input on international keyboards"; that egui cannot read a node during a frame was wrong | 2:48 |
+| 29 | W-A2 section v1 (plan) | deepseek | 17 | 17 | 0 | 0 | "the kept Space chord (and B, PLAY, Record) runs a render path that does not exist on wasm" — the draft kept a key whose command panics in a browser | 7:50 |
+| 30 | W-A2 section v2 (plan) | codex | 4 | 4 | 0 | 0 | "egui excludes disabled widgets from keyboard traversal … these controls' names and reasons never reach the current element" | 3:00 |
+| 30 | W-A2 section v2 (plan) | deepseek | 12 | 10 | 0 | 2 | "press Enter to add a note and immediately press Alt+Left before the next animation frame … `beforeunload` reads the previous frame's `dirty=false`" | 9:00 |
+| 31 | W-A2 section v3 (plan) | codex | 2 | 2 | 0 | 0 | "Ctrl+A is absent from the web table, so item 3 stops it before eframe … Typing therefore produces 'LeadBass'" | 3:20 |
 
 Totals so far (through W-A1a; W-A1b's nineteen findings and W-A1c's twenty are in the rows above): codex 47 findings, 44 real, two refuted (a lockfile left out of a diff) and one
 the planner's own excerpt; deepseek 178 findings, 158 real, thirteen refuted, the rest rebutted on
