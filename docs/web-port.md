@@ -133,11 +133,11 @@ Split `crates/midi-evil` into `src/lib.rs` and a thin `main.rs`, so a web crate 
 
 ### W2 — the web crate and its gates
 
-`crates/evil-web`: a `cdylib` with `publish = false` and a `#[cfg(target_arch = "wasm32")]` entry on `eframe::WebRunner`, depending on the real `midi-evil` library. A root `[profile.wasm-release]` as the engine's. `tools/audit-public-packages.sh` asserts over the publishable crates and names `evil-web` as the non-published member. `scripts/check_wasm.sh` runs `cargo check -p midi-evil --lib -p evil-web --target wasm32-unknown-unknown`, then clippy the same, and `.github/workflows/wasm-check.yml` runs it, modelled on the engine's (stable toolchain, `wasm32-unknown-unknown` target). `scripts/build_wasm.sh` is modelled on the engine's — a pinned CLI check against `Cargo.lock`, a size gate, and `--sync` to `../insiculous_web/public/midi-evil/v1/` — with the CLI installed at the lock's version (`cargo install wasm-bindgen-cli --version <Cargo.lock's wasm-bindgen> --locked`).
+`crates/evil-web`: a `cdylib` with `publish = false` and a `#[cfg(target_arch = "wasm32")]` entry on `eframe::WebRunner`, depending on the real `midi-evil` library. A root `[profile.wasm-release]` as the engine's. `tools/audit-public-packages.sh` asserts over the publishable crates and names `evil-web` as the non-published member. `scripts/check_wasm.sh` runs `cargo check -p midi-evil --lib -p evil-web --target wasm32-unknown-unknown`, then clippy the same, and `.github/workflows/wasm-check.yml` runs it, modelled on the engine's (stable toolchain, `wasm32-unknown-unknown` target). `scripts/build_wasm.sh` is modelled on the engine's — a pinned CLI check against `Cargo.lock` and a size gate — with the CLI installed at the lock's version under the repository's own `target/tools/`, never on `PATH`. Syncing the bundle to `../insiculous_web/public/midi-evil/v1/` is W6's, not this step's (corrected 2026-11-25).
 
 **Files:** `crates/evil-web/` (new), the root `Cargo.toml`, `tools/audit-public-packages.sh`, `scripts/check_wasm.sh` (new), `.github/workflows/wasm-check.yml` (new), `scripts/build_wasm.sh` (new).
 
-**Gate:** the check script green locally and in CI; the native audit green; `build_wasm.sh` produces a bundle.
+**Gate:** the check script green locally, and in CI on the first push after it lands (the next step waits on that); the native audit green; `build_wasm.sh` produces a bundle; the bundle loads and draws in Chromium and Firefox with nothing clicked (corrected 2026-11-25).
 
 ### W3 — audio and MIDI
 

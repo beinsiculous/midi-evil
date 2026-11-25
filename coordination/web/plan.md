@@ -865,6 +865,144 @@ The record's step, re-surveyed on `a15dc49` after W-A1 moved most of what it nam
 **Leaves out:** the three device-open sites (W3); the threads (W4); the path-based interfaces of
 the shared crates (W5a); the browser's own dialogs (W5b).
 
+## W2 — the web crate and its gates (`#4`) — settled 2026-11-25
+
+The record's step, on `0b1c213`, after W1 made the application a library that compiles for
+`wasm32`.
+
+### The tree, for this batch
+
+- **The workspace** has eight members and excludes `crates/oracle` and `crates/evil-porting`.
+  `tools/audit-public-packages.sh` lists the same eight in dependency order, asserts the
+  workspace's membership is exactly that list, and asserts every one is publishable.
+- **No script and no workflow builds for the browser.** `scripts/` holds the review tooling
+  only; the repository has no `.github/workflows/`. The models are the engine's, read and not
+  copied blind: `insiculous_2d/scripts/check_wasm.sh` (24 lines), `scripts/build_wasm.sh`,
+  `.github/workflows/wasm-check.yml`, and its `[profile.wasm-release]` (`opt-level = "s"`,
+  `lto = true`, `strip = "debuginfo"`).
+- **The CLI** is at `target/tools/bin/wasm-bindgen`, 0.2.129, the lock's version (D15).
+  `target/` is ignored, so a fresh checkout and CI have none.
+- **What a browser entry can construct.** `StudioApp::new(context, options, instance, dialogs)`:
+  `LaunchOptions` derives `Default`; the instance is `None`; `()` implements `Dialogs` on
+  `wasm32`. Nothing else is public, and nothing else is needed to construct it.
+- **What has never been run.** The application has been *checked* for `wasm32`, not started.
+  Its constructor and its first frame may reach a thread, a file, a device or a MIDI port.
+  The spike's harness (`spike/roll-web`, never merged) ran the roll alone, 6.7 MB of wasm.
+
+### What it builds
+
+1. **`crates/evil-web`**: a workspace member, `publish = false`, `crate-type = ["cdylib"]`. Its
+   whole source is one entry, compiled only for `wasm32`, that finds the canvas by id and starts
+   `eframe::WebRunner` on `midi_evil::StudioApp::new` with default launch options, no instance
+   and the `()` dialogs. On any other target the crate is empty **and has no dependencies**:
+   `midi-evil`, `eframe`, `wasm-bindgen`, `wasm-bindgen-futures`, `web-sys` and `log` — and
+   nothing else — are all under `[target.'cfg(target_arch = "wasm32")'.dependencies]`, and
+   `eframe` is asked for with exactly the features that `midi-evil` asks for on that target, so
+   the native build's dependency graph and features are what they were. The versions are the
+   lock's, and `wasm-bindgen` is pinned exactly so the CLI check below means something.
+   **No accessibility bridge, no live region, no focus boundary** — W-A2's. Two things are in,
+   because without them a failure in a browser says nothing: a panic hook that writes the panic
+   to the console, and the runner's own failure to start — no canvas, no WebGL — written there
+   as an error too, never dropped.
+2. **A page to load it, and only that.** `crates/evil-web/index.html`: a canvas, the module
+   script, an empty inline icon so no browser asks the server for one, and a visible line
+   saying this is a build check and not the page that ships. The
+   page that ships — its name, its role, its regions, its help — is W-A2's and W6's.
+3. **`[profile.wasm-release]`** in the root manifest, the engine's whole block: `inherits =
+   "release"`, `opt-level = "s"`, `lto = true`, `strip = "debuginfo"`. Without the first line a
+   custom profile inherits `dev`, and the size budget and the first run would be measured on a
+   build with debug assertions.
+4. **`scripts/check_wasm.sh`**: for `-p midi-evil -p evil-web` on `wasm32-unknown-unknown`,
+   all `--locked`: `cargo check`; `cargo clippy --no-deps -- -D warnings` (the flag is
+   clippy's, and keeps the shared crates out of the lint until W5a); and `cargo build -p
+   evil-web`, so the linker runs and not only the type checker. One script, which the workflow
+   below runs, so the local command and CI cannot drift.
+5. **`scripts/build_wasm.sh`**: reads the `wasm-bindgen` version from `Cargo.lock`; installs
+   that version of the CLI under `target/tools/` when it is absent **or is any other version**
+   (`cargo install wasm-bindgen-cli --version <the lock's> --locked --force --root target/tools`
+   — `--force`, or cargo refuses to replace the binary that is there), and never touches or
+   calls the one on `PATH` (D15); builds `evil-web` with the `wasm-release` profile, `--locked`
+   and an explicit `--target-dir` under the repository, so a `CARGO_TARGET_DIR` in the
+   environment cannot send the wasm where the script does not look; binds it with `--target
+   web`; stages the bundle and the page in a directory of its own and swaps it for
+   `target/web/dist/` only after the build, the binding and the copy have all succeeded;
+   prints the wasm's size, raw and gzipped; and fails over a size budget. **The budget is a
+   number in the script**, set by this batch from its first good build — the raw size rounded
+   up to the next mebibyte, plus one — and written into this section's outcome. It is a
+   ceiling a later batch may raise, by changing the number and saying why in its own section;
+   it is never a warning. **The script has no `--sync`.** The bundle reaches the site's tracked
+   tree in W6 and not before.
+6. **`.github/workflows/wasm-check.yml`**: on push and pull request, the stable toolchain with
+   the `wasm32-unknown-unknown` target, running `scripts/check_wasm.sh`. It does not build the
+   bundle and installs no CLI.
+7. **The release audit knows the newcomer.** `tools/audit-public-packages.sh` keeps asserting
+   over its eight publishable crates, and asserts separately that the workspace's only other
+   member is `evil-web` and that it is *not* publishable. A ninth publishable crate, or a
+   second unpublished one, still fails it.
+8. **The first run.** `coordination/web/probes/web-smoke.sh` and its driver
+   `web-smoke.mjs`, in the shape of `web-gate.sh` and `web-probe.mjs` and with their sources:
+   the site's Playwright and Node 24, the same browser launch settings that drew W0's canvas
+   in both browsers, a port the system picks, and a trap that stops the server however the
+   script ends. A missing Playwright or Node is reported as the tooling's failure, not the
+   application's. The driver opens the page in Chromium and in Firefox and passes only if,
+   within a stated deadline, **a screenshot of the canvas element itself** — not the page,
+   whose visible line would make any screenshot pass — holds more than one colour, and the
+   console holds no error and no panic at all. There is no list of tolerated errors: the page
+   asks for nothing but its own files. It clicks nothing and presses nothing. The screenshots
+   are kept beside the report. It is shown to fail on a bundle whose wasm is replaced by an
+   empty file, and on a page whose canvas id is wrong.
+
+### What the first run may find
+
+The application has never started in a browser, and W1's bar was compiling. If constructing it
+or drawing its first frames panics or raises an error, that is this batch's to fix **only where
+the fix is a seam of W1's kind**: a `cfg` in one of W1's named places, or a new module pair
+like `sample_recorder`'s — one for each start-up site the first run proves needs it — each a
+few lines that return "not available in the browser". The MIDI port list at start-up is the
+likely first; its seam is "no ports, and no request made", and Web MIDI itself stays W3's. What is **not** this batch's: anything reached by a
+gesture — Play, a pad, a key, a render, a file — which are W3's, W4's and W5's and are not
+touched by a smoke that clicks nothing. A failure whose fix is neither is reported, with its
+site, and the smoke row is reported INCOMPLETE rather than patched around. **An incomplete
+smoke leaves W2 open**: the rest of the batch may land, W-A2 does not start, and the planner
+brings the site to Jesse with what fixing it would take. Every seam added is listed in the
+report, and native behaviour still does not change.
+
+### Rules particular to this batch
+
+- **Native behaviour does not change**, and the native suite, lints and gate say so.
+- `cfg(target_arch = "wasm32")` appears in `crates/evil-web`, and in `crates/midi-evil` only
+  where W1 put it or where *What the first run may find* allows a seam.
+- No new dependency in any crate but `evil-web`, and none of `evil-web`'s on a native target:
+  `cargo tree -p midi-evil` for the host is the same before and after.
+- Nothing is installed on `PATH` or in `~/.cargo/bin`, and nothing is written to the site.
+  Cargo's own registry cache under `~/.cargo` is cargo's business, and the CLI's first install
+  needs the network.
+- The scripts are plain `bash` with `set -euo pipefail`, each with a header saying what it is
+  for and what it deliberately does not do.
+
+### Gate
+
+- The native suite, clippy and fmt; `tools/audit-public-packages.sh --allow-dirty` passes; the
+  native gate, every sequence.
+- `scripts/check_wasm.sh` is clean locally. **In CI it cannot be shown green by this batch**:
+  the workflow runs only once it is pushed. The batch's evidence is the script's local run and
+  the workflow file calling that script and nothing else; the first run on GitHub is checked by
+  the planner after the push, and W-A2 does not start on a red one. The workflow uses the
+  stable toolchain, as the engine's does and as every local gate does; a lint a new stable
+  adds is fixed when it appears.
+- `scripts/build_wasm.sh` produces `target/web/dist/` from a tree with no `target/tools/`
+  (moved aside for the run and restored), and again with it present; and refuses, having
+  changed nothing, when the CLI there reports another version than the lock's and the install
+  is made to fail.
+- `coordination/web/probes/web-smoke.sh` passes in Chromium and Firefox, and fails on its two
+  negative controls.
+- `git status --porcelain` in `../insiculous_web` is unchanged by everything above.
+
+**Sitting:** none. Nothing here is operable yet; the first thing a person can hear is W-A2's.
+
+**Leaves out:** the accessibility bridge and the shipped page (W-A2); audio and MIDI (W3); the
+worker (W4); files (W5); syncing the bundle to the site (W6).
+
 ## The later batches — constraints, not yet sections
 
 Each is the record's step plus what follows. Each gets its files and gates in a reviewed revision of
@@ -938,6 +1076,11 @@ Committed to `docs/web-port.md` with this plan when it settles, as a dated secti
 own style: the split of W-A and of W5 and the new order (D2); W4 is a worker (D10); the shipping
 gate is the inventory, with the nine steps as its minimum (D12); the transport's real location; and
 *The tree today*'s counts. The milestone's description is updated to match.
+
+W2, corrected with its section (2026-11-25): `build_wasm.sh` has no `--sync` — the bundle reaches
+the site in W6; "green in CI" cannot be shown by the batch that adds the workflow, so the first
+run is checked after the push and W-A2 waits on it; and the batch runs the application in both
+browsers once, clicking nothing, which the record did not ask for.
 
 ## What is asked of Jesse
 

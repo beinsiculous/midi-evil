@@ -67,6 +67,8 @@ credential configured"). Deepseek stood in, as the `roles` skill allows.
 | 24 | W1 section v1 (plan) | deepseek | 10 | 9 | 0 | 1 | "`file_dialog()` calls `self.stop_keyboard()` and `self.beats.stop()` before building the `rfd` dialog; its eleven callers rely on that" — and that a test beside a `wasm32` stub is never compiled by any gate | 7:20 |
 | 25 | W1 code (diff) | codex | 0 | 0 | 0 | 0 | "No concrete regressions or correctness defects found" — a static read, as it said | 1:02 |
 | 25 | W1 code (diff) | deepseek | 4 | 3 | 1 | 0 | "there are two accesskit nodes labelled `\"PLAY\"` … whichever of the two egui emits first" — two new tests passed on an ordering nothing pinned; its guess that an empty enum fails the `wasm32` lint was refuted by the lint | 14:00 |
+| 26 | W2 section v1 (plan) | gemini | 7 | 5 | 1 | 1 | "an unstyled `<canvas>` has an intrinsic size of 300×150 before WebAssembly even instantiates … the screenshot contains black text on a white page and is *never* one flat color" — the smoke passed a dead page; that clippy has no `--no-deps` was wrong | 5:39 |
+| 26 | W2 section v1 (plan) | deepseek | 10 | 9 | 0 | 1 | "Cargo's default for a custom profile is `inherits = \"dev\"`" and "`wasm-bindgen`, `web-sys` … are declared for every target" — the native graph would have changed under a batch that promised it would not | 8:10 |
 
 Totals so far (through W-A1a; W-A1b's nineteen findings and W-A1c's twenty are in the rows above): codex 47 findings, 44 real, two refuted (a lockfile left out of a diff) and one
 the planner's own excerpt; deepseek 178 findings, 158 real, thirteen refuted, the rest rebutted on
