@@ -63,6 +63,8 @@ credential configured"). Deepseek stood in, as the `roles` skill allows.
 | 22 | W-A1c probe v1 (diff) | gemini | 6 | 4 | 1 | 1 | "`open_in_running` only pumps events for a fixed `2 * EVENT_WINDOW_SECONDS` … before `recorder.print_and_clear()`" | 7:42 |
 | 22 | W-A1c probe v1 (diff) | deepseek | 6 | 3 | 2 | 1 | "If `native-gate-arranger-and-files.sh` is renamed, unreadable, or has a syntax error, `source` returns non-zero, the script continues, `failed` stays 0" — a false green; its two "the gate cannot pass" findings came from being shown the probe's diff alone, the planner's error a second time | 9:42 |
 | 23 | W-A1c code v2 (diff) | codex | 1 | 1 | 0 | 0 | "Delete removes A and shifts B to index 0, but `SongState.part_drag` still identifies index 0 … queues `MoveTo(1920)` against B" | 3:46 |
+| 24 | W1 section v1 (plan) | gemini | 6 | 6 | 0 | 0 | "`main.rs` cannot access `instance::SingleInstance` because `instance.rs` is declared inside `lib.rs` and not exported" — one part of F3, that a dialog is opened from a worker thread, was wrong | 5:10 |
+| 24 | W1 section v1 (plan) | deepseek | 10 | 9 | 0 | 1 | "`file_dialog()` calls `self.stop_keyboard()` and `self.beats.stop()` before building the `rfd` dialog; its eleven callers rely on that" — and that a test beside a `wasm32` stub is never compiled by any gate | 7:20 |
 
 Totals so far (through W-A1a; W-A1b's nineteen findings and W-A1c's twenty are in the rows above): codex 47 findings, 44 real, two refuted (a lockfile left out of a diff) and one
 the planner's own excerpt; deepseek 178 findings, 158 real, thirteen refuted, the rest rebutted on

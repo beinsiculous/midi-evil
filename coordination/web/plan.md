@@ -729,6 +729,123 @@ list before the batch reports done.
 **Then, for all three:** the native suite, clippy and fmt; `compat/` verified on Iroh; the nine
 steps' transcript and what Jesse heard added to a `coordination/web/w-a1-result.md`.
 
+## W1 — compile-safe seams, native behaviour unchanged (`#3`) — settled 2026-11-25
+
+The record's step, re-surveyed on `a15dc49` after W-A1 moved most of what it names.
+
+### The tree, for this batch
+
+- **What fails today.** `cargo check -p midi-evil --target wasm32-unknown-unknown` ends in nineteen
+  errors, in three places: the synchronous `rfd` dialogs, which do not exist on `wasm32` (sixteen,
+  with the type inferences that hang off them); `std::os::unix` in `instance.rs` (one); and
+  `eframe::NativeOptions` and `run_native` in `main.rs` (two). `rodio`, `cpal` and `midir` compile
+  for the target as they are. So the port's compile work is these three seams and nothing else;
+  what compiles and then cannot run — a clock, a thread, a device — is named below and is not
+  W1's to make work.
+- **Dialogs: twenty-three uses in seven files.** `file_dialog()` is defined at `app/files.rs:354`
+  and called eleven times; direct `rfd::FileDialog` at `beats/bank.rs:26,49,65,155`,
+  `recovery.rs:76,93`, `patch_lab.rs:572,704`; a yes-or-no `rfd::MessageDialog` at
+  `app/files.rs:54`, `app/sounds.rs:31`, `app/drafts.rs:92`, `beats/bank.rs:11`.
+- **Clocks: five calls.** `Instant::now` at `preview.rs:110`, `beats.rs:244`,
+  `beats_player.rs:61`, `app/recording.rs:35,81`, and the fields that hold them. They compile
+  on `wasm32` and panic when reached.
+- **Threads:** `render_job.rs`, `preview.rs`, `recovery.rs`. They compile and panic when spawned;
+  W4's.
+- **Microphone:** `sample_recorder.rs`, one caller at `patch_lab.rs:134`. It compiles; the patch
+  lab is held back from the first page (D12).
+- **Modules:** `main.rs` declares 32 and holds `main` and `run`, 74 lines.
+
+### What it builds
+
+1. **The library, with a stated surface.** `src/lib.rs` declares the 32 modules. `run` moves
+   into it as `run_native`, compiled off `wasm32`, and `main.rs` becomes a `main` that calls it
+   — so the launch options, the single instance and the desktop's dialogs are wired inside the
+   library and none of them has to be public for `main`'s sake. The public surface is exactly:
+   `run_native`; `StudioApp` and its constructor; and the types that constructor names —
+   `LaunchOptions`, `SingleInstance`, the `Dialogs` trait. Nothing else is public. `speech`,
+   `announcer`, `regions` and `key_help` are *in* the library, which is what lets `evil-web`
+   read D5's strings and never copy them; **which of their items become public is W-A2's to
+   say, when it knows what it reads** — exporting them now would drag the roll's and the
+   arranger's command types out with them. On `wasm32` `main.rs` is an empty `main`, so the
+   whole package checks, not only `--lib`.
+2. **One seam for every dialog.** A `dialogs` module with a `Dialogs` trait: pick a file, pick
+   files, pick a folder, choose where to save — each taking a request (title, filters, starting
+   directory, suggested name) and returning paths — and ask yes or no, taking a title **and a
+   description** and answering true only for Yes; a closed or cancelled prompt is no. There are
+   **twenty-three uses**: eleven calls of `file_dialog()`, eight direct `rfd::FileDialog`, four
+   `rfd::MessageDialog`. `StudioApp` owns the one `Box<dyn Dialogs>`, given to its constructor;
+   the modules that open a dialog and are not `StudioApp` — `BeatsPage` in `beats/bank.rs`,
+   `RecoveryWindow` in `recovery.rs`, the sample and zone loaders in `patch_lab.rs` — are
+   handed `&mut dyn Dialogs` by their caller for the call, and every signature that gains the
+   parameter is listed in the report. No second owner, no global. Every dialog is opened on
+   the interface thread, as today. `file_dialog()` stopped the keyboard and the beats before it
+   built a dialog; a `StudioApp` method keeps doing exactly that in front of the trait, the
+   eleven sites use it, and the twelve that did not stop still do not. The `rfd`
+   implementation is `dialogs/native.rs`, compiled off `wasm32`, and `rfd` moves to
+   `[target.'cfg(not(target_arch = "wasm32"))'.dependencies]`; on `wasm32` the implementation
+   answers "nothing chosen" and "no". **The synchronous, path-returning shape is the
+   desktop's.** A browser's picker is asynchronous and hands back bytes; W5b decides that shape
+   with D13 and is expected to change this trait and its call sites. What W1 gives it is every
+   dialog passing through one place, which it needs whatever the shape.
+3. **The tests reach past the dialogs, and see what was asked.** The test harness gets a
+   scripted `Dialogs`: the test queues the next answers, and it records each request — kind,
+   title, description, filters, suggested name. With it:
+   - Relink MIDI…, Choose WAV… and Create .evil draft… each get the test the inventory says
+     they lack, on the repository's fixtures and a temporary directory, waiting for the
+     recovery's worker before asserting. Their inventory lines become announced-with-a-test.
+   - Every one of the twenty-three uses the harness can reach has its request asserted — a save
+     asks to save, under the name and filters it does today; a confirm carries today's title
+     and description — and the four confirms are tested answering yes and no. A use the
+     harness cannot reach is named in the report with the reason.
+   - One test shows a held note and a running beat are stopped before the eleven sites' dialog
+     answers.
+4. **The single instance.** `instance.rs` is `#[cfg(unix)]`; elsewhere `SingleInstance::start`
+   always answers "primary" and polls nothing. That makes the crate *compile* off Unix. It is
+   not a claim that Windows is supported: two copies there would both be primary.
+5. **The clocks.** `web_time::Instant` at the five calls and the fields that hold them. It is
+   `std::time::Instant` re-exported off `wasm32`, so native behaviour is the same type. One new
+   dependency, `web-time`; on `wasm32` it brings `wasm-bindgen` and `js-sys` with it, which is
+   expected and is not the batch binding anything itself.
+6. **The microphone seam.** `sample_recorder.rs` is compiled off `wasm32`; on `wasm32` a stub of
+   the same two functions whose `start` returns "Recording from a microphone is not available
+   in the browser." `#10` closes here.
+
+### Rules particular to this batch
+
+- **Native behaviour does not change.** No string, no key, no focus order, no file written
+  differently. Every existing test passes untouched; the tests added are item 3's.
+- **The stubs are not tested, and the plan does not pretend they are.** The `wasm32` halves of
+  `dialogs` and `sample_recorder` and the off-Unix half of `instance` are compiled by no native
+  test run and executed by no gate here. Their evidence is that they compile and lint clean for
+  the target, and each is a few lines that return a constant. W2 is the first batch that runs
+  them.
+- **Three files are already over 600 lines**: `patch_lab.rs` 1,777, `app.rs` 1,138, `beats.rs`
+  711. None is split here. Each may grow only by the seam's wiring — a parameter, a field, an
+  import — by no more than fifteen lines, counted in the report. Every other touched file stays
+  at or under 600.
+- **`cfg(target_arch = "wasm32")` appears in five places and no others**: `dialogs`,
+  `sample_recorder`, `lib.rs` where it declares them and `run_native`, `main.rs`, and the
+  manifest. `cfg(unix)` appears in `instance`. A `cfg` anywhere else means a seam is missing,
+  and the executor stops and says which.
+- **Nothing is made to work in a browser.** The batch writes no `wasm-bindgen` binding, no web
+  crate, no worker, no audio: W2, W3 and W4.
+
+### Gate
+
+- The native suite, clippy and fmt; the native gate, every sequence, since the split moves every
+  module the gate drives.
+- `cargo check -p midi-evil --target wasm32-unknown-unknown` compiles — library and binary —
+  and `cargo clippy -p midi-evil --target wasm32-unknown-unknown -- -D warnings` is clean. A
+  public function naming a private type, or a stub leaving an argument unused, fails here.
+- `cargo tree -p midi-evil --target wasm32-unknown-unknown` shows no `rfd`.
+- `git grep -n 'rfd::' crates/midi-evil/src` finds only `dialogs/native.rs`.
+- `compat/` verified on Iroh is **not** a gate of this batch: W1 touches no shared crate.
+
+**Sitting:** none. Nothing a person hears or presses changes; the native gate is the evidence.
+
+**Leaves out:** the three device-open sites (W3); the threads (W4); the path-based interfaces of
+the shared crates (W5a); the browser's own dialogs (W5b).
+
 ## The later batches — constraints, not yet sections
 
 Each is the record's step plus what follows. Each gets its files and gates in a reviewed revision of
