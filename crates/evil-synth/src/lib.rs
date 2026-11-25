@@ -63,7 +63,7 @@ pub use render::{
     render_notes_with_full_automation, render_notes_with_pitch_bend, render_notes_with_tempo,
 };
 pub use reverb::Reverb;
-pub use sample::{SampleOscillator, SampleZone};
+pub use sample::{SampleDirection, SampleOscillator, SampleZone};
 pub use sync::OscillatorSync;
 use thiserror::Error;
 pub use unison::Unison;

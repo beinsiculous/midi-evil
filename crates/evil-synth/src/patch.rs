@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AuxEnvelope, Delay, Envelope, Error, Filter, Lfo, LfoDestination, LfoPhaseSync, ModalPartial,
-    Oscillator, OscillatorMode, OscillatorSync, Unison, VoiceMode, Waveshaper,
+    Oscillator, OscillatorMode, OscillatorSync, SEND_COUNT, Unison, VoiceMode, Waveshaper,
     sample::validate_sample_zones,
 };
 
@@ -15,6 +15,8 @@ pub struct Patch {
     pub sample_rate: u32,
     pub duration_seconds: f32,
     pub gain: f32,
+    /// Mixer send defaults applied when the preset is assigned to an instrument.
+    pub send_gains: [f32; SEND_COUNT],
     /// General MIDI program number (0-based), if the patch has a suitable mapping.
     pub midi_program: Option<u8>,
     /// Scale oscillator frequencies from MIDI notes when rendering a performance.
@@ -49,6 +51,8 @@ pub struct Patch {
     pub polyphony: Option<u8>,
     pub unison: Option<Unison>,
     pub envelope: Envelope,
+    /// Reverse the active amplitude-envelope shape while retaining silence after its release tail.
+    pub invert_amp_envelope: bool,
     pub filter: Option<Filter>,
     /// Independent filter ADSR; `None` routes the amplitude envelope to the filter.
     pub filter_envelope: Option<Envelope>,
@@ -73,6 +77,7 @@ impl Default for Patch {
             sample_rate: 48_000,
             duration_seconds: 0.25,
             gain: 0.8,
+            send_gains: [0.0; SEND_COUNT],
             midi_program: None,
             pitch_tracking: true,
             pitch_gain_per_octave: 0.0,
@@ -93,6 +98,7 @@ impl Default for Patch {
             polyphony: None,
             unison: None,
             envelope: Envelope::default(),
+            invert_amp_envelope: false,
             filter: None,
             filter_envelope: None,
             aux_envelope: None,
@@ -232,6 +238,13 @@ impl Patch {
         if !self.gain.is_finite() || !(0.0..=1.0).contains(&self.gain) {
             return Err(invalid("gain must be between 0 and 1"));
         }
+        if self
+            .send_gains
+            .iter()
+            .any(|gain| !gain.is_finite() || !(0.0..=1.0).contains(gain))
+        {
+            return Err(invalid("send gains must be between 0 and 1"));
+        }
         if !self.pitch_gain_per_octave.is_finite()
             || !(-2.0..=2.0).contains(&self.pitch_gain_per_octave)
         {
@@ -271,7 +284,11 @@ impl Patch {
         if self.oscillators.is_empty() || self.oscillators.len() > 8 {
             return Err(invalid("a patch needs between 1 and 8 oscillators"));
         }
-        if self.oscillator_mode == OscillatorMode::Ring && self.oscillators.len() < 2 {
+        if matches!(
+            self.oscillator_mode,
+            OscillatorMode::Ring | OscillatorMode::Ring2
+        ) && self.oscillators.len() < 2
+        {
             return Err(invalid("ring mode needs Osc A and Osc B"));
         }
         if self
@@ -539,6 +556,8 @@ mod tests {
     fn json_round_trip_preserves_the_patch() {
         let mut patch = Patch {
             name: "Test tone".to_owned(),
+            send_gains: [0.25, 0.75],
+            invert_amp_envelope: true,
             midi_program: Some(80),
             oscillator_mode: OscillatorMode::Sync,
             sync: Some(OscillatorSync::default()),
@@ -618,6 +637,7 @@ mod tests {
             samples: vec![0.0, 0.5, -0.5, 0.0],
             sample_rate: 48_000,
             root_frequency_hz: 220.0,
+            direction: crate::SampleDirection::ForwardReverse,
             playback_start_frame: 0,
             playback_end_frame: None,
             loop_enabled: true,
@@ -635,11 +655,24 @@ mod tests {
         assert_eq!(patch.sample_rate, 48_000);
         assert_eq!(patch.oscillators.len(), 1);
         assert_eq!(patch.filter_envelope, None);
+        assert_eq!(patch.send_gains, [0.0; SEND_COUNT]);
+        assert!(!patch.invert_amp_envelope);
         assert_eq!(patch.aux_envelope, None);
         assert_eq!(patch.aux_envelope_2, None);
         assert_eq!(patch.waveshaper, None);
         assert!(!patch.to_json_pretty().unwrap().contains("aux_envelope_2"));
         assert_eq!(patch.oscillators[0].sample, None);
+    }
+
+    #[test]
+    fn patch_send_gains_are_validated() {
+        for value in [-0.1, 1.1, f32::NAN] {
+            let patch = Patch {
+                send_gains: [0.0, value],
+                ..Patch::default()
+            };
+            assert!(patch.validate().is_err());
+        }
     }
 
     #[test]
@@ -726,6 +759,7 @@ mod tests {
         assert_eq!(sample.loop_start_frame, 0);
         assert_eq!(sample.loop_end_frame, None);
         assert_eq!(sample.playback_range(), 0..4);
+        assert_eq!(sample.direction, crate::SampleDirection::Forward);
         assert_eq!(sample.loop_range(), 0..4);
     }
 

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{SampleOscillator, SampleZone, wavetable};
+use crate::{SampleDirection, SampleOscillator, SampleZone, wavetable};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -12,6 +12,8 @@ pub enum OscillatorMode {
     Sync,
     /// Multiply Osc A by Osc B; auxiliary oscillators remain additive.
     Ring,
+    /// Ring modulation with Osc B's frequency independent of the played key.
+    Ring2,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -239,8 +241,13 @@ impl Oscillator {
     }
 
     fn sample_start_position(&self, zone: Option<usize>) -> f64 {
-        self.sample_for_zone(zone)
-            .map_or(0.0, |sample| sample.playback_range().start as f64)
+        self.sample_for_zone(zone).map_or(0.0, |sample| {
+            if sample.direction == SampleDirection::ReverseForward {
+                sample.loop_range().start as f64
+            } else {
+                sample.playback_range().start as f64
+            }
+        })
     }
 
     pub(crate) fn frequency(&self, sweep_progress: f32, pitch_multiplier: f32) -> f32 {
@@ -408,6 +415,22 @@ mod tests {
         assert_eq!(oscillator.sample(&mut state, 0.0, 8_000, 1.0, 0.0), 0.5);
         state.select_sample_zone(&oscillator, 59);
         assert_eq!(oscillator.sample(&mut state, 0.0, 8_000, 1.0, 0.0), -0.25);
+    }
+
+    #[test]
+    fn reverse_forward_sample_starts_at_the_loop_end() {
+        let oscillator = Oscillator {
+            waveform: Waveform::Sample,
+            sample: Some(SampleOscillator {
+                loop_enabled: true,
+                direction: SampleDirection::ReverseForward,
+                ..SampleOscillator::new(vec![0.0, 1.0, 2.0, 3.0], 8_000)
+            }),
+            ..Oscillator::default()
+        };
+        let mut state = oscillator.state(1, 60);
+        assert_eq!(oscillator.sample(&mut state, 0.0, 8_000, 1.0, 0.0), 3.0);
+        assert_eq!(oscillator.sample(&mut state, 0.0, 8_000, 1.0, 0.0), 2.0);
     }
 
     #[test]

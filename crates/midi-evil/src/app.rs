@@ -123,6 +123,7 @@ enum PatchLabAction {
     Open,
     Duplicate,
     Reset,
+    Compare,
     SaveAs,
 }
 
@@ -485,7 +486,7 @@ impl StudioApp {
         instrument.source = InstrumentSource::Synth {
             patch: reference.clone(),
         };
-        instrument.midi_program = lab.patch.midi_program;
+        instrument.apply_patch_metadata(&lab.patch);
         self.keyboard_binding = Some((lab.track_index, reference.clone()));
         self.sounds.remember(crate::instruments::Sound {
             name: lab.patch.name.clone(),
@@ -536,23 +537,57 @@ impl StudioApp {
                     ),
                 );
             });
+            let comparing = lab.is_comparing();
             ui.horizontal_wrapped(|ui| {
-                if ui.button("New").clicked() {
+                if ui
+                    .add_enabled(!comparing, egui::Button::new("New"))
+                    .clicked()
+                {
                     action = Some(PatchLabAction::New);
                 }
-                if ui.button("Load patch…").clicked() {
+                if ui
+                    .add_enabled(!comparing, egui::Button::new("Load patch…"))
+                    .clicked()
+                {
                     action = Some(PatchLabAction::Open);
                 }
-                if ui.button("Duplicate").clicked() {
+                if ui
+                    .add_enabled(!comparing, egui::Button::new("Duplicate"))
+                    .clicked()
+                {
                     action = Some(PatchLabAction::Duplicate);
                 }
-                if ui.button("Reset").clicked() {
+                if ui
+                    .add_enabled(!comparing, egui::Button::new("Reset"))
+                    .clicked()
+                {
                     action = Some(PatchLabAction::Reset);
                 }
-                if ui.button("Save & assign…").clicked() {
+                if ui
+                    .add_enabled(
+                        !lab.recording_active(),
+                        egui::Button::new("Compare").selected(comparing),
+                    )
+                    .on_hover_text(
+                        "Audition the original preset; activate again to restore the parked edits",
+                    )
+                    .clicked()
+                {
+                    action = Some(PatchLabAction::Compare);
+                }
+                if ui
+                    .add_enabled(!comparing, egui::Button::new("Save & assign…"))
+                    .clicked()
+                {
                     action = Some(PatchLabAction::SaveAs);
                 }
             });
+            if comparing {
+                ui.label(
+                    RichText::new("Comparing original preset · edited version is parked")
+                        .color(theme::IVORY),
+                );
+            }
             if lab.has_unsaved_changes() {
                 ui.label(
                     RichText::new(
@@ -568,10 +603,13 @@ impl StudioApp {
                 .min_scrolled_height(0.0)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    if lab.page == patch_lab::PatchPage::Samples || lab.recording_active() {
-                        self.sample_capture_controls(ui, &mut lab);
-                    }
-                    patch_lab::show(ui, &mut lab)
+                    ui.add_enabled_ui(!comparing, |ui| {
+                        if lab.page == patch_lab::PatchPage::Samples || lab.recording_active() {
+                            self.sample_capture_controls(ui, &mut lab);
+                        }
+                        patch_lab::show(ui, &mut lab)
+                    })
+                    .inner
                 })
                 .inner;
             if let Some(message) = message {
@@ -592,6 +630,14 @@ impl StudioApp {
             Some(PatchLabAction::Reset) => {
                 lab.reset();
                 self.status = "Restored the last opened, duplicated, or saved patch".to_owned();
+            }
+            Some(PatchLabAction::Compare) => {
+                lab.toggle_compare();
+                self.status = if lab.is_comparing() {
+                    "Comparing the original preset; edits are parked".to_owned()
+                } else {
+                    "Restored the edited preset".to_owned()
+                };
             }
             Some(PatchLabAction::SaveAs) => self.save_patch_lab(&mut lab),
             Some(PatchLabAction::New) | None => {}
