@@ -83,6 +83,11 @@ credential configured"). Deepseek stood in, as the `roles` skill allows.
 | 32 | W-A2a code and gate (diff) | gemini | 5 | 4 | 0 | 1 | "the `match &focused` block matches `Some(control) if name_changed` first, bypassing the `states_changed` and `value_changed` arms" | 7:50 |
 | 32 | W-A2a code and gate (diff) | deepseek | 7 | 6 | 0 | 1 | "The old `AppCommand::from_key` matched on `modifiers.command` and invoked Save … regardless of an extra Shift" — a desktop change the plan's own wording had asked for and its first rule forbade | 18:00 |
 | 33 | W-A2a code and gate v2 (diff) | codex | 2 | 2 | 0 | 0 | "the track is added, but `Bridge::publish` detects `returned` and discards the announcement" — a click from outside the editor acted and said nothing | 4:30 |
+| 34 | W-A2b section v1 (plan) | codex | 4 | 4 | 0 | 0 | "+ Track → Drum track … `app/tracks.rs` then unconditionally selects `View::Pads`. Hiding the Pads tab and +KIT therefore still permits entry into Pads" | 2:40 |
+| 34 | W-A2b section v1 (plan) | gemini | 7 | 4 | 2 | 1 | "If this check executes immediately after navigation … the accessibility tree is completely empty" — an absence row passing on an empty page; the keyboard trap and the project wipe were W-A2a's, already closed | 6:30 |
+| 34 | W-A2b section v1 (plan) | deepseek | 13 | 13 | 0 | 0 | "`Project::load(path)` … uses `std::fs::read_to_string` — present but unsupported on wasm32" and "The page exposes exactly one accessibility node for the editor … there is no AX node named 'MIXER', so the clause passes" | 8:00 |
+| 35 | W-A2b section v2 (plan) | codex | 2 | 2 | 0 | 0 | "`native-gate.sh`'s R-21 changes `tempo.evil` from 90 to 100 BPM and saves it … The first run modifies the tracked inputs" | 3:00 |
+| 35 | W-A2b section v2 (plan) | deepseek | 12 | 12 | 0 | 0 | "The built visitor bundle … already contains the literal strings `tempo` (many occurrences), `long` (8), and `bass` (1)" — the proof that fixtures are absent would have failed on today's bundle | 10:00 |
 
 Totals so far (through W-A1a; W-A1b's nineteen findings and W-A1c's twenty are in the rows above): codex 47 findings, 44 real, two refuted (a lockfile left out of a diff) and one
 the planner's own excerpt; deepseek 178 findings, 158 real, thirteen refuted, the rest rebutted on

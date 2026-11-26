@@ -1078,7 +1078,13 @@ Command+Right and Command+Y are the browser's there. The web build therefore use
 every system and says, where it says which browsers it was tested in, that a Mac's own
 shortcuts are not designed yet; that is an issue in the milestone, filed with this section.
 
-### W-A2a — the bridge, and the browser's keys — BUILT 2026-11-25, sitting pending
+### W-A2a — the bridge, and the browser's keys — DONE 2026-11-25
+
+**Sitting, 2026-11-25:** Jesse, with Orca, on the gate's bundle: "k looks good keep at it".
+Unitemised: recorded as the batch passing as a whole. No row of the key table, neither region
+chord and no line about editing a name in its middle was answered one by one, so each stays as
+built and none is recorded as heard a particular way: Alt+Page Down and Up remain the region
+chord, and review of a field's text by character was not asked for and is not designed.
 
 Built by Claude Opus 5.5 in two passes; 537 tests, the native gate at 455 expectations, and the
 web-app gate holding 19 rows in Chromium and 19 in Firefox. What differed from the section below:
@@ -1289,25 +1295,162 @@ a row not mentioned recorded as not answered:
 button, which are on a shown surface and silent — W-A2b takes them off the browser's toolbar
 until W3 gives them states.
 
-### W-A2b — the matrix, what is not shown, and the help
+### W-A2b — the matrix, what is not shown, and the help — settled 2026-11-25
 
-Its own section, with its own gate and its own sitting, written and reviewed when W-A2a has
-landed, from what W-A2a found. Its gate opens with one row W-A2a's lacks: a click on a control
-from outside the editor, with no frame between the press and the release, is announced — the
-bridge was fixed for it after the gate was written. **W-A2 is not passed until W-A2b is**: W-A2a's sitting may find
-that hearing a field's whole value is not enough to edit it, and the remedy is designed in
-W-A2b's section, not promised here. It owes: **W-A1's rows R-1 to R-22 as a matrix** — for each,
-what drives it natively, in Chromium over CDP, and in Firefox, where a row may be the
-sitting's alone, said in advance and waived in writing where D4 needs it; R-11 and every other
-row that plays are entered in the matrix as W3's and W4's, since nothing plays before them;
-**what the first page does not show** — Mixer, Synth, Keyboard, Pads, the Automation panel,
-and the MIDI input with its refresh button — absent from the web build **together with every
-control that opens one**: the four view tabs, +KIT, Open Evil Synth, Samples, Modulation,
-Mixer & FX, Automation, and whichever items of the Project and Export menus have nothing
-behind them before W4 and W5b; each absence a row,
-and the page saying they are desktop-only for now; **the keyboard notes** for the web, from
-the same tables; the inventory's lines re-read for the browser; and text review in a field, if
-W-A2a's sitting asks for it.
+W-A2a made the browser build speak. W-A2b makes the page show only what has passed (D12), holds
+it to W-A1's rows, and puts the keyboard notes where a visitor can read them before entering a
+canvas that takes every key.
+
+**Builds:**
+
+1. **What the browser build shows is decided in one place, and enforced where a view changes.**
+   `platform.rs` gains the list of what a platform shows. Two things read it and nothing else
+   knows: each control, to decide whether it is drawn; and **the one place a view is selected**,
+   which answers a request for a view the platform does not show by staying where it is — so
+   a route nobody listed cannot arrive at a hidden view, and a project that asks for one opens
+   on Song. That place does not exist yet: the view is assigned directly in more than a dozen
+   sites. The batch makes the field private to one module with one `select_view`, sends every
+   assignment through it, and a test asks for each view by every command that can ask. In the browser, absent — not drawn, not in the Tab order, not in the frame's tree:
+   - the **Mixer, Synth, Keyboard and Pads** views, and every way in: their four tabs, +KIT,
+     the button that reads Open Evil Synth or Open Pads, Samples, Modulation, Mixer & FX;
+   - the Notes view's **Automation** panel, its toggle, and the side panel's Automation button;
+   - the **MIDI input** and its refresh button, silent until W3 gives them states;
+   - **what needs a file or a renderer**, wherever it is drawn: Import MIDI in the Project menu
+     *and in the About window*, Recover rhythm from WAV, Relink MIDI, Export MIDI, the WAV
+     renders, stems and parts, the Export toggle, and both Load files… buttons.
+   **A drum track stays.** + Track › Drum track adds one and, in the browser, does not go to
+   Pads: its notes are edited in the roll like any track's and its kit is chosen from the sound
+   list. New, Open, Save, Save as, Keyboard notes and About stay, saying what W-A2a made them
+   say until W5b. The executor does not trust this list: it greps every site that sets the view
+   and every call of a removed command, and reports any way in the list does not name. Each
+   thing comes back in the batch that makes it pass, by a line removed from the list. The
+   desktop shows what it showed.
+2. **Nothing on the page is pointer-only.** The inventory's two failing kinds that are not
+   W3's — moving a window by its title bar, and dragging the side panel's width — are not
+   offered in the browser: its windows do not move and its side panel does not resize, and
+   neither the title bar nor the handle is a stop there at all — a stop that only ever dragged
+   is removed, not left named. On the desktop both stay, and stay `#23`'s.
+3. **The page says what it is, in its own HTML.** The keyboard notes, what is desktop-only
+   for now, and the browsers it was tested in are **static text in `index.html`**, there the
+   moment the page loads and there if the wasm never starts — not written by the application
+   after a six-mebibyte download. They would otherwise be a second copy of the library's
+   tables, so **a test holds the pair**: it generates the notes and the desktop-only list from
+   the browser's tables and item 1's list and fails when `index.html` differs, and the page's
+   header says so. A command the browser build refuses is in the notes with its reason —
+   "Space: play and stop — not in the browser build yet" — never as if it worked, **and the
+   Keyboard notes window inside the application is written by the same function**, so the two
+   say the same of Space. The tested-
+   browsers sentence, with the line that a Mac's shortcuts are not designed (`#24`), is the
+   page's own; "`evil-web` writes no string" means no string at run time. **The notes do not
+   cost the editor its room**: they sit in a disclosure above the canvas, closed when the page
+   loads, whose opened body is a named, focusable region that scrolls within itself by the
+   keyboard; the document still never scrolls. The page's order is stated and the entry rows
+   are rewritten to it: the heading, the disclosure's button, its body when open, the
+   sentinel, the canvas, the current element, the live region, the sentinel, "Leave the
+   editor". The disclosure's button is a stop a visitor meets before the editor, and the rows
+   say so.
+4. **Fixtures for the gate, in a bundle a visitor never gets.** W-A1's rows start from projects
+   the native gate writes into a temporary directory from its own script and opens by launch
+   argument. A browser cannot open a file before W5b, and the application cannot be handed a
+   project except by path. So:
+   - the fixtures become **tracked files**, `coordination/web/probes/fixtures/*.evil` — one
+     set, both gates. They are never opened in place: the native gate saves into some of them,
+     so it copies the set into its temporary directory at each run, as it writes it there
+     today. The set gains what it lacks: the native gate's default start is the Bach
+     invention imported from MIDI, which a browser cannot import, so its project is tracked
+     as a `.evil` with the same notes in the same order, the rows that only need its notes
+     start from that on both gates, and one native row goes on importing the MIDI itself;
+   - `midi-evil` and `evil-web` gain a cargo feature, off by default. Under it the library has
+     a constructor that takes a project as text, and the entry reads `?fixture=<name>` and
+     starts from one of those files, compiled in; and, for the absence rows' negative control
+     only, `?shows=desktop` makes the page show what the desktop shows;
+   - `build_wasm.sh` builds the visitor's bundle without the feature, exactly as now; with
+     `--gate` it builds the other into `target/web/dist-gate/`, **with its own cargo target
+     directory**, so a gate build can never leave its wasm where a visitor's build picks it up,
+     under the same lock and swap. `check_wasm.sh` checks both feature sets;
+   - `web-app-gate.sh` is given both bundles and each row says which it runs on: the fixture
+     rows on the gate's; the absence, page-text and first-run rows on the visitor's. A row
+     shows the visitor's bundle ignores `?fixture=` and `?shows=`, and that a marker string
+     the feature alone compiles in is in the gate's wasm and not in the visitor's — the
+     fixtures' own names are ordinary words and prove nothing; W6 asserts both again on what
+     is shipped. The gate refuses to start without a gate bundle that carries the marker, so a
+     stale or missing one is a refusal and not a row's failure; `check_wasm.sh`'s check of the
+     feature has a target directory of its own too.
+5. **The matrix below, as rows of `web-app-gate.sh`**, each starting from the fixture its
+   native row starts from — taken from the native gate's own table, not chosen again — and
+   each first asserting the project it loaded by name and track count, so a row cannot pass
+   on the default project. The rows run in named groups — W-A2a's, the matrix, absence, the
+   page — each with a deadline of five minutes a browser, where the whole gate takes about
+   four minutes today for nineteen rows in both; a group that runs out says its name. R-2 and R-18 are the crate's tests: the batch adds their browser forms — the
+   region chord for R-2, the browser's dispatch for R-18 — and names them.
+6. **The inventory, re-read for the browser**: `coordination/web/w-a2-inventory.md`, every line
+   of `w-a1-inventory.md` ending one of five ways — announced in the browser, with its row;
+   **unavailable until a named batch**, with the row that hears its reason; absent from the
+   browser, with its absence row and the batch that brings it back; a named standard control;
+   or failing, listed. **W-A2 does not close with a failing line** that is not W3's.
+
+**The matrix.** *CDP* is Chromium's real tree, asserted; *computed* is Playwright's own
+computation in Firefox, whose real tree is the sitting's. A row whose native form turns on F6
+is restated on the browser's region chord.
+
+| row | natively | in the browser | where |
+|---|---|---|---|
+| W0 edges: top pitch, tick 0, empty pattern, full shared pattern | native gate | the same keys, the same words | CDP, computed |
+| R-1 the cursor never moves to an identical twin | native gate | the same, from the fixture | CDP, computed |
+| R-2 a region move and an arrow in the next frame | crate's tests | the crate's tests, on the browser's tables | tests |
+| R-3 regions from the roll and back | native gate | Alt+Page Down and Up | CDP, computed (W-A2a's `regions`) |
+| R-4 Delete beside an automation lane | native gate | **not applicable**: the Automation panel is absent; its absence is the row | CDP, computed |
+| R-6 add in an empty pattern, undo: selection reset | native gate | the same | CDP, computed |
+| R-7 a held Right, a held Up at the top | native gate | one write at rest (W-A2a's `held-key`), and Up held at the top | CDP, computed |
+| R-8 delete the last track; the editor stop is add-a-track | native gate | the same, on the region chord | CDP, computed |
+| R-9 add after the first of two twins, undo | native gate | the same | CDP, computed |
+| R-10 the roll's description names every chord | native gate | every chord of the **browser's** table and none the browser keeps | CDP, computed |
+| R-11 the transport read while playing | native gate | **W3's and W4's**: nothing plays yet; read stopped is W-A2a's | — |
+| R-12 nothing focusable is unnamed | native gate | every stop Tab reaches on the Song and Notes views, a menu and each window: named, with a role | CDP, computed |
+| R-13 a screen reader started after the application | native gate | **not applicable**: the page is always in the tree; a row reads it with no input since load | CDP, computed |
+| R-14 every one-note edit from its button | native gate | the same | CDP, computed |
+| R-15 duplicate a track, undo | native gate | the same | CDP, computed |
+| R-16 a nudge past a neighbour, undo | native gate | the same | CDP, computed |
+| R-17 Clean overlaps re-sorts; the cursor follows | native gate | the same | CDP, computed |
+| R-18 two keys in one frame, three orders | crate's tests | the crate's tests | tests |
+| R-19 Escape clears, then leaves | native gate | the same | CDP, computed |
+| R-20 undo during a take | native gate | **W3's and W4's**: nothing records yet | — |
+| R-21 the readout after a tempo change and a new project | native gate | change the tempo and read; on a fresh page, New and read. New with unsaved work refuses and says why — its own row, until W5b | CDP, computed |
+| R-22 an unavailable control says why | native gate | W-A2a's `unavailable`, and each control item 1 leaves on the page that can be unavailable | CDP, computed |
+| the instrument list | native gate | the Previous and Next buttons | CDP, computed |
+| the Song sequences, the track panel, the roll's toolbar, the windows | native gate | the same, without what item 1 removes | CDP, computed |
+
+**Gate** — in this order: the native suite, clippy, fmt and the native gate, since item 1
+touches every surface's drawing and item 4 its fixtures; `check_wasm.sh`; `build_wasm.sh`
+within its budget, then `build_wasm.sh --gate`; `web-smoke.sh`; and `web-app-gate.sh`, whose
+rows are W-A2a's and:
+
+- first, the row W-A2a owes: a click on a control from outside the editor, press and release
+  with no frame between, is announced;
+- the matrix;
+- **absence**, stated as what can be observed: the page has one node for the whole editor, so
+  there is no tree to search for a control's name. After a row has first found the controls
+  that must be there, a walk by Tab through every stop of the Song and Notes views, each menu
+  and each window never puts a removed thing in the current element; no menu path, chord or
+  button changes the view to a hidden one; adding a drum track leaves the view where it was.
+  The negative control is the gate's bundle with `?shows=desktop`, on which the walk must find
+  the Mixer tab and fail;
+- no window moves and the side panel does not resize: no stop named for either;
+- the page's text: the notes hold every chord of the browser's table, none the browser keeps,
+  and the reason beside each command that is refused; the desktop-only list names each thing
+  item 1 removes; both are in the page before the wasm has started — a row delays the wasm
+  and reads them — and come before the canvas in its order;
+- the layout: at 1366 by 768, and at twice the text size, with the notes closed and with them
+  open, the canvas keeps a stated least height and "Leave the editor" is reached;
+- the visitor's bundle ignores `?fixture=` and `?shows=`.
+
+**Sitting** (Orca; Firefox, then Chromium; on the visitor's bundle): read the page from its top
+— the notes, what is desktop-only — then into the editor, across the toolbar and the side
+panel, hearing nothing that leads somewhere that is not there. This sitting closes W-A2.
+
+**Leaves out:** review of a field's text by character — W-A2a's sitting did not ask for it, and
+it is `#25`, not a batch; everything a row above gives to W3, W4 or W5b; a
+probe of Firefox's own accessibility tree, which stays the sitting's.
 
 ## The later batches — constraints, not yet sections
 
