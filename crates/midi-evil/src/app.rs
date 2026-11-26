@@ -9,6 +9,11 @@ mod command_outcome_tests;
 mod dialog_tests;
 mod drafts;
 mod files;
+mod front_end;
+#[cfg(test)]
+mod front_end_browser_tests;
+#[cfg(test)]
+mod front_end_tests;
 #[cfg(test)]
 mod key_dispatch_tests;
 #[cfg(test)]
@@ -164,6 +169,7 @@ impl StudioApp {
         dialogs: Box<dyn Dialogs>,
     ) -> Self {
         theme::install(context);
+        crate::platform::install(context, crate::platform::Platform::of_this_build());
         let mut app = Self {
             project: Project::new("Untitled"),
             project_path: None,

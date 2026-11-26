@@ -79,6 +79,10 @@ credential configured"). Deepseek stood in, as the `roles` skill allows.
 | 30 | W-A2 section v2 (plan) | codex | 4 | 4 | 0 | 0 | "egui excludes disabled widgets from keyboard traversal … these controls' names and reasons never reach the current element" | 3:00 |
 | 30 | W-A2 section v2 (plan) | deepseek | 12 | 10 | 0 | 2 | "press Enter to add a note and immediately press Alt+Left before the next animation frame … `beforeunload` reads the previous frame's `dirty=false`" | 9:00 |
 | 31 | W-A2 section v3 (plan) | codex | 2 | 2 | 0 | 0 | "Ctrl+A is absent from the web table, so item 3 stops it before eframe … Typing therefore produces 'LeadBass'" | 3:20 |
+| 32 | W-A2a code and gate (diff) | codex | 4 | 4 | 0 | 0 | "`tab_ends` sorts window layers by hashed ID; on the wasm target, that places Keyboard notes before About" | 4:00 |
+| 32 | W-A2a code and gate (diff) | gemini | 5 | 4 | 0 | 1 | "the `match &focused` block matches `Some(control) if name_changed` first, bypassing the `states_changed` and `value_changed` arms" | 7:50 |
+| 32 | W-A2a code and gate (diff) | deepseek | 7 | 6 | 0 | 1 | "The old `AppCommand::from_key` matched on `modifiers.command` and invoked Save … regardless of an extra Shift" — a desktop change the plan's own wording had asked for and its first rule forbade | 18:00 |
+| 33 | W-A2a code and gate v2 (diff) | codex | 2 | 2 | 0 | 0 | "the track is added, but `Bridge::publish` detects `returned` and discards the announcement" — a click from outside the editor acted and said nothing | 4:30 |
 
 Totals so far (through W-A1a; W-A1b's nineteen findings and W-A1c's twenty are in the rows above): codex 47 findings, 44 real, two refuted (a lockfile left out of a diff) and one
 the planner's own excerpt; deepseek 178 findings, 158 real, thirteen refuted, the rest rebutted on

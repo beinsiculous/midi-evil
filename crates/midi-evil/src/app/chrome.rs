@@ -1,5 +1,6 @@
 use super::*;
-use crate::accessibility::Accessible;
+use crate::accessibility::{Accessible, Refusable};
+use crate::key_help::{self, AppCommand};
 use crate::regions::{self, Region};
 use crate::speech::Unavailable;
 use crate::{theme, workspace::View};
@@ -39,12 +40,18 @@ impl StudioApp {
                             );
                         });
                         ui.add_space(8.0);
+                        let platform = crate::platform::of(ui.ctx());
                         let project_menu = ui.menu_button("Project", |ui| {
-                            if ui.button("New                 Ctrl+N").clicked() {
+                            let label = |title, gap, command| {
+                                key_help::menu_label(title, gap, command, platform)
+                            };
+                            let new = label("New", "                 ", AppCommand::NewProject);
+                            if ui.button(new).clicked() {
                                 ui.close();
                                 self.new_project();
                             }
-                            if ui.button("Open…             Ctrl+O").clicked() {
+                            let open = label("Open…", "             ", AppCommand::OpenProject);
+                            if ui.button(open).clicked() {
                                 ui.close();
                                 self.open_project();
                             }
@@ -62,7 +69,8 @@ impl StudioApp {
                                 );
                             }
                             ui.separator();
-                            if ui.button("Save                Ctrl+S").clicked() {
+                            let save = label("Save", "                ", AppCommand::SaveProject);
+                            if ui.button(save).clicked() {
                                 ui.close();
                                 self.save_project();
                             }
@@ -113,7 +121,12 @@ impl StudioApp {
                         );
                         if ui
                             .add(egui::Button::image(art::control(&self.controls, 6)))
-                            .on_hover_text("Save project · Ctrl/Cmd+S")
+                            .on_hover_text(key_help::hover_text(
+                                "Save project",
+                                AppCommand::SaveProject,
+                                egui::Key::S,
+                                platform,
+                            ))
                             .named("Save project")
                             .clicked()
                         {
@@ -225,22 +238,37 @@ impl StudioApp {
                             {
                                 self.show_export = !self.show_export;
                             }
-                            if ui
-                                .add_enabled(self.history.can_redo(), egui::Button::new("Redo"))
-                                .on_hover_text("Ctrl/Cmd+Y")
-                                .unavailable_because(Unavailable::NothingToRedo)
-                                .clicked()
-                            {
+                            let platform = crate::platform::of(ui.ctx());
+                            let redo = Refusable::add(
+                                ui,
+                                (!self.history.can_redo()).then_some(Unavailable::NothingToRedo),
+                                egui::Button::new("Redo"),
+                            )
+                            .on_hover_text(key_help::hover_text(
+                                "",
+                                AppCommand::Redo,
+                                egui::Key::Y,
+                                platform,
+                            ));
+                            if redo.clicked() {
                                 self.redo();
                             }
-                            if ui
-                                .add_enabled(self.history.can_undo(), egui::Button::new("Undo"))
-                                .on_hover_text("Ctrl/Cmd+Z")
-                                .unavailable_because(Unavailable::NothingToUndo)
-                                .clicked()
-                            {
+                            self.report_refusal(&redo);
+                            let undo = Refusable::add(
+                                ui,
+                                (!self.history.can_undo()).then_some(Unavailable::NothingToUndo),
+                                egui::Button::new("Undo"),
+                            )
+                            .on_hover_text(key_help::hover_text(
+                                "",
+                                AppCommand::Undo,
+                                egui::Key::Z,
+                                platform,
+                            ));
+                            if undo.clicked() {
                                 self.undo();
                             }
+                            self.report_refusal(&undo);
                         });
                     });
                     if self.show_export {
@@ -322,10 +350,11 @@ impl StudioApp {
         if start {
             self.show_about = false;
             self.view = View::Notes;
-            self.report(
-                "The piano roll is open. F6 moves between the toolbar, the side panel and the \
+            self.report(format!(
+                "The piano roll is open. {} moves between the toolbar, the side panel and the \
                  editor.",
-            );
+                key_help::next_region_chord(crate::platform::of(context))
+            ));
         }
         if open {
             self.show_about = false;
@@ -343,7 +372,11 @@ impl StudioApp {
         if !self.show_key_help {
             return;
         }
-        let notes = crate::key_help::help_text(crate::speech::platform_command_key(), |_| true);
+        let notes = key_help::help_text_on(
+            crate::speech::platform_command_key(),
+            crate::platform::of(context),
+            |_| true,
+        );
         egui::Window::new("Keyboard notes")
             .id(egui::Id::new("keyboard-notes"))
             .open(&mut self.show_key_help)
@@ -376,6 +409,13 @@ impl StudioApp {
         let text = outcome.into();
         self.announcer.announce(text.clone());
         self.status = text;
+    }
+
+    /// Says again why a control that was activated while unavailable did nothing.
+    pub(super) fn report_refusal(&mut self, control: &Refusable) {
+        if let Some(reason) = control.refusal() {
+            self.report(reason);
+        }
     }
 
     /// The same for a command that changes what the focused editor says: the outcome is heard

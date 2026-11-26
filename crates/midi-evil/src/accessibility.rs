@@ -17,9 +17,6 @@ pub trait Accessible: Sized {
 
     /// While the control is disabled, says why.
     fn unavailable_because(self, reason: Unavailable) -> Self;
-
-    /// The first reason that holds, if any; a control enabled says nothing.
-    fn unavailable_because_of(self, reasons: &[(bool, Unavailable)]) -> Self;
 }
 
 impl Accessible for egui::Response {
@@ -39,12 +36,101 @@ impl Accessible for egui::Response {
             .accesskit_node_builder(self.id, |node| node.set_description(text));
         self.on_disabled_hover_text(text)
     }
+}
 
-    fn unavailable_because_of(self, reasons: &[(bool, Unavailable)]) -> Self {
-        match reasons.iter().find(|(holds, _)| *holds) {
-            Some((_, reason)) => self.unavailable_because(*reason),
-            None => self,
+/// A control added unavailable while `refused` holds a reason, with what its activation means.
+pub struct Refusable {
+    pub response: egui::Response,
+    refused: Option<Unavailable>,
+    /// Refused and still reachable: the hover text is the reason, and stays the reason.
+    reachable: bool,
+}
+
+impl Refusable {
+    /// Added while unavailable: on the desktop, disabled and saying why, as every disabled control
+    /// is. In the browser a canvas offers a screen reader no review of the window to find a
+    /// disabled control by, and egui takes one out of the Tab order, so there it stays a Tab
+    /// stop, looks as a disabled one does, is described as unavailable with its reason, and does
+    /// nothing when activated but say the reason again.
+    pub fn add(ui: &mut egui::Ui, refused: Option<Unavailable>, widget: impl egui::Widget) -> Self {
+        Self::add_with(ui, refused, |ui, enabled| ui.add_enabled(enabled, widget))
+    }
+
+    /// The same, at exactly this size, as `Ui::add_sized` lays a widget out.
+    pub fn add_sized(
+        ui: &mut egui::Ui,
+        size: [f32; 2],
+        refused: Option<Unavailable>,
+        widget: impl egui::Widget,
+    ) -> Self {
+        Self::add_with(ui, refused, |ui, enabled| {
+            if enabled {
+                ui.add_sized(size, widget)
+            } else {
+                ui.add_enabled_ui(false, |ui| ui.add_sized(size, widget))
+                    .inner
+            }
+        })
+    }
+
+    /// `add` is told whether to add the widget enabled.
+    fn add_with(
+        ui: &mut egui::Ui,
+        refused: Option<Unavailable>,
+        add: impl FnOnce(&mut egui::Ui, bool) -> egui::Response,
+    ) -> Self {
+        let reachable = refused.is_some()
+            && crate::platform::of(ui.ctx()).keeps_unavailable_controls_reachable();
+        let response = match refused {
+            Some(reason) if reachable => {
+                // Faded as `add_enabled` fades a disabled widget, without a scope of its own,
+                // so the widget's id is the one it has on the desktop.
+                let opacity = ui.opacity();
+                ui.multiply_opacity(ui.visuals().disabled_alpha());
+                let response = add(ui, true);
+                ui.set_opacity(opacity);
+                let text = speech::unavailable_reason(reason);
+                response.ctx.accesskit_node_builder(response.id, |node| {
+                    node.set_disabled();
+                    node.set_description(text);
+                });
+                response.on_hover_text(text)
+            }
+            Some(reason) => add(ui, false).unavailable_because(reason),
+            None => add(ui, true),
+        };
+        Self {
+            response,
+            refused,
+            reachable,
         }
+    }
+
+    /// Activated while available.
+    pub fn clicked(&self) -> bool {
+        self.refused.is_none() && self.response.clicked()
+    }
+
+    /// Why the control did nothing, when it was activated while unavailable.
+    pub fn refusal(&self) -> Option<&'static str> {
+        self.refused
+            .filter(|_| self.response.clicked())
+            .map(speech::unavailable_reason)
+    }
+
+    /// The control's own hover text. While it is refused in the browser, the reason it was
+    /// given stays what the hover says: a second tooltip would replace it with, say, the chord
+    /// that does nothing now.
+    pub fn on_hover_text(mut self, text: impl Into<egui::WidgetText>) -> Self {
+        if !self.reachable {
+            self.response = self.response.on_hover_text(text);
+        }
+        self
+    }
+
+    pub fn named(mut self, name: impl Into<String>) -> Self {
+        self.response = self.response.named(name);
+        self
     }
 }
 
@@ -131,6 +217,52 @@ mod tests {
             .flat_map(|update| update.nodes.iter())
             .find(|(node_id, _)| *node_id == id.accesskit_id())
             .and_then(|(_, node)| node.description().map(str::to_owned))
+    }
+
+    /// Every text painted in the frame.
+    fn painted_text(output: &egui::FullOutput) -> String {
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) => Some(text.galley.job.text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn a_refused_control_in_the_browser_hovers_its_reason_not_its_chord() {
+        let context = egui::Context::default();
+        crate::platform::install(&context, crate::platform::Platform::Browser);
+        let mut rect = egui::Rect::NOTHING;
+        let mut painted = String::new();
+        for frame in 0..6 {
+            // The pointer comes to rest on the button, and the tooltip's delay passes.
+            let events = if frame == 1 {
+                vec![egui::Event::PointerMoved(rect.center())]
+            } else {
+                Vec::new()
+            };
+            let input = egui::RawInput {
+                time: Some(f64::from(frame)),
+                events,
+                ..Default::default()
+            };
+            let output = context.run_ui(input, |ui| {
+                let undo = Refusable::add(
+                    ui,
+                    Some(Unavailable::NothingToUndo),
+                    egui::Button::new("Undo"),
+                )
+                .on_hover_text("Ctrl/Cmd+Z");
+                rect = undo.response.rect;
+            });
+            painted = painted_text(&output);
+        }
+        assert!(painted.contains("Nothing to undo."), "{painted:?}");
+        assert!(!painted.contains("Ctrl/Cmd+Z"), "{painted:?}");
     }
 
     #[test]

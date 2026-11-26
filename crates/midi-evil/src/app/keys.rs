@@ -25,6 +25,28 @@ impl StudioApp {
         let mut song = self.song.widget_id.filter(|_| {
             self.view == View::Song && !self.project.tracks.is_empty() && !behind_a_popup
         });
+        // A field whose edit ended keeps its place without egui's focus, and Tab moves on from
+        // it: the Tab is taken here, before egui walks from nothing to the first control.
+        let tab = events.iter().position(|event| {
+            matches!(event, egui::Event::Key { key: egui::Key::Tab, pressed: true, modifiers, .. }
+                if modifiers.is_none() || modifiers.shift_only())
+        });
+        let next_stop_after_the_place_kept = tab.and_then(|position| match events[position] {
+            egui::Event::Key { modifiers, .. }
+                if context.memory(|memory| memory.focused()).is_none() =>
+            {
+                self.announcer
+                    .next_stop_after_the_place_kept(!modifiers.shift)
+            }
+            _ => None,
+        });
+        if let Some(next) = next_stop_after_the_place_kept {
+            // egui read the Tab before this frame began; its walk is called off.
+            context.memory_mut(|memory| {
+                memory.request_focus(next);
+                memory.move_focus(egui::FocusDirection::None);
+            });
+        }
         let mut focused = context.memory(|memory| memory.focused());
         let editor_focused =
             |focused: Option<egui::Id>, roll: Option<egui::Id>, song: Option<egui::Id>| {
@@ -56,6 +78,7 @@ impl StudioApp {
         // Only a text field being edited keeps the application's chords from it; a focused
         // editor that does not claim a chord leaves it to the application.
         let text_editing = context.text_edit_focused();
+        let platform = crate::platform::of(context);
         let mut handled = vec![false; events.len()];
         let mut last_focus_move_was_an_editors = false;
         for (position, event) in events.iter().enumerate() {
@@ -91,16 +114,25 @@ impl StudioApp {
                     || song_command.is_some_and(SongCommand::repeats_when_held),
             );
             if key == egui::Key::Tab && (modifiers.is_none() || modifiers.shift_only()) {
+                // Taken above, from a kept place: egui must not walk it again.
+                if next_stop_after_the_place_kept.is_some() {
+                    handled[position] = true;
+                    continue;
+                }
                 // Focus leaves at the end of the frame; nothing after the Tab is the editor's.
                 if roll_focused || song_focused {
                     focused = None;
                 }
                 continue;
             }
-            if key == egui::Key::F6 && (modifiers.is_none() || modifiers.shift_only()) {
+            let app_command = AppCommand::from_press(key, modifiers, platform);
+            if let Some(region @ (AppCommand::NextRegion | AppCommand::PreviousRegion)) =
+                app_command
+            {
+                let forwards = region == AppCommand::NextRegion;
                 if !repeat
                     && !behind_a_popup
-                    && let Some(target) = regions::next_stop(context, focused, !modifiers.shift)
+                    && let Some(target) = regions::next_stop(context, focused, forwards)
                 {
                     context.memory_mut(|memory| memory.request_focus(target));
                     focused = Some(target);
@@ -119,8 +151,15 @@ impl StudioApp {
                 continue;
             }
             if let Some(command) = song_command {
+                let refused = platform
+                    .playback_refused()
+                    .filter(|_| command == SongCommand::StartHere);
+                if let Some(reason) = refused {
+                    if !repeat {
+                        self.report(speech::unavailable_reason(reason));
+                    }
                 // A held key repeats a move or a nudge; a held Delete would empty the track.
-                if (!repeat || command.repeats_when_held()) && self.song_key(command) {
+                } else if (!repeat || command.repeats_when_held()) && self.song_key(command) {
                     // Opened in the roll: nothing after it in this frame is the arranger's.
                     song = None;
                 }
@@ -139,7 +178,9 @@ impl StudioApp {
                 let showing =
                     piano_roll::sequence_context(&self.project, &self.roll, self.document);
                 let view = self.view;
-                handled[position] = self.command_key(key, modifiers, text_editing, space_is_free);
+                handled[position] = app_command.is_some_and(|command| {
+                    self.command_key(command, platform, text_editing, space_is_free)
+                });
                 // An undo, a redo or a replaced document may take away what the roll showed;
                 // nothing after it in this frame is the roll's unless it shows the same notes.
                 let still_showing =
@@ -229,14 +270,11 @@ impl StudioApp {
     /// The application's own chords, on a key's first press. Returns whether the key was taken.
     fn command_key(
         &mut self,
-        key: egui::Key,
-        modifiers: egui::Modifiers,
+        command: AppCommand,
+        platform: crate::platform::Platform,
         text_editing: bool,
         space_is_free: bool,
     ) -> bool {
-        let Some(command) = AppCommand::from_key(key, modifiers) else {
-            return false;
-        };
         match command {
             AppCommand::NewProject => self.new_project(),
             AppCommand::OpenProject => self.open_project(),
@@ -255,7 +293,9 @@ impl StudioApp {
             AppCommand::NextSound => self.cycle_sound(false),
             AppCommand::PlayOrStop if !space_is_free => return false,
             AppCommand::PlayOrStop => {
-                if self.preview.is_some() || self.render_job.is_some() {
+                if let Some(reason) = platform.playback_refused() {
+                    self.report(speech::unavailable_reason(reason));
+                } else if self.preview.is_some() || self.render_job.is_some() {
                     self.stop_preview();
                 } else {
                     self.preview_project();

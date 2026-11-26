@@ -5,7 +5,7 @@ use eframe::egui;
 use evil_project::{EventSequence, Note};
 
 use super::{EditedSequence, RollState, cursor, edits::RollCommand};
-use crate::accessibility::Accessible;
+use crate::accessibility::Refusable;
 use crate::{announcer::Announcer, speech, theme};
 
 const ONE_NOTE_BUTTONS: [(RollCommand, &str); 6] = [
@@ -117,15 +117,16 @@ pub fn show(
         }
         ui.separator();
         for (command, label) in ONE_NOTE_BUTTONS {
-            let enabled = !command.edits_one_note() || cursor.is_some();
+            let refused = (command.edits_one_note() && cursor.is_none())
+                .then_some(speech::Unavailable::NoNoteSelected);
             let (_, key) = command.chord();
-            if ui
-                .add_enabled(enabled, egui::Button::new(label))
-                .on_hover_text(chord_hint(command, key))
-                .unavailable_because(speech::Unavailable::NoNoteSelected)
-                .clicked()
-            {
+            let button = Refusable::add(ui, refused, egui::Button::new(label))
+                .on_hover_text(chord_hint(command, key));
+            if button.clicked() {
                 pressed = Some(command);
+            }
+            if let Some(reason) = button.refusal() {
+                announcer.announce(reason);
             }
         }
         ui.label(

@@ -154,6 +154,83 @@ pub fn next_stop(
     })
 }
 
+/// The controls egui's Tab reaches this frame, in the order it reaches them: the order the frame
+/// made them, across panels, menus and windows alike. The frame keeps that order for each layer:
+/// the panels' layer in full; a menu's or a list's own layer, made right after the button that
+/// opened it; and a window's, made after every panel.
+pub fn tab_order(context: &egui::Context) -> Vec<egui::Id> {
+    let order = context.viewport(|viewport| {
+        let widgets = &viewport.this_pass.widgets;
+        let stops = |rects: &[egui::WidgetRect]| -> Vec<(egui::Id, egui::LayerId)> {
+            rects
+                .iter()
+                .filter(|rect| rect.enabled && rect.sense.is_focusable())
+                .map(|rect| (rect.id, rect.layer_id))
+                .collect()
+        };
+        let background = egui::LayerId::background();
+        let mut layers: Vec<(egui::LayerId, Vec<(egui::Id, egui::LayerId)>)> = widgets
+            .layers()
+            .filter(|(layer, _)| **layer != background)
+            .map(|(layer, rects)| (*layer, stops(rects)))
+            .filter(|(_, stops)| !stops.is_empty())
+            .collect();
+        // A window's layer is walked where the frame made it: its controls' nodes hang from
+        // a container the tree's root took as a child when the window was drawn, so the root's
+        // children are in the order the windows were made.
+        if let Some(state) = viewport.this_pass.accesskit_state.as_ref() {
+            let made_at = creation_ranks(&state.nodes);
+            layers.sort_by_key(|(_, stops)| {
+                stops
+                    .iter()
+                    .filter_map(|(widget, _)| made_at.get(widget).copied())
+                    .min()
+                    .unwrap_or(usize::MAX)
+            });
+        }
+        let mut order = Vec::new();
+        for (widget, layer) in widgets
+            .get_layer(background)
+            .flat_map(|rect| stops(std::slice::from_ref(rect)))
+        {
+            order.push((widget, layer));
+            // The id egui's `Popup::default_response_id` gives a button's popup.
+            let opened = widget.with("popup");
+            if let Some(position) = layers.iter().position(|(layer, _)| layer.id == opened) {
+                order.extend(layers.remove(position).1);
+            }
+        }
+        order.extend(layers.into_iter().flat_map(|(_, stops)| stops));
+        order
+    });
+    order
+        .into_iter()
+        .filter(|(_, layer)| context.memory(|memory| memory.allows_interaction(*layer)))
+        .map(|(widget, _)| widget)
+        .collect()
+}
+
+/// For every node, the place among the tree root's children of the child it hangs from: the
+/// order in which the frame made the top-level containers.
+fn creation_ranks(nodes: &egui::IdMap<egui::accesskit::Node>) -> egui::IdMap<usize> {
+    let ids: std::collections::HashMap<egui::accesskit::NodeId, egui::Id> =
+        nodes.keys().map(|id| (id.accesskit_id(), *id)).collect();
+    let mut ranks = egui::IdMap::default();
+    let Some(root) = nodes.get(&egui::accesskit_root_id()) else {
+        return ranks;
+    };
+    for (rank, child) in root.children().iter().enumerate() {
+        let mut walk: Vec<egui::Id> = ids.get(child).copied().into_iter().collect();
+        while let Some(widget) = walk.pop() {
+            ranks.insert(widget, rank);
+            if let Some(node) = nodes.get(&widget) {
+                walk.extend(node.children().iter().filter_map(|id| ids.get(id).copied()));
+            }
+        }
+    }
+    ranks
+}
+
 #[cfg(test)]
 fn stop(context: &egui::Context, region: Region) -> Option<egui::Id> {
     with_regions(context, |regions| regions.stop(region))

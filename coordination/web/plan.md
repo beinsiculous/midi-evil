@@ -1078,7 +1078,37 @@ Command+Right and Command+Y are the browser's there. The web build therefore use
 every system and says, where it says which browsers it was tested in, that a Mac's own
 shortcuts are not designed yet; that is an issue in the milestone, filed with this section.
 
-### W-A2a — the bridge, and the browser's keys
+### W-A2a — the bridge, and the browser's keys — BUILT 2026-11-25, sitting pending
+
+Built by Claude Opus 5.5 in two passes; 537 tests, the native gate at 455 expectations, and the
+web-app gate holding 19 rows in Chromium and 19 in Firefox. What differed from the section below:
+
+- **The frame's own tree is readable.** With `enable_accesskit()` and no adapter, the focused
+  widget's node is there at the end of the application's frame with its label, description,
+  value, role and states. The bridge has one source, the node a desktop screen reader is given;
+  no fallback was built.
+- **The public value is `StudioApp::spoken_frame`**, a `SpokenFrame`: the focused control, the
+  current text, what happened, the announcement, the ends of Tab's walk, whether anything is
+  unsaved, and the page's key table. `evil-web` holds no string a person hears.
+- **Exact modifiers are the browser's rule only.** The section's sentence would have changed the
+  desktop — Ctrl+Shift+S no longer saving — and "native behaviour does not change" outranks it.
+  The desktop's dispatch is what it was, key for key.
+- **The build is decided in one place**, `Platform::of_this_build`; everything else reads the
+  value. A control that is unavailable goes through `Refusable`: on the desktop it is the
+  disabled control it was, in the browser it keeps its stop, says why, and refuses.
+- **After Enter or Escape in a field, nothing holds egui's focus**; the field stays what is
+  current, and Tab moves on from it by the library's own order. Handing egui the focus back
+  reopened the edit.
+- **B does not reach the renderer** — it only sets the range — but says the reason as Space
+  does, since what it promises is playback.
+- **Inside a text field the visitor's own editing chords pass**, a Mac's among them, by egui's
+  account of the system. Outside one the table is a Control keyboard's (`#24`).
+- **Left for a later batch, each named where it is owed:** the "Track actions" menu, unavailable
+  only during a take, is not routed through `Refusable` and must be when recording reaches the
+  browser (W3, W4); the SYNTH and KEYBOARD tabs and the WAV recovery window's controls are
+  W-A2b's to take off the page.
+- **The wasm is 5.99 MiB raw, 2.43 MiB gzipped**, under the 7 MiB budget.
+
 
 **What it finds out first, before anything is built on it.** Three things, each a throwaway
 check in both browsers whose result is written into the report:
@@ -1262,7 +1292,9 @@ until W3 gives them states.
 ### W-A2b — the matrix, what is not shown, and the help
 
 Its own section, with its own gate and its own sitting, written and reviewed when W-A2a has
-landed, from what W-A2a found. **W-A2 is not passed until W-A2b is**: W-A2a's sitting may find
+landed, from what W-A2a found. Its gate opens with one row W-A2a's lacks: a click on a control
+from outside the editor, with no frame between the press and the release, is announced — the
+bridge was fixed for it after the gate was written. **W-A2 is not passed until W-A2b is**: W-A2a's sitting may find
 that hearing a field's whole value is not enough to edit it, and the remedy is designed in
 W-A2b's section, not promised here. It owes: **W-A1's rows R-1 to R-22 as a matrix** — for each,
 what drives it natively, in Chromium over CDP, and in Firefox, where a row may be the

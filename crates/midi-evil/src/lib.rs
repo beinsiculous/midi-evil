@@ -1,6 +1,7 @@
 //! MIDI Evil, the workstation, as a library: the desktop binary is a `main` that calls
-//! `run_native`, and a browser build constructs `StudioApp` itself. The public surface is
-//! that constructor and the types it names; every module stays private to the crate.
+//! `run_native`, and a browser build constructs `StudioApp` itself and asks it, after each
+//! frame, what the frame says. The public surface is that constructor, that question and the
+//! types they name; every module stays private to the crate.
 
 mod accessibility;
 mod announcer;
@@ -30,6 +31,7 @@ mod mixer;
 mod mixer_automation;
 mod patch_lab;
 mod piano_roll;
+mod platform;
 mod preview;
 mod recording;
 mod recovery;
@@ -41,6 +43,7 @@ mod sample_recorder;
 #[path = "sample_recorder_unavailable.rs"]
 mod sample_recorder;
 mod speech;
+mod spoken;
 mod theme;
 mod transport;
 mod workspace;
@@ -49,6 +52,7 @@ pub use app::StudioApp;
 pub use dialogs::Dialogs;
 pub use instance::SingleInstance;
 pub use launch::LaunchOptions;
+pub use spoken::{FocusedControl, Happened, KeyTable, SpokenFrame};
 
 /// The desktop application: reads the command line, hands the launch to a running copy when
 /// there is one, and otherwise opens the window and runs until it closes.

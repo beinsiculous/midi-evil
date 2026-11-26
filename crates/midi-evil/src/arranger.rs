@@ -17,7 +17,7 @@ use self::{
     drawing::{LABEL_WIDTH, LANE_HEIGHT, Layout},
     edits::SongCommand,
 };
-use crate::accessibility::{self, Accessible};
+use crate::accessibility::{self, Accessible, Refusable};
 use crate::announcer::Announcer;
 use crate::regions::{self, Region};
 use crate::speech::{self, Meter, Unavailable};
@@ -86,7 +86,7 @@ pub fn show(
             ("+ Pattern part", SongCommand::AddPatternPart),
             ("Duplicate loop", SongCommand::DuplicateLoop),
         ] {
-            if structural_button(ui, label, refused).clicked() {
+            if structural_button(ui, label, refused, announcer) {
                 commands.push(command);
             }
         }
@@ -102,7 +102,15 @@ pub fn show(
     if let Some(cursor) = view.cursor
         && let Some(part) = cursor.part
     {
-        part_inspector(ui, project, cursor.track, part, refused, &mut commands);
+        part_inspector(
+            ui,
+            project,
+            cursor.track,
+            part,
+            refused,
+            &mut commands,
+            announcer,
+        );
     }
     ui.add_space(8.0);
     let lanes = egui::ScrollArea::vertical()
@@ -114,16 +122,18 @@ pub fn show(
     commands
 }
 
+/// A button that changes the song's structure: pressed, or refused with its reason said.
 fn structural_button(
     ui: &mut egui::Ui,
     label: &str,
     refused: Option<Unavailable>,
-) -> egui::Response {
-    let response = ui.add_enabled(refused.is_none(), egui::Button::new(label));
-    match refused {
-        Some(reason) => response.unavailable_because(reason),
-        None => response,
+    announcer: &mut Announcer,
+) -> bool {
+    let button = Refusable::add(ui, refused, egui::Button::new(label));
+    if let Some(reason) = button.refusal() {
+        announcer.announce(reason);
     }
+    button.clicked()
 }
 
 /// The ruler and the lanes. The lanes are the one focusable editor; the ruler is a pointer's
@@ -236,10 +246,15 @@ fn canvas(
         response.id,
         speech::song_name(project, view.cursor, view.sound),
     );
+    // Made before the node is, because the builder holds the context while it runs.
+    let description = speech::song_key_help_on(
+        speech::platform_command_key(),
+        crate::platform::of(ui.ctx()),
+    );
     ui.ctx().accesskit_node_builder(response.id, |node| {
         node.set_role(accesskit::Role::Canvas);
         node.set_label(name);
-        node.set_description(speech::song_key_help(speech::platform_command_key()));
+        node.set_description(description);
     });
     ui.add_space(16.0);
     theme::label(
@@ -320,6 +335,7 @@ fn part_inspector(
     part_index: usize,
     refused: Option<Unavailable>,
     commands: &mut Vec<SongCommand>,
+    announcer: &mut Announcer,
 ) {
     let mut value = project.tracks[track].parts[part_index];
     let pattern_index = value.pattern;
@@ -336,26 +352,34 @@ fn part_inspector(
                 )
                 .named("Pattern name");
                 ui.label("Start");
-                if ui
-                    .add_enabled(
-                        refused.is_none(),
-                        egui::DragValue::new(&mut value.start_tick).range(0..=u64::MAX - 1),
-                    )
-                    .named("Part start in ticks")
-                    .changed()
-                {
+                let start = Refusable::add(
+                    ui,
+                    refused,
+                    egui::DragValue::new(&mut value.start_tick).range(0..=u64::MAX - 1),
+                )
+                .named("Part start in ticks");
+                // A refused box that is still reachable may be typed into; nothing it holds is
+                // kept, and the reason is said again.
+                let touched = start.response.changed() || start.refusal().is_some();
+                if let Some(reason) = refused.filter(|_| touched) {
+                    announcer.announce(speech::unavailable_reason(reason));
+                } else if start.response.changed() {
                     commands.push(SongCommand::MoveTo(value.start_tick));
                 }
                 ui.label("Length");
-                if ui
-                    .add_enabled(
-                        refused.is_none(),
-                        egui::DragValue::new(&mut value.length_ticks)
-                            .range(1..=u64::MAX - value.start_tick),
-                    )
-                    .named("Part length in ticks")
-                    .changed()
-                {
+                let length = Refusable::add(
+                    ui,
+                    refused,
+                    egui::DragValue::new(&mut value.length_ticks)
+                        .range(1..=u64::MAX - value.start_tick),
+                )
+                .named("Part length in ticks");
+                // A refused box that is still reachable may be typed into; nothing it holds is
+                // kept, and the reason is said again.
+                let touched = length.response.changed() || length.refusal().is_some();
+                if let Some(reason) = refused.filter(|_| touched) {
+                    announcer.announce(speech::unavailable_reason(reason));
+                } else if length.response.changed() {
                     commands.push(SongCommand::Resize(value.length_ticks));
                 }
                 if ui.button("Loop part").clicked() {
@@ -367,7 +391,7 @@ fn part_inspector(
                     ("Merge to timeline", SongCommand::MergeToTimeline),
                     ("Delete part", SongCommand::Delete),
                 ] {
-                    if structural_button(ui, label, refused).clicked() {
+                    if structural_button(ui, label, refused, announcer) {
                         commands.push(command);
                     }
                 }

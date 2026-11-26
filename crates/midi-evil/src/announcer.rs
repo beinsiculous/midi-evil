@@ -11,6 +11,9 @@ use std::collections::{HashMap, HashSet};
 
 use eframe::egui::{self, accesskit};
 
+mod front_end;
+pub use front_end::FrameWords;
+
 #[derive(Debug)]
 struct Hold {
     key: egui::Key,
@@ -53,6 +56,8 @@ pub struct Announcer {
     announcements_made: u64,
     /// The readouts read on demand that were focused last frame.
     focused_readouts: HashSet<egui::Id>,
+    /// The same frames, told to a front end that writes one string a frame.
+    front_end: front_end::FrontEnd,
 }
 
 impl Announcer {
@@ -99,9 +104,18 @@ impl Announcer {
     /// is not announced again.
     pub fn announce(&mut self, text: impl Into<String>) {
         let text = text.into();
+        if self.queue_outcome(text.clone()) {
+            self.front_end.outcome(text);
+        }
+    }
+
+    /// Queues an outcome for this frame's live node, unless the hold has just said it; returns
+    /// whether it did. An outcome that waited for its frame comes back through here alone, so a
+    /// front end is told it once, when the command said it.
+    fn queue_outcome(&mut self, text: String) -> bool {
         if let Some(hold) = &mut self.hold {
             if hold.last_outcome.as_deref() == Some(text.as_str()) {
-                return;
+                return false;
             }
             hold.last_outcome = Some(text.clone());
         } else {
@@ -111,12 +125,14 @@ impl Announcer {
             Some(earlier) if earlier != text => format!("{earlier} {text}"),
             _ => text,
         });
+        true
     }
 
     /// Queues an outcome for the frame after this one, so that a focus move this frame is
     /// heard first, with its name as it now is.
     pub fn announce_next_frame(&mut self, text: impl Into<String>) {
         let text = text.into();
+        self.front_end.outcome(text.clone());
         self.next_frame_outcome = Some(match self.next_frame_outcome.take() {
             Some(earlier) if earlier != text => format!("{earlier} {text}"),
             _ => text,
@@ -127,10 +143,24 @@ impl Announcer {
     /// drawn until a later frame: it is said the frame after a widget newly focused has
     /// published its current name, so the listener hears where they are, then what happened.
     pub fn announce_after_focus_moves(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        self.front_end.outcome(text.clone());
         self.after_focus_moves = Some(AfterFocusMoves {
-            text: text.into(),
+            text,
             frames_waited: 0,
         });
+    }
+
+    /// Where Tab or Shift+Tab goes from a field whose place is kept since its edit ended, in
+    /// the browser.
+    pub fn next_stop_after_the_place_kept(&self, forwards: bool) -> Option<egui::Id> {
+        self.front_end.next_stop_after_the_place_kept(forwards)
+    }
+
+    /// This frame as a front end that writes one string a frame is told it, made when the
+    /// frame ended.
+    pub fn frame_words(&self) -> &FrameWords {
+        self.front_end.made()
     }
 
     fn was_focus_before(&self, widget: egui::Id) -> bool {
@@ -143,6 +173,7 @@ impl Announcer {
     /// widget that had focus when the last frame ended: one arriving at focus is never held to
     /// a name from an earlier visit.
     pub fn focused_name(&mut self, widget: egui::Id, current: String) -> String {
+        self.front_end.current_name(widget, &current);
         let published = self.published_names.get(&widget);
         let hold_back = published.is_some()
             && (self.pending_outcome.is_some() || self.is_holding())
@@ -200,6 +231,8 @@ impl Announcer {
     /// Adds this frame's live node, if an outcome is pending, and asks for the next frame when a
     /// name is waiting for it: in egui's reactive mode that frame otherwise may not come.
     pub fn end_frame(&mut self, context: &egui::Context) {
+        self.front_end
+            .end_frame(context, self.is_holding(), self.after_focus_moves.is_some());
         if let Some(text) = self.pending_outcome.take() {
             self.announcements_made += 1;
             // A fresh node per announcement: adding a live node is what raises the event, and
@@ -213,7 +246,7 @@ impl Announcer {
             self.name_waiting = true;
         }
         if let Some(text) = self.next_frame_outcome.take() {
-            self.announce(text);
+            self.queue_outcome(text);
             self.name_waiting = true;
         }
         let focus_now = context.memory(|memory| memory.focused());
@@ -222,7 +255,7 @@ impl Announcer {
                 self.focus_before != Some(Some(focused)) && self.named_this_frame.contains(&focused)
             });
             if moved || waiting.frames_waited >= FOCUS_MOVE_FRAMES {
-                self.announce(waiting.text);
+                self.queue_outcome(waiting.text);
             } else {
                 waiting.frames_waited += 1;
                 self.after_focus_moves = Some(waiting);

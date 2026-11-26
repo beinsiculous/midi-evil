@@ -1,6 +1,7 @@
 use super::*;
-use crate::accessibility::Accessible;
+use crate::accessibility::{Accessible, Refusable};
 use crate::instruments::{Collection, LoadedSound, Sound, cycle};
+use crate::key_help::{self, AppCommand};
 use crate::speech::{self, Unavailable};
 
 impl StudioApp {
@@ -330,23 +331,20 @@ impl StudioApp {
                             self.select_sound_track(next_track);
                         }
                         let add_menu = ui.menu_button("+ Track", |ui| {
-                            let enabled = self.structure_refused().is_none();
-                            if ui
-                                .add_enabled(enabled, egui::Button::new("Synth track"))
-                                .unavailable_because(Unavailable::WhileRecording)
-                                .clicked()
-                            {
+                            let refused = self.structure_refused();
+                            let synth =
+                                Refusable::add(ui, refused, egui::Button::new("Synth track"));
+                            if synth.clicked() {
                                 ui.close();
                                 self.add_track();
                             }
-                            if ui
-                                .add_enabled(enabled, egui::Button::new("Drum track"))
-                                .unavailable_because(Unavailable::WhileRecording)
-                                .clicked()
-                            {
+                            self.report_refusal(&synth);
+                            let drum = Refusable::add(ui, refused, egui::Button::new("Drum track"));
+                            if drum.clicked() {
                                 ui.close();
                                 self.add_drum_track();
                             }
+                            self.report_refusal(&drum);
                         });
                         crate::accessibility::name_menu(
                             ui.ctx(),
@@ -362,20 +360,26 @@ impl StudioApp {
                                 .choices(&self.project, self.patch_base(), current.kind);
                         let recording = self.recorder.is_some();
                         let no_other = !choices.iter().any(|sound| !sound.same_source(&current));
-                        let can_cycle = !recording && !no_other;
-                        let cycle_reasons = [
+                        let cycle_refused = [
                             (recording, Unavailable::WhileRecording),
                             (no_other, Unavailable::NoOtherSound),
-                        ];
-                        if ui
-                            .add_enabled(can_cycle, egui::Button::new("‹ Previous"))
-                            .on_hover_text("Previous sound in the filtered library · Alt+Left")
-                            .named("Previous sound")
-                            .unavailable_because_of(&cycle_reasons)
-                            .clicked()
-                        {
+                        ]
+                        .into_iter()
+                        .find_map(|(holds, reason)| holds.then_some(reason));
+                        let platform = crate::platform::of(ui.ctx());
+                        let previous =
+                            Refusable::add(ui, cycle_refused, egui::Button::new("‹ Previous"))
+                                .on_hover_text(key_help::hover_text(
+                                    "Previous sound in the filtered library",
+                                    AppCommand::PreviousSound,
+                                    egui::Key::ArrowLeft,
+                                    platform,
+                                ))
+                                .named("Previous sound");
+                        if previous.clicked() {
                             self.cycle_sound(true);
                         }
+                        self.report_refusal(&previous);
                         let name = choices
                             .iter()
                             .find(|sound| sound.same_source(&current))
@@ -404,25 +408,30 @@ impl StudioApp {
                                 self.open_sound_library();
                             }
                         }
-                        if ui
-                            .add_enabled(can_cycle, egui::Button::new("Next ›"))
-                            .on_hover_text("Next sound in the filtered library · Alt+Right")
-                            .named("Next sound")
-                            .unavailable_because_of(&cycle_reasons)
-                            .clicked()
-                        {
+                        let next = Refusable::add(ui, cycle_refused, egui::Button::new("Next ›"))
+                            .on_hover_text(key_help::hover_text(
+                                "Next sound in the filtered library",
+                                AppCommand::NextSound,
+                                egui::Key::ArrowRight,
+                                platform,
+                            ))
+                            .named("Next sound");
+                        if next.clicked() {
                             self.cycle_sound(false);
                         }
-                        if ui
-                            .add_enabled(self.recorder.is_none(), egui::Button::new("Load files…"))
-                            .on_hover_text(
-                                "Load one or more instruments; remember them in your library",
-                            )
-                            .unavailable_because(Unavailable::WhileRecording)
-                            .clicked()
-                        {
+                        self.report_refusal(&next);
+                        let load = Refusable::add(
+                            ui,
+                            recording.then_some(Unavailable::WhileRecording),
+                            egui::Button::new("Load files…"),
+                        )
+                        .on_hover_text(
+                            "Load one or more instruments; remember them in your library",
+                        );
+                        if load.clicked() {
                             self.load_sound_files();
                         }
+                        self.report_refusal(&load);
                         theme::label(
                             ui,
                             format!("{} · {} sounds", current.kind.label(), choices.len()),

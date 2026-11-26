@@ -137,7 +137,7 @@ server.serve_forever()
 PYTHON
 server=$!
 
-# Ready means: the server is alive, it bound a port, and it serves this bundle — the build check's
+# Ready means: the server is alive, it bound a port, and it serves this bundle — the application's
 # page, and the wasm as application/wasm.
 ready=
 for _ in $(seq 100); do
@@ -151,7 +151,7 @@ import sys, urllib.request
 
 base = f"http://127.0.0.1:{sys.argv[1]}/bundle/"
 page = urllib.request.urlopen(base + "index.html", timeout=2).read().decode()
-assert "<title>MIDI Evil build check</title>" in page
+assert "<title>MIDI Evil in the browser</title>" in page
 wasm = urllib.request.urlopen(base + "evil_web_bg.wasm", timeout=5)
 assert wasm.headers.get_content_type() == "application/wasm"
 PYTHON
