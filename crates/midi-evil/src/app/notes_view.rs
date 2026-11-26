@@ -34,7 +34,10 @@ impl StudioApp {
         });
         if to_arranger {
             self.view = View::Song;
-            self.report("The arranger is shown; F6 reaches it.");
+            self.report(format!(
+                "The arranger is shown; {} reaches it.",
+                crate::key_help::next_region_chord(crate::platform::of(ui.ctx()))
+            ));
             return;
         }
         let edited = EditedSequence::new(&self.project, context);

@@ -1,0 +1,25 @@
+[package]
+name = "evil-web"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "MIDI Evil's browser entry: starts the workstation on a page's canvas"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+# Every dependency is the browser's alone, so a native build of the workspace resolves exactly
+# what it did before this crate existed. eframe is asked for with the features midi-evil asks
+# for, so this crate adds none to it; wasm-bindgen is pinned exactly because the CLI that binds
+# the bundle must be this version.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+midi-evil = { path = "../midi-evil" }
+eframe = { version = "0.35.0", default-features = false, features = ["accesskit", "default_fonts", "glow", "persistence", "x11", "wayland"] }
+log = "0.4.34"
+wasm-bindgen = "=0.2.129"
+wasm-bindgen-futures = "0.4.79"
+web-sys = { version = "0.3.106", features = ["BeforeUnloadEvent", "console", "Document", "Element", "Event", "EventTarget", "FocusEvent", "HtmlCanvasElement", "HtmlElement", "KeyboardEvent", "MouseEvent", "Node", "Window"] }

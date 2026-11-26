@@ -421,10 +421,15 @@ pub fn show(
             );
         }
         let name = announcer.focused_name(response.id, edited.roll_name(sequence.notes(), state));
+        // Made before the node is, because the builder holds the context while it runs.
+        let description = speech::roll_key_help_on(
+            speech::platform_command_key(),
+            crate::platform::of(ui.ctx()),
+        );
         ui.ctx().accesskit_node_builder(response.id, |node| {
             node.set_role(accesskit::Role::Canvas);
             node.set_label(name);
-            node.set_description(speech::roll_key_help(speech::platform_command_key()));
+            node.set_description(description);
         });
     });
     crate::accessibility::name_scroll_bars(ui.ctx(), scroll_area.id, "Piano roll");

@@ -1,13 +1,18 @@
 //! The keyboard notes: one table of chords per surface — the application's own, the arranger's
-//! and the piano roll's. An editor's accessible description and the help window are both written
-//! from these tables, so a build that must leave out the chords a browser keeps for itself can
-//! filter a table instead of keeping a second copy of it.
+//! and the piano roll's. The key dispatch reads them, and every place a chord is written for a
+//! person — an editor's accessible description, the help window, a menu item, a button's hover
+//! text, a notice — is written from them, so the browser's build, which leaves out every chord a
+//! browser gives a meaning to, cannot show or say one it does not bind.
 
 use eframe::egui;
 
 use crate::arranger::edits::SongCommand;
 use crate::piano_roll::edits::RollCommand;
+use crate::platform::Platform;
 use crate::speech;
+
+mod page_keys;
+pub use page_keys::KeyTable;
 
 /// The modifier half of a chord. `Command` is Control, or Command on macOS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +34,21 @@ impl ChordModifier {
             Some(Self::Shift)
         } else if modifiers.command_only() {
             Some(Self::Command)
+        } else {
+            None
+        }
+    }
+
+    /// The modifier a key press carries, when it is exactly one of the five: any other
+    /// combination binds nothing, so a chord with an extra modifier held reaches no command.
+    pub fn of_press(modifiers: egui::Modifiers) -> Option<Self> {
+        let only_alt = modifiers.alt && !(modifiers.shift || modifiers.ctrl || modifiers.command);
+        if let Some(modifier) = Self::of_editor_press(modifiers) {
+            Some(modifier)
+        } else if modifiers.command && modifiers.shift && !modifiers.alt {
+            Some(Self::CommandShift)
+        } else if only_alt && !modifiers.mac_cmd {
+            Some(Self::Alt)
         } else {
             None
         }
@@ -57,7 +77,20 @@ pub struct KeyNote {
 impl KeyNote {
     /// "Control+Left", with the platform's name for the command key.
     pub fn chord(&self, command_key: &str) -> String {
-        format!("{}{}", self.modifier.prefix(command_key), self.key.name())
+        format!(
+            "{}{}",
+            self.modifier.prefix(command_key),
+            key_name(self.key)
+        )
+    }
+}
+
+/// A key as a person reads it: "Page Down", where egui's own name runs the words together.
+pub fn key_name(key: egui::Key) -> &'static str {
+    match key {
+        egui::Key::PageDown => "Page Down",
+        egui::Key::PageUp => "Page Up",
+        other => other.name(),
     }
 }
 
@@ -91,29 +124,64 @@ impl AppCommand {
         Self::PreviousRegion,
     ];
 
-    /// Every chord bound to the command; Redo has two.
-    pub fn chords(self) -> &'static [(ChordModifier, egui::Key)] {
+    /// Every chord bound to the command on this platform; Redo has two. In the browser a chord a
+    /// browser gives a meaning of its own is not bound at all — New, Open and the sounds are
+    /// reached by the Project menu and the buttons beside the sound — and the regions move on
+    /// Alt with Page Down and Page Up, because F6 is the browser's walk between its own panes.
+    pub fn chords_on(self, platform: Platform) -> &'static [(ChordModifier, egui::Key)] {
         use ChordModifier::{Alt, Command, CommandShift, None, Shift};
         use egui::Key;
-        match self {
-            Self::NewProject => &[(Command, Key::N)],
-            Self::OpenProject => &[(Command, Key::O)],
-            Self::SaveProject => &[(Command, Key::S)],
-            Self::Undo => &[(Command, Key::Z)],
-            Self::Redo => &[(CommandShift, Key::Z), (Command, Key::Y)],
-            Self::PreviousSound => &[(Alt, Key::ArrowLeft)],
-            Self::NextSound => &[(Alt, Key::ArrowRight)],
-            Self::PlayOrStop => &[(None, Key::Space)],
-            Self::NextRegion => &[(None, Key::F6)],
-            Self::PreviousRegion => &[(Shift, Key::F6)],
+        match (self, platform) {
+            (Self::NewProject, Platform::Desktop) => &[(Command, Key::N)],
+            (Self::OpenProject, Platform::Desktop) => &[(Command, Key::O)],
+            (Self::SaveProject, _) => &[(Command, Key::S)],
+            (Self::Undo, _) => &[(Command, Key::Z)],
+            (Self::Redo, _) => &[(CommandShift, Key::Z), (Command, Key::Y)],
+            (Self::PreviousSound, Platform::Desktop) => &[(Alt, Key::ArrowLeft)],
+            (Self::NextSound, Platform::Desktop) => &[(Alt, Key::ArrowRight)],
+            (Self::PlayOrStop, _) => &[(None, Key::Space)],
+            (Self::NextRegion, Platform::Desktop) => &[(None, Key::F6)],
+            (Self::PreviousRegion, Platform::Desktop) => &[(Shift, Key::F6)],
+            (Self::NextRegion, Platform::Browser) => &[(Alt, Key::PageDown)],
+            (Self::PreviousRegion, Platform::Browser) => &[(Alt, Key::PageUp)],
+            (Self::NewProject | Self::OpenProject, Platform::Browser)
+            | (Self::PreviousSound | Self::NextSound, Platform::Browser) => &[],
         }
     }
 
-    /// The command a key press means. The command key's chords accept other modifiers held
-    /// with it, as they always have, except that Shift turns Undo into Redo; the region keys
-    /// are the dispatch's own and are not returned here.
-    pub fn from_key(key: egui::Key, modifiers: egui::Modifiers) -> Option<Self> {
+    /// The desktop's chords for the command.
+    #[cfg(test)]
+    pub fn chords(self) -> &'static [(ChordModifier, egui::Key)] {
+        self.chords_on(Platform::Desktop)
+    }
+
+    /// The command a key press means on this platform. In the browser, the chord in the table
+    /// whose modifiers are exactly the ones held, or none. On the desktop, as it always has: the
+    /// command key's chords accept other modifiers held with it, Shift turning Undo into Redo;
+    /// Alt's accept the logical Alt; Space plays whatever else is held.
+    pub fn from_press(
+        key: egui::Key,
+        modifiers: egui::Modifiers,
+        platform: Platform,
+    ) -> Option<Self> {
+        if platform == Platform::Desktop {
+            return Self::from_desktop_press(key, modifiers);
+        }
+        let modifier = ChordModifier::of_press(modifiers)?;
+        Self::ALL
+            .into_iter()
+            .find(|command| command.chords_on(platform).contains(&(modifier, key)))
+    }
+
+    fn from_desktop_press(key: egui::Key, modifiers: egui::Modifiers) -> Option<Self> {
         use egui::Key;
+        if key == Key::F6 && (modifiers.is_none() || modifiers.shift_only()) {
+            return Some(if modifiers.shift {
+                Self::PreviousRegion
+            } else {
+                Self::NextRegion
+            });
+        }
         if modifiers.command {
             return match key {
                 Key::N => Some(Self::NewProject),
@@ -134,6 +202,71 @@ impl AppCommand {
         }
         (key == Key::Space).then_some(Self::PlayOrStop)
     }
+
+    /// The desktop's commands other than the region keys, which are the dispatch's own.
+    #[cfg(test)]
+    pub fn from_key(key: egui::Key, modifiers: egui::Modifiers) -> Option<Self> {
+        Self::from_press(key, modifiers, Platform::Desktop)
+            .filter(|command| !matches!(command, Self::NextRegion | Self::PreviousRegion))
+    }
+
+    /// "Ctrl+N", the way a menu item writes the command's first chord, or nothing when this
+    /// platform binds none.
+    pub fn menu_shortcut(self, platform: Platform) -> Option<String> {
+        let &(modifier, key) = self.chords_on(platform).first()?;
+        Some(format!("{}{}", modifier.prefix("Ctrl"), key_name(key)))
+    }
+
+    /// "Ctrl/Cmd+Y", the way a hover text writes the command's chord on `key`, or nothing when
+    /// this platform binds the command to no chord on that key.
+    pub fn hover_shortcut(self, key: egui::Key, platform: Platform) -> Option<String> {
+        let &(modifier, key) = self
+            .chords_on(platform)
+            .iter()
+            .find(|(_, bound)| *bound == key)?;
+        Some(format!("{}{}", modifier.prefix("Ctrl/Cmd"), key_name(key)))
+    }
+}
+
+/// A menu item's label: its title and, past the gap that lines it up with its neighbours, the
+/// command's chord, or the title alone where this platform binds the command to none.
+pub fn menu_label(title: &str, gap: &str, command: AppCommand, platform: Platform) -> String {
+    match command.menu_shortcut(platform) {
+        Some(chord) => format!("{title}{gap}{chord}"),
+        None => title.to_owned(),
+    }
+}
+
+/// A button's hover text: what it does and, after a dot, the command's chord on `key`, or what
+/// it does alone where this platform binds no such chord.
+pub fn hover_text(does: &str, command: AppCommand, key: egui::Key, platform: Platform) -> String {
+    match command.hover_shortcut(key, platform) {
+        Some(chord) if does.is_empty() => chord,
+        Some(chord) => format!("{does} · {chord}"),
+        None => does.to_owned(),
+    }
+}
+
+/// "F6", the chord that moves to the next region, as a notice says it.
+pub fn next_region_chord(platform: Platform) -> String {
+    region_chord(AppCommand::NextRegion, platform)
+}
+
+/// "F6 and Shift+F6", the two region chords, as a description says them.
+pub fn region_chords(platform: Platform) -> String {
+    format!(
+        "{} and {}",
+        region_chord(AppCommand::NextRegion, platform),
+        region_chord(AppCommand::PreviousRegion, platform)
+    )
+}
+
+fn region_chord(command: AppCommand, platform: Platform) -> String {
+    command
+        .chords_on(platform)
+        .first()
+        .map(|&(modifier, key)| format!("{}{}", modifier.prefix("Control"), key_name(key)))
+        .unwrap_or_default()
 }
 
 /// The surfaces that have keyboard notes.
@@ -155,14 +288,20 @@ impl Surface {
         }
     }
 
-    /// The surface's table, in the order its chords are learned.
+    /// The desktop's table.
+    #[cfg(test)]
     pub fn notes(self) -> Vec<KeyNote> {
+        self.notes_on(Platform::Desktop)
+    }
+
+    /// The surface's table on this platform, in the order its chords are learned.
+    pub fn notes_on(self, platform: Platform) -> Vec<KeyNote> {
         match self {
             Self::Application => AppCommand::ALL
                 .into_iter()
                 .flat_map(|command| {
                     command
-                        .chords()
+                        .chords_on(platform)
                         .iter()
                         .map(move |&(modifier, key)| KeyNote {
                             modifier,
@@ -206,11 +345,11 @@ pub fn sentence(notes: &[KeyNote], command_key: &str) -> String {
 }
 
 /// An editor's accessible description: its whole table, read once on focus, and the two ways out.
-pub fn editor_description(surface: Surface, command_key: &str) -> String {
+pub fn editor_description(surface: Surface, command_key: &str, platform: Platform) -> String {
     format!(
-        "{}. F6 and Shift+F6 move between the toolbar, the side panel and the editor; Tab leaves \
-         the {}.",
-        sentence(&surface.notes(), command_key),
+        "{}. {} move between the toolbar, the side panel and the editor; Tab leaves the {}.",
+        sentence(&surface.notes_on(platform), command_key),
+        region_chords(platform),
         match surface {
             Surface::Song => "arranger",
             Surface::Roll | Surface::Application => "roll",
@@ -218,14 +357,24 @@ pub fn editor_description(surface: Surface, command_key: &str) -> String {
     )
 }
 
-/// The help window's text: each surface's title, then one chord a line. `keep` leaves out the
-/// chords a build cannot offer.
+/// The desktop's help window text, with `keep` choosing the lines.
+#[cfg(test)]
 pub fn help_text(command_key: &str, keep: impl Fn(&KeyNote) -> bool) -> String {
+    help_text_on(command_key, Platform::Desktop, keep)
+}
+
+/// The help window's text on this platform: each surface's title, then one chord a line. `keep`
+/// leaves out further chords.
+pub fn help_text_on(
+    command_key: &str,
+    platform: Platform,
+    keep: impl Fn(&KeyNote) -> bool,
+) -> String {
     Surface::ALL
         .into_iter()
         .map(|surface| {
             let lines: Vec<String> = surface
-                .notes()
+                .notes_on(platform)
                 .iter()
                 .filter(|note| keep(note))
                 .map(|note| format!("{}: {}", note.chord(command_key), note.action))

@@ -342,3 +342,50 @@ expectations are listed at the top of `web-probe.mjs`.
   stop the canvas gives is the roll. egui drops focus on Escape and on Enter in a text edit; the
   harness gives it back to the same control in the next pass, which is what announces a committed
   value.
+
+## `web-app-probe.mjs`, `web-app-rows.mjs` and `web-app-gate.sh` — the application's own bundle
+
+W0's harness above stays as that half's evidence; this is the gate for the real application, built
+by `scripts/build_wasm.sh` into `target/web/dist/`, from its own default project.
+`web-app-gate.sh` serves a copy of the bundle on `127.0.0.1`, runs every row of `web-app-rows.mjs`
+through `web-app-probe.mjs` in headless Chromium and then headless Firefox — each row in a fresh
+page — then three negative controls in each browser, each a copy of the bundle with one line put
+into its page, run on the row that shows it, and each of which must fail for its own reason:
+`live-never-written` (the live region ignores every write), `current-stale` (the current element
+keeps its first text) and `binds-not-bound` (the page turns Control+O into the application's
+Save). It exits 0 only if every row held in both browsers and all six controls failed as they
+must; it stops the server however it ends.
+
+```sh
+coordination/web/probes/web-app-gate.sh > web-app-gate-transcript.txt
+node coordination/web/probes/web-app-probe.mjs --url http://127.0.0.1:PORT/bundle/index.html \
+    --browser firefox --rows nine-steps,held-key
+```
+
+**What a row holds.** Every check of where the page's focus is reads the element that has it: the
+canvas, or eframe's text entry while a field is edited, which must be named and described by what
+the row expects. In Chromium that is the browser's real tree over CDP
+(`Accessibility.getPartialAXTree` on `document.activeElement`), asserted for role, name and
+description; in Firefox it is Playwright's `ariaSnapshot` for the role and name, with the
+description read from `aria-describedby`, and every Firefox row says so — its real tree is the
+sitting's. The live region's writes are mutation records, counted per step; a no-break space at
+the end of one is the page's repeat mark and is ignored when matching. For every key the probe
+records whether it reached the canvas or the text entry, where eframe listens, and whether its
+default was cancelled once the whole dispatch had run.
+
+**What a row cannot show.** Keys are Playwright's, delivered to the page past the browser's own
+shortcut handling, so what a browser does with a chord it keeps — its file dialog for Control+O,
+going back for Alt+Left, printing for Control+P — never happens here. The rows that hand a chord
+to the browser show that eframe never received it, that it was not cancelled, and that the
+application did nothing and wrote nothing; the rest is the sitting's, and the row says so. The
+page's answer to `beforeunload` is read by dispatching the event and reading whether it was
+cancelled, in the same task as an edit where the row says so.
+
+**Fresh pages, and a Mac's system.** A row that needs a clean document opens a fresh page in a
+context of its own rather than navigating one with unsaved work: the page's own leave-page prompt
+would otherwise decide the step (with no dialog listener Playwright accepts Chromium's prompt for
+the script; headless Firefox raises none for a navigation no person started). A row may run as a
+Mac by its user agent, from which eframe tells egui the system; `mac-text-editing` does, so the
+text-entry chords egui takes on a Mac — Command+A, Command+Z, Option+Left, Option+Backspace — are
+shown reaching the field. A row stopped by its deadline is a failed row, and the probe sets its
+exit status rather than exiting, so no line a control looks for is lost.

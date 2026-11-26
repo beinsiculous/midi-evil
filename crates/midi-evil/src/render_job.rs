@@ -765,8 +765,7 @@ impl TemporaryOutput {
             let path =
                 output.with_file_name(format!(".midi-evil-{}-{sequence}.tmp", std::process::id()));
             match OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(file) => {
-                    drop(file);
+                Ok(_file) => {
                     if let Some(name) = path.file_name() {
                         temporary_lifecycle().insert(name.to_os_string());
                     }

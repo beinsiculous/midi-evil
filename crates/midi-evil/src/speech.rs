@@ -8,6 +8,10 @@ use crate::arranger::cursor::{self as arranger_cursor, SongCursor};
 use crate::arranger::edits::{SongCommand, SongOutcome};
 use crate::key_help::{self, AppCommand};
 use crate::piano_roll::edits::{Outcome, RollCommand};
+use crate::platform::Platform;
+
+mod controls;
+pub use controls::*;
 
 const PITCH_CLASS_NAMES: [&str; 12] = [
     "C", "C sharp", "D", "D sharp", "E", "F", "F sharp", "G", "G sharp", "A", "A sharp", "B",
@@ -225,6 +229,7 @@ pub enum Unavailable {
     NoTrack,
     NoOtherSound,
     NoPartSelected,
+    NoPlaybackInBrowser,
 }
 
 pub fn unavailable_reason(reason: Unavailable) -> &'static str {
@@ -236,6 +241,7 @@ pub fn unavailable_reason(reason: Unavailable) -> &'static str {
         Unavailable::NoTrack => "Add a track first.",
         Unavailable::NoOtherSound => "No other sound in this list.",
         Unavailable::NoPartSelected => "Select a part first.",
+        Unavailable::NoPlaybackInBrowser => "Playback is not in the browser build yet.",
     }
 }
 
@@ -418,15 +424,22 @@ pub fn opened_in_roll(track: &str, pattern: Option<&str>) -> String {
     }
 }
 
-/// The roll's accessible description: every chord of its keyboard model, read once on focus.
-/// `command_key` is what the platform calls the key that `Modifiers::command` means.
+/// The desktop's roll description.
+#[cfg(test)]
 pub fn roll_key_help(command_key: &str) -> String {
-    key_help::editor_description(key_help::Surface::Roll, command_key)
+    roll_key_help_on(command_key, Platform::Desktop)
+}
+
+/// The roll's accessible description: every chord of its keyboard model on this platform, read
+/// once on focus. `command_key` is what the platform calls the key that `Modifiers::command`
+/// means.
+pub fn roll_key_help_on(command_key: &str, platform: Platform) -> String {
+    key_help::editor_description(key_help::Surface::Roll, command_key, platform)
 }
 
 /// The arranger's accessible description, from the same kind of table.
-pub fn song_key_help(command_key: &str) -> String {
-    key_help::editor_description(key_help::Surface::Song, command_key)
+pub fn song_key_help_on(command_key: &str, platform: Platform) -> String {
+    key_help::editor_description(key_help::Surface::Song, command_key, platform)
 }
 
 /// The name of the key that `Modifiers::command` stands for on this platform.

@@ -46,7 +46,11 @@ metadata = json.loads(subprocess.check_output(
     text=True,
 ))
 packages = {package["name"]: package for package in metadata["packages"]}
-assert sorted(packages) == sorted(expected), "native workspace membership changed"
+# The browser entry is the one member that is never published; any other newcomer, published or
+# not, is a change to the release this audit must be told about.
+unpublished_member = "evil-web"
+assert sorted(packages) == sorted(expected + [unpublished_member]), "workspace membership changed"
+assert packages[unpublished_member]["publish"] == [], f"{unpublished_member}: must not be publishable"
 for name in expected:
     package = packages[name]
     assert package["license"] == "MIT", f"{name}: missing MIT license"
@@ -58,7 +62,7 @@ for name in expected:
     assert package["publish"] is None, f"{name}: publishing is unexpectedly restricted"
     for dependency in package["dependencies"]:
         assert dependency["name"] not in {"oracle", "evil-porting"}
-print("Native metadata and dependency audit passed for all eight crates.")
+print("Native metadata and dependency audit passed for all eight crates; evil-web is unpublished.")
 PY
 
 for crate in "${crates[@]}"; do

@@ -1,7 +1,7 @@
 //! The side panel: the track rack and the selected track's settings.
 
 use super::*;
-use crate::accessibility::{self, Accessible};
+use crate::accessibility::{self, Accessible, Refusable};
 use crate::regions::{self, Region};
 use crate::speech::Unavailable;
 use crate::workspace::View;
@@ -31,27 +31,21 @@ impl StudioApp {
                 format!("TRACK RACK  /  {:02}", self.project.tracks.len()),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add_enabled(self.structure_refused().is_none(), egui::Button::new("+"))
+                let add = Refusable::add(ui, self.structure_refused(), egui::Button::new("+"))
                     .on_hover_text("Add synth track")
-                    .named("Add a synth track")
-                    .unavailable_because(Unavailable::WhileRecording)
-                    .clicked()
-                {
+                    .named("Add a synth track");
+                if add.clicked() {
                     self.add_track();
                 }
-                if ui
-                    .add_enabled(
-                        self.structure_refused().is_none(),
-                        egui::Button::new("+KIT"),
-                    )
-                    .on_hover_text("Add a Maxwell drum-kit track")
-                    .named("Add a Maxwell drum-kit track")
-                    .unavailable_because(Unavailable::WhileRecording)
-                    .clicked()
-                {
+                self.report_refusal(&add);
+                let add_kit =
+                    Refusable::add(ui, self.structure_refused(), egui::Button::new("+KIT"))
+                        .on_hover_text("Add a Maxwell drum-kit track")
+                        .named("Add a Maxwell drum-kit track");
+                if add_kit.clicked() {
                     self.add_drum_track();
                 }
+                self.report_refusal(&add_kit);
             });
         });
         ui.separator();

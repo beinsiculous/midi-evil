@@ -865,7 +865,30 @@ The record's step, re-surveyed on `a15dc49` after W-A1 moved most of what it nam
 **Leaves out:** the three device-open sites (W3); the threads (W4); the path-based interfaces of
 the shared crates (W5a); the browser's own dialogs (W5b).
 
-## W2 — the web crate and its gates (`#4`) — settled 2026-11-25
+## W2 — the web crate and its gates (`#4`) — BUILT 2026-11-25
+
+Built by Claude Opus 5.5 in two passes; 510 tests, the native gate at 455 expectations, and the
+application drawing in Chromium and in Firefox. What differed from the section below:
+
+- **The application started on its first run**, in both browsers, with no error and no panic.
+  The one seam is not for a failure: constructing the application asked the browser for MIDI
+  access, with sysex, on page load, and said nothing. `midi_ports` is now a pair like
+  `sample_recorder`'s — on `wasm32`, no ports and no request — and the toolbar reads as it does
+  natively with nothing plugged in. Web MIDI is still W3's.
+- **The wasm is 5.92 MiB raw, 2.40 MiB gzipped; the budget in `build_wasm.sh` is 7 MiB.** The
+  size is checked before the swap, so a build over budget leaves the last good bundle.
+- **The entry installs its own logger.** eframe's writes an error as a console warning, which no
+  smoke could tell from a warning; `evil-web`'s keeps an error an error.
+- **The smoke has ten negative controls**, five in each browser: an empty wasm, a wrong canvas
+  id, an error logged while the canvas draws, a page that asks for MIDI, and a page that never
+  finishes loading. A run takes under two minutes.
+- **Playwright is found beside the repository's main checkout**, through `git worktree list`,
+  because a worktree does not sit beside the site.
+- **CI** is `.github/workflows/wasm-check.yml`, running `scripts/check_wasm.sh` and nothing else.
+  Its first run, on `d9f02d6`, was red: GitHub's stable (1.100) is newer than bob-ross's
+  (1.94) and its clippy adds two lints. Fixed in `7c7c316`, whose run is green. The workflow is
+  still unpinned; this is what that costs, and it is revisited if it happens again.
+
 
 The record's step, on `0b1c213`, after W1 made the application a library that compiles for
 `wasm32`.
@@ -1002,6 +1025,432 @@ report, and native behaviour still does not change.
 
 **Leaves out:** the accessibility bridge and the shipped page (W-A2); audio and MIDI (W3); the
 worker (W4); files (W5); syncing the bundle to the site (W6).
+
+## W-A2 — the keyboard model in the browser (`#8`, second half) — settled 2026-11-25
+
+W0-web proved a mechanism on a scratch harness that held the roll alone. W-A2 builds it in
+`crates/evil-web`, on the application W2 started, and holds it to W-A1's rows. Two batches:
+**W-A2a**, the bridge and the browser's keys; **W-A2b**, the matrix, the surfaces the first page
+does not show, and the help.
+
+### What Jesse ruled, and what he was not asked twice
+
+- **"Reads the notes once"** (2026-11-25, Orca, on W0's harness). The live region and the
+  canvas's description do not double. W0's rule stands: one string a frame, notice first.
+- **"Let's try and not have any hot keys overlap with browser defaults if we can (unless it
+  makes sense like Ctrl+S to save the project we can override that one)"** (2026-11-25). This
+  replaces the chord-by-chord observation D14 asked for: the web build does not find out which
+  chords a browser happens to keep, it **stays off every chord a browser gives a meaning to**,
+  and takes one only where the application's meaning is the browser's own.
+- **Not answered, and so not assumed:** whether a repeated notice speaks again; whether a held
+  key leaves speech queued; whether the value box is named on arrival and its value spoken once.
+  Each is a line of W-A2a's sitting.
+
+### The browser's keys (D14, by the ruling above)
+
+| chord | natively | in the browser | why |
+|---|---|---|---|
+| Ctrl+S | Save | **Save** | the ruling's own example; the browser's meaning is "save this" |
+| Ctrl+Z, Ctrl+Y, Ctrl+Shift+Z | Undo, Redo | **Undo, Redo** | the browser's meaning is undo and redo; here they undo the document |
+| Space | Play and stop | **Play and stop** | the browser scrolls the page; a canvas with `role="application"` has nothing to scroll, and Space is play in every player |
+| Ctrl+N | New | **not bound**: Project › New | a browser never gives it up |
+| Ctrl+O | Open | **not bound**: Project › Open… | the browser's own "open a file" |
+| Alt+Left, Alt+Right | previous and next sound | **not bound**: the Previous and Next buttons beside the sound | Back and Forward |
+| F6, Shift+F6 | next and previous region | **not bound**: Alt+Page Down and Alt+Page Up | F6 is the browser's own walk between its panes |
+| arrows, Shift+arrows, Ctrl+Left and Right, Home, End, Enter, Delete, Escape, I | the roll's and the arranger's | **the same** | a browser gives none of them a meaning outside a text field, and the canvas is not one |
+| B | start playback at the part | **says why not**, until W3 and W4 | nothing plays in a browser yet (W-A2a, item 5) |
+| every other chord with Ctrl, Alt or the logo key, and every function key | nothing | **the browser's** | the canvas takes the chords in this table and no others |
+| Tab, Shift+Tab | next and previous control | **the same, released at the first and last stop** | W0's focus boundary |
+
+The three kept chords and the new one are **proposals until Jesse has pressed them** in a real
+Firefox and a real Chromium at W-A2a's sitting: a synthetic key shows nothing about what a
+browser does first. Alt+Page Down and Up fit the one-modifier chords the tables already hold;
+the sitting tries Ctrl+Alt+Period and Comma beside them — the pair a well-known web editor uses,
+which a keyboard with AltGr may turn into a character — and the table changes in one place. Space
+is in the table as the transport's key, but nothing plays in a browser before W3 and W4: until
+then it says so (W-A2a, item 5). A chord marked *not bound* is compiled out of the web build's tables —
+not ignored at run time — and a row asserts that pressing it changes nothing and announces
+nothing. The command it reached natively is reached by the path named, by keyboard.
+
+**This table is for a keyboard whose command key is Control**, in Chromium and Firefox on Linux,
+which is what D12 gates. On a Mac the same commands would move to Command, and Command+Left,
+Command+Right and Command+Y are the browser's there. The web build therefore uses Control on
+every system and says, where it says which browsers it was tested in, that a Mac's own
+shortcuts are not designed yet; that is an issue in the milestone, filed with this section.
+
+### W-A2a — the bridge, and the browser's keys — DONE 2026-11-25
+
+**Sitting, 2026-11-25:** Jesse, with Orca, on the gate's bundle: "k looks good keep at it".
+Unitemised: recorded as the batch passing as a whole. No row of the key table, neither region
+chord and no line about editing a name in its middle was answered one by one, so each stays as
+built and none is recorded as heard a particular way: Alt+Page Down and Up remain the region
+chord, and review of a field's text by character was not asked for and is not designed.
+
+Built by Claude Opus 5.5 in two passes; 537 tests, the native gate at 455 expectations, and the
+web-app gate holding 19 rows in Chromium and 19 in Firefox. What differed from the section below:
+
+- **The frame's own tree is readable.** With `enable_accesskit()` and no adapter, the focused
+  widget's node is there at the end of the application's frame with its label, description,
+  value, role and states. The bridge has one source, the node a desktop screen reader is given;
+  no fallback was built.
+- **The public value is `StudioApp::spoken_frame`**, a `SpokenFrame`: the focused control, the
+  current text, what happened, the announcement, the ends of Tab's walk, whether anything is
+  unsaved, and the page's key table. `evil-web` holds no string a person hears.
+- **Exact modifiers are the browser's rule only.** The section's sentence would have changed the
+  desktop — Ctrl+Shift+S no longer saving — and "native behaviour does not change" outranks it.
+  The desktop's dispatch is what it was, key for key.
+- **The build is decided in one place**, `Platform::of_this_build`; everything else reads the
+  value. A control that is unavailable goes through `Refusable`: on the desktop it is the
+  disabled control it was, in the browser it keeps its stop, says why, and refuses.
+- **After Enter or Escape in a field, nothing holds egui's focus**; the field stays what is
+  current, and Tab moves on from it by the library's own order. Handing egui the focus back
+  reopened the edit.
+- **B does not reach the renderer** — it only sets the range — but says the reason as Space
+  does, since what it promises is playback.
+- **Inside a text field the visitor's own editing chords pass**, a Mac's among them, by egui's
+  account of the system. Outside one the table is a Control keyboard's (`#24`).
+- **Left for a later batch, each named where it is owed:** the "Track actions" menu, unavailable
+  only during a take, is not routed through `Refusable` and must be when recording reaches the
+  browser (W3, W4); the SYNTH and KEYBOARD tabs and the WAV recovery window's controls are
+  W-A2b's to take off the page.
+- **The wasm is 5.99 MiB raw, 2.43 MiB gzipped**, under the 7 MiB budget.
+
+
+**What it finds out first, before anything is built on it.** Three things, each a throwaway
+check in both browsers whose result is written into the report:
+
+- **Is the frame's own tree readable?** W-A1 put every name where AccessKit reads it. eframe's
+  web runner throws the finished tree away, but `Context::accesskit_node_builder`
+  (`egui-0.35.0/src/context.rs:3582`) reaches a node while the frame is being built. With
+  `enable_accesskit()` called and no adapter attached, does the focused widget's node exist at
+  the end of the application's frame, with its label, description, value, role and states? If
+  yes, the bridge has one source, the node a desktop screen reader is given. **If no, the
+  batch stops and reports**: the fallback — W0's `OutputEvent::FocusGained` paired with the
+  focused id, plus the library's own names — is a second representation to keep true, and
+  whether to build it is the planner's and Jesse's call.
+- **What eframe does to each key before the application sees it.** For every chord in the key
+  table and for Home, End, Enter, Delete, Ctrl+P and the function keys: whether eframe prevents
+  the browser's default. W0 found it prevents the arrows, Ctrl+O, Ctrl+S, Space and every
+  letter and does not prevent Home, End, Enter, Delete, F6, Ctrl+N, W, T, Z, Y.
+- **What the dispatch does with an extra modifier.** Whether Ctrl+Shift+S, Ctrl+Alt+O and their
+  like reach a command today.
+
+**Builds:**
+
+1. **What the library says, as one value, made for a surface that speaks by writing text.**
+   `StudioApp` gains one public method, called by a front end after each frame. It returns the
+   focused control — name, description, value, **its role and its states in words** (a check
+   box that is checked, a menu that is open, a button that is unavailable and why), and
+   whether it is a text entry — and what happened this frame: an outcome, a change of focus, a
+   change of the focused control's name or state, a committed text entry. The desktop needs
+   none of the words for role and state, because a screen reader composes them; they are
+   written once, in `speech`, so the browser's wording has one home. **It is not read after the
+   fact from the tree and the `Announcer`**: natively an outcome goes out in one frame and the
+   name it changed is held to the next, and `end_frame` has consumed the outcome by then. The
+   `Announcer` produces this value itself at the end of the frame, pairing an outcome with the
+   name *as it now is*, so that one action is one value: Delete on a note followed by another
+   yields "Removed." and the next note together, once, and nothing the frame after. This is
+   the only item made public; `speech`, `announcer`, `regions` and `key_help` stay private, and
+   `evil-web` contains no string a person hears. The value also says what a page must know and
+   cannot ask egui: whether focus is on the first or the last stop of this frame, and whether
+   the document has unsaved changes. `evil-web` gets it through a thin `eframe::App` of its
+   own that runs the application's frame and then asks.
+2. **The bridge**, in `crates/evil-web`, as W0-web's result describes it: the canvas
+   `role="application"`, named, `aria-describedby` a visible *current* element that always
+   holds the focused control in full; a polite, atomic, visually hidden live region written at
+   most once a frame, while the page's focus is on the canvas **or on the adopted text
+   entry**. What is written, and when, is stated and each line is a row: **focus moves to
+   another control** — its name, role and state, once; **an outcome** — the outcome, then the
+   name if it changed, as one string; **the focused control's value or state changes** with no
+   outcome — the new value or state, once; **focus returns to the canvas from the page** —
+   nothing, the screen reader reads the description itself. A string identical to the last one
+   written is made to differ by a trailing no-break space that **alternates**, so a third and
+   a fourth identical notice still speak. **While a key is held, nothing is written** — for
+   the editors, because the library's names already rest, and for a standard control such as
+   the tempo box under a held Up, because the value's changes rest by the same rule — and one
+   write follows at release; the current element stays true throughout. A value that changes
+   on a timer is never a change to announce: the transport's reading is the cached,
+   read-on-demand name the desktop rests on, and the row that proves it under playback is
+   entered in W-A2b's matrix as W3's and W4's. The bridge adds no timer of its own.
+   Text reaches the page only as `textContent` and attribute values.
+3. **The browser gets back what is not bound.** Dropping a chord from the application's tables
+   does not return it to the browser: eframe cancels it when it sees it. A capture-phase
+   listener — the one that releases Tab at the boundary — **stops a chord that is not in the
+   web table from reaching eframe at all**, without cancelling it, so the browser does what it
+   does: Ctrl+O its own dialog, Alt+Left back, Ctrl+P print. The rule is the table's last row,
+   not a list: a chord with Ctrl, Alt or the logo key, or a function key, that the table does
+   not hold is the browser's. Plain keys and Shift are untouched, so typing is. **While a
+   text entry is being edited the table is a different one**: egui does its own select-all,
+   copy, cut, paste, undo, word movement, word deletion and selection, and the input eframe
+   keeps does not hold the field's text for a browser to do them on — so those chords go to
+   egui, and only the browser's own navigation still goes to the browser. And because
+   Alt+Left now leaves the page, **the page asks before it is left with unsaved work**: the
+   `beforeunload` answer is "unsaved" when the library's value says so **or when any input
+   has reached the canvas or the text entry since the last finished frame** — a key, a paste,
+   a composed character — so an edit and Alt+Left pressed together cannot slip through the
+   frame between them. The announced, keyboard-operable prompt for
+   New and Open stays W5b's. The same listener cancels the browser's
+   default for the kept chords eframe lets through — Home, End, Enter, Delete, the region
+   chord — and the page does not scroll: a row reads the scroll position after each.
+4. **The binding set has one home and takes a platform.** The table above becomes data in
+   `key_help`: the region chord and every chord named in an announcement, a description or the
+   start-up notice, **a menu item's label, a button's hover text and the Keyboard notes
+   window** come from it — F6, Ctrl+N, Ctrl+O and Alt+Left are written in all of those today —
+   and the dispatch matches a chord's modifiers exactly. The desktop's tables and strings do
+   not change. Rows: nothing the web build can speak or show, the opened Project menu and the
+   Keyboard notes window among it, contains "F6", "Alt+Left", "Alt+Right", "Ctrl+N", "Ctrl+O"
+   or their spelled-out forms; a chord with an extra modifier does nothing.
+5. **What does not work yet says so, and is not a chord.** Nothing can play in a browser until
+   W3 and W4: Play, Record and the arranger's start-here reach a renderer that spawns a
+   thread. In the web build until then each is unavailable with its reason ("Playback is not
+   in the browser build yet."), Space and B announce that reason and start nothing, and no row
+   plays. **And an unavailable control can be found.** egui takes a disabled widget out of the
+   Tab order, and a desktop screen reader finds it anyway by reviewing the window; a canvas
+   offers no review. So in the web build a control that is unavailable — Undo with nothing to
+   undo, Play — keeps its place in the Tab order, is described as unavailable with its reason,
+   looks as a disabled one does, and when activated does nothing but say the reason again.
+   The desktop is unchanged. W3's and W4's sections remove the reason; the
+   transport's playing rows are theirs. Save, with no file behind it, says "Not saved." and
+   never "Saved"; Open says "Nothing opened."; New makes a new project when nothing is
+   unsaved and refuses, saying why, when something is — until W5b gives the browser a prompt.
+6. **Text entry.** eframe's hidden input is adopted as W0 adopted it: in the tree only while
+   egui is editing text, labelled with the control's name, described by the current element,
+   placed after the canvas, refusing focus otherwise; when an edit ends, focus is back on the
+   canvas and the next key reaches the application. The current element holds the field's
+   whole text as it is edited, and a committed value is announced once. **What it does not
+   give**, and the section says so rather than hiding it: eframe's input holds only the
+   characters being composed, so a screen reader's own review of the text — by character, by
+   word, the caret, a selection — is not available. Whether hearing the whole value at rest is
+   enough to edit a name in its middle is a line of the sitting, and if it is not, the remedy
+   is W-A2b's first item.
+7. **The focus boundary**, W0's mechanism with what its harness did not have: the set of
+   stops changes when a menu, a window or the side panel opens, so the first and last stop are
+   read from the frame, not remembered; a standing, named "leave the editor" control stays as
+   the backstop; and focus arriving from the page enters at the first or the last stop by the
+   direction it came from, through a sentinel before and after the canvas.
+8. **The page.** `crates/evil-web/index.html` becomes the application's page for the gate — a
+   heading, one sentence, a sentinel, the canvas, the current element, the live region, a
+   sentinel, and after them the standing control, a button named "Leave the editor" that moves
+   focus to the heading —
+   laid out so the document never scrolls. Its shipped wording, the keyboard notes and the
+   list of what is desktop-only are W-A2b's and W6's.
+
+**Gate.** W0's `web-gate.sh` and `web-probe.mjs` are written against the scratch harness —
+its element ids, its fixtures, its query string — and stay as that half's evidence. This batch
+adds `coordination/web/probes/web-app-gate.sh` and its driver for the real bundle, starting
+from the application's own default project, in headless Chromium and Firefox. A row passes
+only when the element that has the page's focus is named and described by what the row
+expects; **in Chromium the browser's real tree is read over CDP and asserted** — role, name,
+description — not printed; in Firefox the check is Playwright's own computation and the row
+says so, the real tree being the sitting's. Negative controls, each failing for its stated
+reason, in each browser: a bundle whose live region is never written; one whose current
+element is stale; one that binds a *not bound* chord.
+
+- the nine steps as far as the browser build goes: a new project from the menu on a clean
+  start, add an instrument, discover the instruments with the buttons, add a note, select it,
+  change it, delete it, read the transport stopped; Save says "Not saved.";
+- every line of item 2, Delete and Undo among them across every frame they take: one write,
+  the final selection in it;
+- three identical notices, three writes;
+- focus into the canvas and out again in both directions, through every stop, with a menu
+  open, a window open and the side panel's fields, and the "leave the editor" control;
+- a held key: one write at rest, matching where the cursor is;
+- leaving and returning: nothing written, the current thing readable;
+- the tempo box and a name field: named where focus is, typed into, the current element true
+  after each key and after an arrow, committed, heard once, the next key reaching the canvas;
+- a check box, a menu and a disabled button: role and state in the current element, and a
+  change of state written once;
+- item 3's, 4's and 5's rows, as far as a synthetic key can show them: that a chord outside
+  the table never reaches eframe and is not cancelled, that the application did nothing and
+  wrote nothing, that the `beforeunload` answer is "unsaved" after an edit and in the same
+  task as an edit. **What the browser then does with the chord is the sitting's**, and each
+  such row says so;
+- in a name field: select all and type replaces the name; a word is deleted; a selection is
+  extended; typed text and a paste each make the page answer "unsaved" in the same task;
+- a held Up on the tempo box: nothing written while it is held, one write at release;
+- Undo on a clean start and Play: reached by Tab, described as unavailable with the reason,
+  activated, the reason written, nothing changed;
+- the region chord reaches the toolbar, the side panel and the editor, and back;
+- a track named with `<`, `&` and a direction override, typed into its field, reaches the page
+  as text. A newline cannot be typed into that field; its row is W5b's, when a crafted
+  project can be opened.
+
+And the native suite, clippy, fmt, the native gate — item 1 and item 4 touch the `Announcer`
+and the dispatch — `check_wasm.sh`, `build_wasm.sh` within its budget, `web-smoke.sh`.
+
+**Sitting** (Orca; Firefox, then Chromium; on the gate's own bundle), written down row by row,
+a row not mentioned recorded as not answered:
+
+- the nine steps as far as they go;
+- a repeated notice, three times; a held key; moving between controls with Tab;
+- the tempo box; a track's name edited **in its middle**;
+- **every row of the key table pressed for real**: the kept chords do the application's thing
+  and not the browser's; each *not bound* chord does the browser's thing; the page asks before
+  Alt+Left leaves unsaved work;
+- **the region chord**, both candidates: Alt+Page Down and Page Up, which the batch builds,
+  and Ctrl+Alt+Period and Comma. The table takes whichever Jesse finds a browser and the
+  desktop leave alone.
+
+**Leaves out:** playing and recording (W3, W4); files (W5b); the MIDI input and its refresh
+button, which are on a shown surface and silent — W-A2b takes them off the browser's toolbar
+until W3 gives them states.
+
+### W-A2b — the matrix, what is not shown, and the help — settled 2026-11-25
+
+W-A2a made the browser build speak. W-A2b makes the page show only what has passed (D12), holds
+it to W-A1's rows, and puts the keyboard notes where a visitor can read them before entering a
+canvas that takes every key.
+
+**Builds:**
+
+1. **What the browser build shows is decided in one place, and enforced where a view changes.**
+   `platform.rs` gains the list of what a platform shows. Two things read it and nothing else
+   knows: each control, to decide whether it is drawn; and **the one place a view is selected**,
+   which answers a request for a view the platform does not show by staying where it is — so
+   a route nobody listed cannot arrive at a hidden view, and a project that asks for one opens
+   on Song. That place does not exist yet: the view is assigned directly in more than a dozen
+   sites. The batch makes the field private to one module with one `select_view`, sends every
+   assignment through it, and a test asks for each view by every command that can ask. In the browser, absent — not drawn, not in the Tab order, not in the frame's tree:
+   - the **Mixer, Synth, Keyboard and Pads** views, and every way in: their four tabs, +KIT,
+     the button that reads Open Evil Synth or Open Pads, Samples, Modulation, Mixer & FX;
+   - the Notes view's **Automation** panel, its toggle, and the side panel's Automation button;
+   - the **MIDI input** and its refresh button, silent until W3 gives them states;
+   - **what needs a file or a renderer**, wherever it is drawn: Import MIDI in the Project menu
+     *and in the About window*, Recover rhythm from WAV, Relink MIDI, Export MIDI, the WAV
+     renders, stems and parts, the Export toggle, and both Load files… buttons.
+   **A drum track stays.** + Track › Drum track adds one and, in the browser, does not go to
+   Pads: its notes are edited in the roll like any track's and its kit is chosen from the sound
+   list. New, Open, Save, Save as, Keyboard notes and About stay, saying what W-A2a made them
+   say until W5b. The executor does not trust this list: it greps every site that sets the view
+   and every call of a removed command, and reports any way in the list does not name. Each
+   thing comes back in the batch that makes it pass, by a line removed from the list. The
+   desktop shows what it showed.
+2. **Nothing on the page is pointer-only.** The inventory's two failing kinds that are not
+   W3's — moving a window by its title bar, and dragging the side panel's width — are not
+   offered in the browser: its windows do not move and its side panel does not resize, and
+   neither the title bar nor the handle is a stop there at all — a stop that only ever dragged
+   is removed, not left named. On the desktop both stay, and stay `#23`'s.
+3. **The page says what it is, in its own HTML.** The keyboard notes, what is desktop-only
+   for now, and the browsers it was tested in are **static text in `index.html`**, there the
+   moment the page loads and there if the wasm never starts — not written by the application
+   after a six-mebibyte download. They would otherwise be a second copy of the library's
+   tables, so **a test holds the pair**: it generates the notes and the desktop-only list from
+   the browser's tables and item 1's list and fails when `index.html` differs, and the page's
+   header says so. A command the browser build refuses is in the notes with its reason —
+   "Space: play and stop — not in the browser build yet" — never as if it worked, **and the
+   Keyboard notes window inside the application is written by the same function**, so the two
+   say the same of Space. The tested-
+   browsers sentence, with the line that a Mac's shortcuts are not designed (`#24`), is the
+   page's own; "`evil-web` writes no string" means no string at run time. **The notes do not
+   cost the editor its room**: they sit in a disclosure above the canvas, closed when the page
+   loads, whose opened body is a named, focusable region that scrolls within itself by the
+   keyboard; the document still never scrolls. The page's order is stated and the entry rows
+   are rewritten to it: the heading, the disclosure's button, its body when open, the
+   sentinel, the canvas, the current element, the live region, the sentinel, "Leave the
+   editor". The disclosure's button is a stop a visitor meets before the editor, and the rows
+   say so.
+4. **Fixtures for the gate, in a bundle a visitor never gets.** W-A1's rows start from projects
+   the native gate writes into a temporary directory from its own script and opens by launch
+   argument. A browser cannot open a file before W5b, and the application cannot be handed a
+   project except by path. So:
+   - the fixtures become **tracked files**, `coordination/web/probes/fixtures/*.evil` — one
+     set, both gates. They are never opened in place: the native gate saves into some of them,
+     so it copies the set into its temporary directory at each run, as it writes it there
+     today. The set gains what it lacks: the native gate's default start is the Bach
+     invention imported from MIDI, which a browser cannot import, so its project is tracked
+     as a `.evil` with the same notes in the same order, the rows that only need its notes
+     start from that on both gates, and one native row goes on importing the MIDI itself;
+   - `midi-evil` and `evil-web` gain a cargo feature, off by default. Under it the library has
+     a constructor that takes a project as text, and the entry reads `?fixture=<name>` and
+     starts from one of those files, compiled in; and, for the absence rows' negative control
+     only, `?shows=desktop` makes the page show what the desktop shows;
+   - `build_wasm.sh` builds the visitor's bundle without the feature, exactly as now; with
+     `--gate` it builds the other into `target/web/dist-gate/`, **with its own cargo target
+     directory**, so a gate build can never leave its wasm where a visitor's build picks it up,
+     under the same lock and swap. `check_wasm.sh` checks both feature sets;
+   - `web-app-gate.sh` is given both bundles and each row says which it runs on: the fixture
+     rows on the gate's; the absence, page-text and first-run rows on the visitor's. A row
+     shows the visitor's bundle ignores `?fixture=` and `?shows=`, and that a marker string
+     the feature alone compiles in is in the gate's wasm and not in the visitor's — the
+     fixtures' own names are ordinary words and prove nothing; W6 asserts both again on what
+     is shipped. The gate refuses to start without a gate bundle that carries the marker, so a
+     stale or missing one is a refusal and not a row's failure; `check_wasm.sh`'s check of the
+     feature has a target directory of its own too.
+5. **The matrix below, as rows of `web-app-gate.sh`**, each starting from the fixture its
+   native row starts from — taken from the native gate's own table, not chosen again — and
+   each first asserting the project it loaded by name and track count, so a row cannot pass
+   on the default project. The rows run in named groups — W-A2a's, the matrix, absence, the
+   page — each with a deadline of five minutes a browser, where the whole gate takes about
+   four minutes today for nineteen rows in both; a group that runs out says its name. R-2 and R-18 are the crate's tests: the batch adds their browser forms — the
+   region chord for R-2, the browser's dispatch for R-18 — and names them.
+6. **The inventory, re-read for the browser**: `coordination/web/w-a2-inventory.md`, every line
+   of `w-a1-inventory.md` ending one of five ways — announced in the browser, with its row;
+   **unavailable until a named batch**, with the row that hears its reason; absent from the
+   browser, with its absence row and the batch that brings it back; a named standard control;
+   or failing, listed. **W-A2 does not close with a failing line** that is not W3's.
+
+**The matrix.** *CDP* is Chromium's real tree, asserted; *computed* is Playwright's own
+computation in Firefox, whose real tree is the sitting's. A row whose native form turns on F6
+is restated on the browser's region chord.
+
+| row | natively | in the browser | where |
+|---|---|---|---|
+| W0 edges: top pitch, tick 0, empty pattern, full shared pattern | native gate | the same keys, the same words | CDP, computed |
+| R-1 the cursor never moves to an identical twin | native gate | the same, from the fixture | CDP, computed |
+| R-2 a region move and an arrow in the next frame | crate's tests | the crate's tests, on the browser's tables | tests |
+| R-3 regions from the roll and back | native gate | Alt+Page Down and Up | CDP, computed (W-A2a's `regions`) |
+| R-4 Delete beside an automation lane | native gate | **not applicable**: the Automation panel is absent; its absence is the row | CDP, computed |
+| R-6 add in an empty pattern, undo: selection reset | native gate | the same | CDP, computed |
+| R-7 a held Right, a held Up at the top | native gate | one write at rest (W-A2a's `held-key`), and Up held at the top | CDP, computed |
+| R-8 delete the last track; the editor stop is add-a-track | native gate | the same, on the region chord | CDP, computed |
+| R-9 add after the first of two twins, undo | native gate | the same | CDP, computed |
+| R-10 the roll's description names every chord | native gate | every chord of the **browser's** table and none the browser keeps | CDP, computed |
+| R-11 the transport read while playing | native gate | **W3's and W4's**: nothing plays yet; read stopped is W-A2a's | — |
+| R-12 nothing focusable is unnamed | native gate | every stop Tab reaches on the Song and Notes views, a menu and each window: named, with a role | CDP, computed |
+| R-13 a screen reader started after the application | native gate | **not applicable**: the page is always in the tree; a row reads it with no input since load | CDP, computed |
+| R-14 every one-note edit from its button | native gate | the same | CDP, computed |
+| R-15 duplicate a track, undo | native gate | the same | CDP, computed |
+| R-16 a nudge past a neighbour, undo | native gate | the same | CDP, computed |
+| R-17 Clean overlaps re-sorts; the cursor follows | native gate | the same | CDP, computed |
+| R-18 two keys in one frame, three orders | crate's tests | the crate's tests | tests |
+| R-19 Escape clears, then leaves | native gate | the same | CDP, computed |
+| R-20 undo during a take | native gate | **W3's and W4's**: nothing records yet | — |
+| R-21 the readout after a tempo change and a new project | native gate | change the tempo and read; on a fresh page, New and read. New with unsaved work refuses and says why — its own row, until W5b | CDP, computed |
+| R-22 an unavailable control says why | native gate | W-A2a's `unavailable`, and each control item 1 leaves on the page that can be unavailable | CDP, computed |
+| the instrument list | native gate | the Previous and Next buttons | CDP, computed |
+| the Song sequences, the track panel, the roll's toolbar, the windows | native gate | the same, without what item 1 removes | CDP, computed |
+
+**Gate** — in this order: the native suite, clippy, fmt and the native gate, since item 1
+touches every surface's drawing and item 4 its fixtures; `check_wasm.sh`; `build_wasm.sh`
+within its budget, then `build_wasm.sh --gate`; `web-smoke.sh`; and `web-app-gate.sh`, whose
+rows are W-A2a's and:
+
+- first, the row W-A2a owes: a click on a control from outside the editor, press and release
+  with no frame between, is announced;
+- the matrix;
+- **absence**, stated as what can be observed: the page has one node for the whole editor, so
+  there is no tree to search for a control's name. After a row has first found the controls
+  that must be there, a walk by Tab through every stop of the Song and Notes views, each menu
+  and each window never puts a removed thing in the current element; no menu path, chord or
+  button changes the view to a hidden one; adding a drum track leaves the view where it was.
+  The negative control is the gate's bundle with `?shows=desktop`, on which the walk must find
+  the Mixer tab and fail;
+- no window moves and the side panel does not resize: no stop named for either;
+- the page's text: the notes hold every chord of the browser's table, none the browser keeps,
+  and the reason beside each command that is refused; the desktop-only list names each thing
+  item 1 removes; both are in the page before the wasm has started — a row delays the wasm
+  and reads them — and come before the canvas in its order;
+- the layout: at 1366 by 768, and at twice the text size, with the notes closed and with them
+  open, the canvas keeps a stated least height and "Leave the editor" is reached;
+- the visitor's bundle ignores `?fixture=` and `?shows=`.
+
+**Sitting** (Orca; Firefox, then Chromium; on the visitor's bundle): read the page from its top
+— the notes, what is desktop-only — then into the editor, across the toolbar and the side
+panel, hearing nothing that leads somewhere that is not there. This sitting closes W-A2.
+
+**Leaves out:** review of a field's text by character — W-A2a's sitting did not ask for it, and
+it is `#25`, not a batch; everything a row above gives to W3, W4 or W5b; a
+probe of Firefox's own accessibility tree, which stays the sitting's.
 
 ## The later batches — constraints, not yet sections
 

@@ -2,7 +2,7 @@
 //! the selected track.
 
 use super::*;
-use crate::accessibility::Accessible;
+use crate::accessibility::{Accessible, Refusable};
 use crate::instruments::Collection;
 use crate::speech::Unavailable;
 
@@ -23,6 +23,7 @@ impl StudioApp {
         let mut selected = None;
         let mut forgotten = None;
         let mut load = false;
+        let mut refusal = None;
         egui::Window::new(format!("Sound library / {}", current.kind.label()))
             .id(egui::Id::new("sound-library"))
             .open(&mut open)
@@ -38,8 +39,10 @@ impl StudioApp {
                     for (collection, title) in [(Collection::All, "All sounds"), (Collection::Factory, "Factory"), (Collection::User, "User loaded")] {
                         ui.selectable_value(&mut self.sounds.collection, collection, title);
                     }
-                    load = ui.add_enabled(self.recorder.is_none(), egui::Button::new("Load files…"))
-                        .unavailable_because(Unavailable::WhileRecording).clicked();
+                    let refused = self.recorder.is_some().then_some(Unavailable::WhileRecording);
+                    let button = Refusable::add(ui, refused, egui::Button::new("Load files…"));
+                    load = button.clicked();
+                    refusal = refusal.or(button.refusal());
                 });
                 ui.separator();
                 let choices = self.sounds.choices(&self.project, self.patch_base(), current.kind);
@@ -52,15 +55,17 @@ impl StudioApp {
                         for sound in &choices {
                             let origin = if sound.user { "USER" } else { "FACTORY" };
                             let detail = if sound.user { sound.reference.as_str() } else { sound.kind.label() };
-                            if ui.add_enabled(self.recorder.is_none(), egui::Button::new(
+                            let refused = self.recorder.is_some().then_some(Unavailable::WhileRecording);
+                            let choice = Refusable::add(ui, refused, egui::Button::new(
                                 format!("{}   ·   {origin}", sound.name))
                                 .selected(sound.same_source(&current))
                                 .min_size(egui::vec2(ui.available_width(), 36.0))
                                 .truncate())
-                                .on_hover_text(&sound.reference)
-                                .unavailable_because(Unavailable::WhileRecording).clicked() {
+                                .on_hover_text(&sound.reference);
+                            if choice.clicked() {
                                 selected = Some(sound.clone());
                             }
+                            refusal = refusal.or(choice.refusal());
                             if sound.user {
                                 ui.add(egui::Label::new(RichText::new(detail).small().color(theme::MUTED)).truncate()).on_hover_text(detail);
                                 if self.sounds.is_remembered(sound)
@@ -95,6 +100,9 @@ impl StudioApp {
         }
         if load {
             self.load_sound_files();
+        }
+        if let Some(reason) = refusal {
+            self.report(reason);
         }
         if let Some(sound) = selected
             && self.assign_sound(sound)

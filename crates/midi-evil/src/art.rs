@@ -59,8 +59,10 @@ fn load_png(context: &Context, name: &str, bytes: &[u8]) -> TextureHandle {
     let rgba = match frame.color_type {
         png::ColorType::Rgba => data.to_vec(),
         png::ColorType::Rgb => data
-            .chunks_exact(3)
-            .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255])
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .flat_map(|&[red, green, blue]| [red, green, blue, 255])
             .collect(),
         format => panic!("unsupported embedded branding color type: {format:?}"),
     };

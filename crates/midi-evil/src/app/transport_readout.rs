@@ -4,7 +4,8 @@
 //! between reads; the rule for that is the announcer's.
 
 use super::*;
-use crate::accessibility::Accessible;
+use crate::accessibility::{Accessible, Refusable};
+use crate::key_help::AppCommand;
 use crate::regions::{self, Region};
 use crate::speech::{self, Meter, PlayingState, TransportState};
 
@@ -24,17 +25,23 @@ impl StudioApp {
         } else {
             "PLAY"
         };
-        if ui
-            .add_sized(
-                [88.0, 40.0],
-                egui::Button::image_and_text(
-                    art::control(&self.controls, if active { 5 } else { 4 }),
-                    label,
-                ),
-            )
-            .on_hover_text("Render and play the song · Space to play/stop")
-            .clicked()
-        {
+        let platform = crate::platform::of(ui.ctx());
+        let refused = platform.playback_refused();
+        let play_key = AppCommand::PlayOrStop
+            .hover_shortcut(egui::Key::Space, platform)
+            .map(|chord| format!(" · {chord} to play/stop"))
+            .unwrap_or_default();
+        let play = Refusable::add_sized(
+            ui,
+            [88.0, 40.0],
+            refused,
+            egui::Button::image_and_text(
+                art::control(&self.controls, if active { 5 } else { 4 }),
+                label,
+            ),
+        )
+        .on_hover_text(format!("Render and play the song{play_key}"));
+        if play.clicked() {
             if queued {
                 self.stop_transport();
             } else if cancelling {
@@ -47,21 +54,23 @@ impl StudioApp {
                 self.preview_project();
             }
         }
-        if ui
-            .add_sized(
-                [88.0, 40.0],
-                egui::Button::new(if self.recorder.is_some() {
-                    "Stop take"
-                } else {
-                    "Record"
-                })
-                .selected(self.recorder.is_some()),
-            )
-            .on_hover_text("Record keyboard, pads or MIDI into the selected track/part")
-            .clicked()
-        {
+        self.report_refusal(&play);
+        let record = Refusable::add_sized(
+            ui,
+            [88.0, 40.0],
+            refused,
+            egui::Button::new(if self.recorder.is_some() {
+                "Stop take"
+            } else {
+                "Record"
+            })
+            .selected(self.recorder.is_some()),
+        )
+        .on_hover_text("Record keyboard, pads or MIDI into the selected track/part");
+        if record.clicked() {
             self.toggle_recording();
         }
+        self.report_refusal(&record);
         egui::Frame::new()
             .fill(theme::BACKGROUND)
             .stroke(egui::Stroke::new(1.0, theme::BORDER))
