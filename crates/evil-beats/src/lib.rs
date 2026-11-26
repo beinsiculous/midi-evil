@@ -16,7 +16,7 @@ mod voice;
 pub use kit::{DrumKit, KitPad, PAD_COUNT};
 pub use machine::{DrumMachine, PreparedPad};
 pub use presets::{chiptune_kit, maxwell_kit};
-pub use render::{KitHit, render_kit};
+pub use render::{KitHit, render_kit, render_kit_with_cancellation};
 pub use routing::{BUS_COUNT, DrumBus, DrumFilter};
 pub use voice::VOICE_LIMIT;
 

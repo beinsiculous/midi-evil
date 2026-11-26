@@ -154,6 +154,7 @@ pub fn describe_lane(kind: &str, automates: &str, point_count: usize) -> String 
 pub enum PlayingState {
     Stopped,
     Rendering,
+    Cancelling,
     Playing,
     Recording,
 }
@@ -163,6 +164,7 @@ impl PlayingState {
         match self {
             Self::Stopped => "stopped",
             Self::Rendering => "rendering",
+            Self::Cancelling => "cancelling",
             Self::Playing => "playing",
             Self::Recording => "recording",
         }

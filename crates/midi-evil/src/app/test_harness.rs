@@ -512,6 +512,23 @@ impl Harness {
         self.action(node, accesskit::Action::Click, None);
     }
 
+    pub(super) fn toolbar_click_without_polling(&mut self, node: accesskit::NodeId) {
+        let _ = self.context.run_ui(
+            egui::RawInput {
+                events: vec![egui::Event::AccessKitActionRequest(
+                    accesskit::ActionRequest {
+                        action: accesskit::Action::Click,
+                        target_tree: accesskit::TreeId::ROOT,
+                        target_node: node,
+                        data: None,
+                    },
+                )],
+                ..Default::default()
+            },
+            |ui| self.app.toolbar(ui),
+        );
+    }
+
     pub(super) fn node_with_role(&self, role: accesskit::Role) -> accesskit::NodeId {
         self.output
             .platform_output

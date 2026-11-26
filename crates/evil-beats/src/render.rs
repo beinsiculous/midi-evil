@@ -1,4 +1,4 @@
-use evil_synth::StereoSound;
+use evil_synth::{RenderCancellation, StereoSound};
 
 use crate::{
     DrumHit, DrumKit, Error, PAD_COUNT, PreparedPad,
@@ -17,7 +17,31 @@ pub struct KitHit {
 
 /// Render a complete kit through the same voice, playback and stereo panning
 /// model used by live performance.
+fn append_silence(
+    left: &mut Vec<f32>,
+    right: &mut Vec<f32>,
+    end_frame: usize,
+    cancellation: &RenderCancellation,
+) -> Result<(), Error> {
+    cancellation.check()?;
+    if end_frame > left.len() {
+        left.resize(end_frame, 0.0);
+        right.resize(end_frame, 0.0);
+    }
+    Ok(())
+}
+
 pub fn render_kit(kit: &DrumKit, hits: &[KitHit], sample_rate: u32) -> Result<StereoSound, Error> {
+    render_kit_with_cancellation(kit, hits, sample_rate, &RenderCancellation::default())
+}
+
+pub fn render_kit_with_cancellation(
+    kit: &DrumKit,
+    hits: &[KitHit],
+    sample_rate: u32,
+    cancellation: &RenderCancellation,
+) -> Result<StereoSound, Error> {
+    cancellation.check()?;
     kit.validate()?;
     if !(8_000..=192_000).contains(&sample_rate) {
         return Err(Error::InvalidKit(
@@ -33,6 +57,7 @@ pub fn render_kit(kit: &DrumKit, hits: &[KitHit], sample_rate: u32) -> Result<St
 
     let mut scheduled: Vec<(usize, usize, PlaybackVoice)> = Vec::with_capacity(hits.len());
     for (index, hit) in hits.iter().enumerate() {
+        cancellation.check()?;
         if hit.pad_index >= PAD_COUNT {
             return Err(Error::InvalidHit(index));
         }
@@ -67,15 +92,18 @@ pub fn render_kit(kit: &DrumKit, hits: &[KitHit], sample_rate: u32) -> Result<St
     let mut right = Vec::new();
     let mut active: Vec<PlaybackVoice> = Vec::with_capacity(VOICE_LIMIT);
     let mut scheduled = scheduled.into_iter().peekable();
+    let mut processed_frames = 0_usize;
     while !active.is_empty() || scheduled.peek().is_some() {
+        if processed_frames.is_multiple_of(256) {
+            cancellation.check()?;
+        }
         active.retain(|voice| !voice.is_finished());
         if active.is_empty()
             && buses.is_quiet()
             && let Some((start, _, _)) = scheduled.peek()
             && *start > left.len()
         {
-            left.resize(*start, 0.0);
-            right.resize(*start, 0.0);
+            append_silence(&mut left, &mut right, *start, cancellation)?;
         }
         let frame = left.len();
         if frame as f64 >= crate::MAX_RENDER_SECONDS * f64::from(sample_rate) {
@@ -98,12 +126,16 @@ pub fn render_kit(kit: &DrumKit, hits: &[KitHit], sample_rate: u32) -> Result<St
         left.push(mixed[0]);
         right.push(mixed[1]);
         active.retain(|voice| !voice.is_finished());
+        processed_frames += 1;
     }
 
     const MAX_BUS_TAIL_SECONDS: u32 = 10;
     let tail_limit = (MAX_BUS_TAIL_SECONDS * sample_rate) as usize;
     let mut tail_frames = 0;
     while !buses.is_quiet() && tail_frames < tail_limit {
+        if tail_frames.is_multiple_of(256) {
+            cancellation.check()?;
+        }
         if left.len() as f64 >= crate::MAX_RENDER_SECONDS * f64::from(sample_rate) {
             return Err(Error::RenderTooLong);
         }
@@ -112,6 +144,7 @@ pub fn render_kit(kit: &DrumKit, hits: &[KitHit], sample_rate: u32) -> Result<St
         right.push(mixed[1]);
         tail_frames += 1;
     }
+    cancellation.check()?;
     Ok(StereoSound {
         left,
         right,
@@ -123,6 +156,36 @@ pub fn render_kit(kit: &DrumKit, hits: &[KitHit], sample_rate: u32) -> Result<St
 mod tests {
     use super::*;
     use crate::{DrumPad, KitPad};
+
+    #[test]
+    fn sparse_hit_silence_jump_checks_cancellation_without_changing_output() {
+        let cancellation = RenderCancellation::default();
+        cancellation.cancel();
+        let mut left = vec![1.0];
+        let mut right = vec![-1.0];
+        assert!(append_silence(&mut left, &mut right, 257, &cancellation).is_err());
+        assert_eq!(left, [1.0]);
+        assert_eq!(right, [-1.0]);
+
+        let mut kit = DrumKit::empty("Sparse");
+        let mut pad = KitPad::new(DrumPad::new(vec![0.5, 0.5], 48_000));
+        pad.voice.envelope.release_seconds = 0.0;
+        kit.pads[0] = Some(pad);
+        let hit = KitHit {
+            pad_index: 0,
+            start_seconds: 0.001,
+            duration_seconds: None,
+            velocity: 127,
+        };
+        let first = render_kit(&kit, &[hit], 48_000).unwrap();
+        let second = render_kit(&kit, &[hit], 48_000).unwrap();
+        assert_eq!(first.left, second.left);
+        assert_eq!(first.right, second.right);
+        assert!(first.left[..48].iter().all(|sample| *sample == 0.0));
+        assert!(first.right[..48].iter().all(|sample| *sample == 0.0));
+        assert_ne!(first.left[48], 0.0);
+        assert_ne!(first.right[48], 0.0);
+    }
 
     #[test]
     fn native_parity_sixteen_pad_portable_wav_workflow() {

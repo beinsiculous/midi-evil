@@ -132,6 +132,113 @@ fn what_a_dialog_command_does_once_its_dialog_has_answered_is_said() {
 }
 
 #[test]
+fn a_failed_batch_and_refused_bank_save_are_announced() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut harness = Harness::new(project_with(&[&[note_at(60, 0, 480)]]));
+    let missing = harness
+        .app
+        .project
+        .add_instrument(Instrument::synth("Missing", "missing.json"))
+        .unwrap();
+    harness
+        .app
+        .project
+        .add_track(Track {
+            instrument: missing,
+            notes: vec![note_at(62, 0, 480)],
+            ..Track::default()
+        })
+        .unwrap();
+    let plan = evil_render::stem_export_plan(&harness.app.project, None).unwrap();
+    harness
+        .app
+        .start_wav_export_plan(directory.path().to_path_buf(), plan);
+    let heard = announcements_until_rendered(&mut harness);
+    assert!(
+        heard.iter().any(|text| {
+            text.starts_with("Export batch stopped before any output; could not resolve instrument source missing.json")
+        }),
+        "{heard:?}"
+    );
+
+    harness.app.view = View::Pads;
+    let queued = harness
+        .app
+        .accept_render(PendingRender::Wav(directory.path().join("queued.wav")));
+    harness.app.queued_render = Some(queued);
+    harness.run(vec![press(egui::Key::S, CONTROL)]);
+    assert_eq!(
+        harness.announcements(),
+        ["Withdraw the queued WAV export before saving a bank"]
+    );
+}
+
+#[test]
+fn cancelled_exports_and_same_path_retry_do_not_repeat_composed_outcomes() {
+    let directory = tempfile::tempdir().unwrap();
+    let first = directory.path().join("first.wav");
+    let second = directory.path().join("second.wav");
+    let mut harness = Harness::new(project_with(&[&[note_at(60, 0, 480)]]));
+    let mut heard = Vec::new();
+    for output in [&first, &second] {
+        let gate = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let gate_for_hook = gate.clone();
+        let block_once = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let block_once_for_hook = block_once.clone();
+        let (entered_sender, entered_receiver) = std::sync::mpsc::channel();
+        harness.app.render_owner.set_result_test_hook(move || {
+            if block_once_for_hook.swap(false, std::sync::atomic::Ordering::AcqRel) {
+                entered_sender.send(()).unwrap();
+                let (lock, condition) = &*gate_for_hook;
+                let mut allowed = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                while !*allowed {
+                    allowed = condition
+                        .wait(allowed)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                }
+            }
+        });
+        harness.app.start_render(PendingRender::Wav(output.clone()));
+        entered_receiver.recv().unwrap();
+        assert!(output.exists());
+        harness.app.cancel_active_render();
+        let (lock, condition) = &*gate;
+        *lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
+        condition.notify_all();
+        heard.extend(announcements_until_rendered(&mut harness));
+    }
+    harness.app.start_render(PendingRender::Wav(first.clone()));
+    heard.extend(announcements_until_rendered(&mut harness));
+
+    for output in [&first, &second] {
+        let published = format!("Published WAV export to {}", output.display());
+        assert_eq!(
+            heard
+                .iter()
+                .filter(|text| text.contains(&published))
+                .count(),
+            1,
+            "{heard:?}"
+        );
+    }
+    let rendered = "Rendered 1 notes from 1 tracks to first.wav";
+    assert_eq!(
+        heard
+            .iter()
+            .filter(|text| text.starts_with(rendered))
+            .count(),
+        1,
+        "{heard:?}"
+    );
+    assert!(
+        heard.iter().all(|text| {
+            !(text.contains("Published WAV export") && text.contains("Rendered 1 notes"))
+        }),
+        "{heard:?}"
+    );
+}
+
+#[test]
 fn the_rolls_whole_sequence_buttons_say_what_they_did() {
     let mut harness = Harness::new(project_with(&[&[
         note_at(60, 0, 470),

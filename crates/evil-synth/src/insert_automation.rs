@@ -2,7 +2,7 @@ use crate::delay::{
     allocated_tail_frames, delay_frame_count, maximum_delay_frames, stereo_delay_frame_counts,
     stereo_delay_input, tempo_bpm_at,
 };
-use crate::{Delay, SynthController, SynthTempoChange, Waveshaper};
+use crate::{Delay, Error, RenderCancellation, SynthController, SynthTempoChange, Waveshaper};
 
 pub const WAVESHAPER_DRIVE_CC: u8 = 20;
 pub const WAVESHAPER_CONTOUR_CC: u8 = 21;
@@ -27,41 +27,48 @@ pub(crate) fn has_delay_automation(controllers: &[SynthController]) -> bool {
         .any(|event| (DELAY_TIME_CC..=DELAY_MIX_CC).contains(&event.controller))
 }
 
-pub(crate) fn apply_waveshaper_automation(
+pub(crate) fn apply_waveshaper_automation_with_cancellation(
     samples: &mut [f32],
     sample_rate: u32,
     base: &Waveshaper,
     controllers: &[SynthController],
-) {
+    cancellation: &RenderCancellation,
+) -> Result<(), Error> {
     for (frame, sample) in samples.iter_mut().enumerate() {
+        cancellation.check_frame(frame)?;
         let time = frame as f64 / f64::from(sample_rate);
         *sample = automated_waveshaper(base, controllers, time).process(*sample);
     }
+    Ok(())
 }
 
-pub(crate) fn apply_stereo_waveshaper_automation(
+pub(crate) fn apply_stereo_waveshaper_automation_with_cancellation(
     left: &mut [f32],
     right: &mut [f32],
     sample_rate: u32,
     base: &Waveshaper,
     controllers: &[SynthController],
-) {
+    cancellation: &RenderCancellation,
+) -> Result<(), Error> {
     debug_assert_eq!(left.len(), right.len());
     for (frame, (left, right)) in left.iter_mut().zip(right).enumerate() {
+        cancellation.check_frame(frame)?;
         let time = frame as f64 / f64::from(sample_rate);
         let waveshaper = automated_waveshaper(base, controllers, time);
         *left = waveshaper.process(*left);
         *right = waveshaper.process(*right);
     }
+    Ok(())
 }
 
-pub(crate) fn apply_delay_automation(
+pub(crate) fn apply_delay_automation_with_cancellation(
     samples: &mut Vec<f32>,
     sample_rate: u32,
     base: &Delay,
     controllers: &[SynthController],
     tempo_changes: &[SynthTempoChange],
-) {
+    cancellation: &RenderCancellation,
+) -> Result<(), Error> {
     let maximum_delay =
         maximum_automated_delay_frames(sample_rate, base, controllers, tempo_changes);
     let original_len = samples.len();
@@ -72,6 +79,7 @@ pub(crate) fn apply_delay_automation(
     let mut delay_line = vec![0.0; maximum_delay + 1];
     let mut position = 0;
     for (frame, sample) in samples.iter_mut().enumerate() {
+        cancellation.check_frame(frame)?;
         let time = frame as f64 / f64::from(sample_rate);
         let delay = automated_delay(base, controllers, time);
         let delay_frames =
@@ -83,8 +91,10 @@ pub(crate) fn apply_delay_automation(
         *sample = dry + delayed * delay.mix;
         position = (position + 1) % delay_line.len();
     }
+    Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn apply_stereo_delay_automation_with_tempo(
     left: &mut Vec<f32>,
     right: &mut Vec<f32>,
@@ -93,6 +103,26 @@ pub(crate) fn apply_stereo_delay_automation_with_tempo(
     controllers: &[SynthController],
     tempo_changes: &[SynthTempoChange],
 ) {
+    let _ = apply_stereo_delay_automation_with_tempo_and_cancellation(
+        left,
+        right,
+        sample_rate,
+        base,
+        controllers,
+        tempo_changes,
+        &RenderCancellation::default(),
+    );
+}
+
+pub(crate) fn apply_stereo_delay_automation_with_tempo_and_cancellation(
+    left: &mut Vec<f32>,
+    right: &mut Vec<f32>,
+    sample_rate: u32,
+    base: &Delay,
+    controllers: &[SynthController],
+    tempo_changes: &[SynthTempoChange],
+    cancellation: &RenderCancellation,
+) -> Result<(), Error> {
     debug_assert_eq!(left.len(), right.len());
     let maximum_delay =
         maximum_automated_delay_frames(sample_rate, base, controllers, tempo_changes);
@@ -104,6 +134,7 @@ pub(crate) fn apply_stereo_delay_automation_with_tempo(
     let mut right_line = vec![0.0; maximum_delay + 1];
     let mut position = 0;
     for frame in 0..left.len() {
+        cancellation.check_frame(frame)?;
         let time = frame as f64 / f64::from(sample_rate);
         let delay = automated_delay(base, controllers, time);
         let [left_frames, right_frames] =
@@ -126,6 +157,7 @@ pub(crate) fn apply_stereo_delay_automation_with_tempo(
         right[frame] = dry_right + delayed_right * delay.mix;
         position = (position + 1) % left_line.len();
     }
+    Ok(())
 }
 
 fn automated_waveshaper(

@@ -2,7 +2,7 @@ use std::path::Path;
 
 use hound::{SampleFormat, WavSpec, WavWriter};
 
-use crate::{Error, RenderedSound, StereoSound, sample::MAX_SAMPLE_SECONDS};
+use crate::{Error, RenderCancellation, RenderedSound, StereoSound, sample::MAX_SAMPLE_SECONDS};
 
 /// Decoded mono or stereo audio preserving discrete left/right channels when present.
 #[derive(Debug, Clone, PartialEq)]
@@ -116,11 +116,32 @@ impl RenderedSound {
     pub fn write_wav(&self, path: impl AsRef<Path>) -> Result<(), Error> {
         write_planar_wav(path, self.sample_rate, &[&self.samples])
     }
+
+    pub fn write_wav_with_cancellation(
+        &self,
+        path: impl AsRef<Path>,
+        cancellation: &RenderCancellation,
+    ) -> Result<(), Error> {
+        write_planar_wav_with_cancellation(path, self.sample_rate, &[&self.samples], cancellation)
+    }
 }
 
 impl StereoSound {
     pub fn write_wav(&self, path: impl AsRef<Path>) -> Result<(), Error> {
         write_planar_wav(path, self.sample_rate, &[&self.left, &self.right])
+    }
+
+    pub fn write_wav_with_cancellation(
+        &self,
+        path: impl AsRef<Path>,
+        cancellation: &RenderCancellation,
+    ) -> Result<(), Error> {
+        write_planar_wav_with_cancellation(
+            path,
+            self.sample_rate,
+            &[&self.left, &self.right],
+            cancellation,
+        )
     }
 }
 
@@ -128,6 +149,15 @@ fn write_planar_wav(
     path: impl AsRef<Path>,
     sample_rate: u32,
     channels: &[&[f32]],
+) -> Result<(), Error> {
+    write_planar_wav_with_cancellation(path, sample_rate, channels, &RenderCancellation::default())
+}
+
+fn write_planar_wav_with_cancellation(
+    path: impl AsRef<Path>,
+    sample_rate: u32,
+    channels: &[&[f32]],
+    cancellation: &RenderCancellation,
 ) -> Result<(), Error> {
     if channels.is_empty() || channels.len() > 2 {
         return Err(Error::InvalidMix(
@@ -146,13 +176,16 @@ fn write_planar_wav(
         bits_per_sample: 16,
         sample_format: SampleFormat::Int,
     };
+    cancellation.check()?;
     let mut writer = WavWriter::create(path, spec)?;
     for frame in 0..frame_count {
+        cancellation.check_frame(frame)?;
         for channel in channels {
             let sample = (channel[frame].clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16;
             writer.write_sample(sample)?;
         }
     }
+    cancellation.check()?;
     writer.finalize()?;
     Ok(())
 }

@@ -1,11 +1,17 @@
 use std::path::{Path, PathBuf};
+use std::sync::{
+    Arc, Mutex, MutexGuard,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 
 use evil_beats::{DrumKit, KitHit};
 use evil_project::{InstrumentSource, Project};
+pub use evil_synth::RenderCancellation;
 use evil_synth::{
     MonoTrack, Patch, SEND_COUNT, SendBus, StereoSound, StereoTrack, SynthAftertouch,
     SynthController, SynthNote, SynthPitchBend, SynthTempoChange, mix_stereo_analyzed,
-    mix_stereo_with_sends_and_tempo_analyzed, mix_stereo_with_sends_and_tempo_analyzed_range,
+    mix_stereo_with_sends_and_tempo_analyzed,
+    mix_stereo_with_sends_and_tempo_analyzed_range_and_cancellation,
 };
 use thiserror::Error;
 
@@ -51,6 +57,178 @@ pub enum Error {
     InvalidSelection(String),
     #[error("render selection is empty: {0}")]
     EmptySelection(String),
+    #[error("could not resolve instrument source {source}: {error}")]
+    InstrumentResolution {
+        source: String,
+        #[source]
+        error: Box<Error>,
+    },
+}
+
+enum ResolvedInstrument {
+    Synth(Box<Patch>),
+    DrumKit(Box<DrumKit>),
+}
+
+/// A project, its original reference base, requested scopes, and cached instrument resolutions.
+pub struct RenderSnapshot {
+    project: Project,
+    reference_base: PathBuf,
+    scopes: Vec<RenderScope>,
+    range: Option<(u64, Option<u64>)>,
+    instruments: Mutex<Vec<Option<Arc<ResolvedInstrument>>>>,
+    initial_resolution_complete: AtomicBool,
+    loads_in_progress: AtomicUsize,
+}
+
+impl RenderSnapshot {
+    pub fn new(project: Project, reference_base: PathBuf) -> Self {
+        Self::with_scopes(project, reference_base, vec![RenderScope::FullMix])
+    }
+
+    pub fn with_scopes(
+        project: Project,
+        reference_base: PathBuf,
+        scopes: Vec<RenderScope>,
+    ) -> Self {
+        Self::with_scopes_and_range(project, reference_base, scopes, None)
+    }
+
+    pub fn with_range(
+        project: Project,
+        reference_base: PathBuf,
+        start_tick: u64,
+        end_tick: Option<u64>,
+    ) -> Self {
+        Self::with_scopes_and_range(
+            project,
+            reference_base,
+            vec![RenderScope::FullMix],
+            Some((start_tick, end_tick)),
+        )
+    }
+
+    pub fn with_scopes_and_range(
+        project: Project,
+        reference_base: PathBuf,
+        scopes: Vec<RenderScope>,
+        range: Option<(u64, Option<u64>)>,
+    ) -> Self {
+        let instrument_count = project.instruments.len();
+        Self {
+            project,
+            reference_base,
+            scopes,
+            range,
+            instruments: Mutex::new((0..instrument_count).map(|_| None).collect()),
+            initial_resolution_complete: AtomicBool::new(false),
+            loads_in_progress: AtomicUsize::new(0),
+        }
+    }
+
+    pub fn is_resolved(&self) -> bool {
+        self.initial_resolution_complete.load(Ordering::Acquire)
+    }
+
+    pub fn is_resolving(&self) -> bool {
+        self.loads_in_progress.load(Ordering::Acquire) != 0
+    }
+
+    fn begin_resolution(&self) -> ResolutionActivity<'_> {
+        self.loads_in_progress.fetch_add(1, Ordering::AcqRel);
+        ResolutionActivity(self)
+    }
+
+    fn instruments(&self) -> MutexGuard<'_, Vec<Option<Arc<ResolvedInstrument>>>> {
+        self.instruments
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub fn resolve(&self, cancellation: &RenderCancellation) -> Result<(), Error> {
+        cancellation.check()?;
+        if self.is_resolved() {
+            return Ok(());
+        }
+        let _activity = self.begin_resolution();
+        self.project.validate()?;
+        let mut required_tracks = vec![false; self.project.tracks.len()];
+        let end_tick = self.range.and_then(|(_, end_tick)| end_tick);
+        for &scope in &self.scopes {
+            cancellation.check()?;
+            let mut input = scoped_project(&self.project, scope)?;
+            if let Some(end) = end_tick {
+                input.truncate_timeline(end);
+            }
+            for track in input.to_performance()?.tracks {
+                required_tracks[track.track_index] = true;
+            }
+        }
+        for (track_index, required) in required_tracks.into_iter().enumerate() {
+            if required {
+                self.resolve_instrument(self.project.tracks[track_index].instrument, cancellation)?;
+            }
+        }
+        self.initial_resolution_complete
+            .store(true, Ordering::Release);
+        Ok(())
+    }
+
+    fn resolve_instrument(
+        &self,
+        instrument: usize,
+        cancellation: &RenderCancellation,
+    ) -> Result<Arc<ResolvedInstrument>, Error> {
+        cancellation.check()?;
+        if let Some(resolved) = self
+            .instruments()
+            .get(instrument)
+            .and_then(Option::as_ref)
+            .cloned()
+        {
+            return Ok(resolved);
+        }
+        let _activity = self.begin_resolution();
+        let settings = self.project.instruments.get(instrument).ok_or_else(|| {
+            Error::InvalidSelection(format!("instrument index {instrument} does not exist"))
+        })?;
+        let source = match &settings.source {
+            InstrumentSource::Synth { patch } => patch,
+            InstrumentSource::DrumKit { kit, .. } => kit,
+        };
+        let resolved = match &settings.source {
+            InstrumentSource::Synth { patch } => load_patch(patch, &self.reference_base)
+                .map(|patch| ResolvedInstrument::Synth(Box::new(patch))),
+            InstrumentSource::DrumKit { kit, .. } => load_drum_kit(kit, &self.reference_base)
+                .map(|kit| ResolvedInstrument::DrumKit(Box::new(kit))),
+        }
+        .map_err(|error| Error::InstrumentResolution {
+            source: source.clone(),
+            error: Box::new(error),
+        })?;
+        cancellation.check()?;
+        let resolved = Arc::new(resolved);
+        let mut instruments = self.instruments();
+        Ok(instruments[instrument]
+            .get_or_insert_with(|| resolved.clone())
+            .clone())
+    }
+
+    fn resolved_instrument(
+        &self,
+        instrument: usize,
+        cancellation: &RenderCancellation,
+    ) -> Result<Arc<ResolvedInstrument>, Error> {
+        self.resolve_instrument(instrument, cancellation)
+    }
+}
+
+struct ResolutionActivity<'a>(&'a RenderSnapshot);
+
+impl Drop for ResolutionActivity<'_> {
+    fn drop(&mut self) {
+        self.0.loads_in_progress.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 pub struct RenderOutput {
@@ -163,12 +341,23 @@ pub fn render_project_scoped(
     patch_base: &Path,
     scope: RenderScope,
 ) -> Result<RenderOutput, Error> {
+    let snapshot =
+        RenderSnapshot::with_scopes(project.clone(), patch_base.to_path_buf(), vec![scope]);
+    render_snapshot_scoped(&snapshot, scope, &RenderCancellation::default())
+}
+
+pub fn render_snapshot_scoped(
+    snapshot: &RenderSnapshot,
+    scope: RenderScope,
+    cancellation: &RenderCancellation,
+) -> Result<RenderOutput, Error> {
     if let RenderScope::TrackPart {
         track_index,
         part_index,
     } = scope
     {
-        let part = project
+        let part = snapshot
+            .project
             .tracks
             .get(track_index)
             .and_then(|track| track.parts.get(part_index))
@@ -178,10 +367,10 @@ pub fn render_project_scoped(
                     "arrangement part index {part_index} does not exist on track index {track_index}"
                 ))
             })?;
-        return render_project_scoped_range(project, patch_base, scope, part.start_tick, None);
+        return render_snapshot_scoped_range(snapshot, scope, part.start_tick, None, cancellation);
     }
-    let input = scoped_project(project, scope)?;
-    render_project_with_analysis_range(&input, patch_base, None)
+    let input = scoped_project(&snapshot.project, scope)?;
+    render_project_with_analysis_range(snapshot, &input, None, cancellation)
 }
 
 /// Render from a timeline tick, optionally stopping at a loop boundary.
@@ -202,6 +391,21 @@ pub fn render_project_range(
     )
 }
 
+pub fn render_snapshot_range(
+    snapshot: &RenderSnapshot,
+    start_tick: u64,
+    end_tick: Option<u64>,
+    cancellation: &RenderCancellation,
+) -> Result<RenderOutput, Error> {
+    render_snapshot_scoped_range(
+        snapshot,
+        RenderScope::FullMix,
+        start_tick,
+        end_tick,
+        cancellation,
+    )
+}
+
 /// Exact-range variant of scoped rendering. Unlike a complete part render, an explicit range can
 /// crop a part to arbitrary boundaries; track stems retain the full-mix range semantics.
 pub fn render_project_scoped_range(
@@ -211,25 +415,48 @@ pub fn render_project_scoped_range(
     start_tick: u64,
     end_tick: Option<u64>,
 ) -> Result<RenderOutput, Error> {
+    let snapshot = RenderSnapshot::with_scopes_and_range(
+        project.clone(),
+        patch_base.to_path_buf(),
+        vec![scope],
+        Some((start_tick, end_tick)),
+    );
+    render_snapshot_scoped_range(
+        &snapshot,
+        scope,
+        start_tick,
+        end_tick,
+        &RenderCancellation::default(),
+    )
+}
+
+pub fn render_snapshot_scoped_range(
+    snapshot: &RenderSnapshot,
+    scope: RenderScope,
+    start_tick: u64,
+    end_tick: Option<u64>,
+    cancellation: &RenderCancellation,
+) -> Result<RenderOutput, Error> {
     if end_tick.is_some_and(|end| end <= start_tick) {
         return Err(Error::InvalidSection(
             "end tick must be greater than start tick".to_owned(),
         ));
     }
-    let mut input = scoped_project(project, scope)?;
+    let mut input = scoped_project(&snapshot.project, scope)?;
     let performance = input.to_performance()?;
     let start_seconds = performance.seconds_at(start_tick);
     let end_seconds = end_tick.map(|end| performance.seconds_at(end));
-    let sample_rate = project.sample_rate;
+    let sample_rate = snapshot.project.sample_rate;
     let start_frame = (start_seconds * f64::from(sample_rate)).round() as usize;
     let end_frame = end_seconds.map(|seconds| (seconds * f64::from(sample_rate)).round() as usize);
     if let Some(end) = end_tick {
         input.truncate_timeline(end);
     }
     let mut output = render_project_with_analysis_range(
+        snapshot,
         &input,
-        patch_base,
         Some((start_frame, end_frame.unwrap_or(usize::MAX))),
+        cancellation,
     )?;
     if let Some(end_frame) = end_frame
         && end_frame > output.sound.left.len()
@@ -327,10 +554,12 @@ struct StereoRenderedTrack {
 }
 
 fn render_project_with_analysis_range(
+    snapshot: &RenderSnapshot,
     project: &Project,
-    patch_base: &Path,
     analysis_range: Option<(usize, usize)>,
+    cancellation: &RenderCancellation,
 ) -> Result<RenderOutput, Error> {
+    snapshot.resolve(cancellation)?;
     let performance = project.to_performance()?;
     if performance.note_count() == 0 {
         return Err(Error::NoNotes);
@@ -351,10 +580,13 @@ fn render_project_with_analysis_range(
         })
         .collect();
     for track in &performance.tracks {
+        cancellation.check()?;
         let settings = project.instrument_for_track(track.track_index)?;
-        match &settings.source {
-            InstrumentSource::Synth { patch: source } => {
-                let mut patch = load_patch(source, patch_base)?;
+        let instrument = project.tracks[track.track_index].instrument;
+        let resolved = snapshot.resolved_instrument(instrument, cancellation)?;
+        match (&settings.source, resolved.as_ref()) {
+            (InstrumentSource::Synth { .. }, ResolvedInstrument::Synth(resolved)) => {
+                let mut patch = (**resolved).clone();
                 patch.sample_rate = project.sample_rate;
                 patch.pitch_bend_range_semitones = settings.pitch_bend_range_semitones;
                 let notes: Vec<_> = track
@@ -412,13 +644,14 @@ fn render_project_with_analysis_range(
                     .filter(|event| !evil_project::controller_is_rendered(event.controller))
                     .count();
                 if patch.has_stereo_sample() {
-                    let sound = evil_synth::render_notes_stereo_dry_with_tempo_and_full_automation(
+                    let sound = evil_synth::render_notes_stereo_dry_with_tempo_and_full_automation_and_cancellation(
                         &patch,
                         &notes,
                         &pitch_bends,
                         &aftertouch,
                         &controllers,
                         &tempo_changes,
+                        cancellation,
                     )?;
                     stereo_track_indices.push(track.track_index);
                     stereo_rendered.push(StereoRenderedTrack {
@@ -434,13 +667,14 @@ fn render_project_with_analysis_range(
                         dc_block: patch.uses_output_dc_block(),
                     });
                 } else {
-                    let sound = evil_synth::render_notes_dry_with_tempo_and_full_automation(
+                    let sound = evil_synth::render_notes_dry_with_tempo_and_full_automation_and_cancellation(
                         &patch,
                         &notes,
                         &pitch_bends,
                         &aftertouch,
                         &controllers,
                         &tempo_changes,
+                        cancellation,
                     )?;
                     rendered_track_indices.push(track.track_index);
                     rendered.push((
@@ -457,8 +691,7 @@ fn render_project_with_analysis_range(
                     ));
                 }
             }
-            InstrumentSource::DrumKit { kit, base_note } => {
-                let kit = load_drum_kit(kit, patch_base)?;
+            (InstrumentSource::DrumKit { base_note, .. }, ResolvedInstrument::DrumKit(kit)) => {
                 let mut hits = Vec::new();
                 for note in &track.notes {
                     let Some(pad_index) = note
@@ -483,7 +716,12 @@ fn render_project_with_analysis_range(
                 }
                 note_count += hits.len();
                 unsupported_controller_events += track.controllers.len();
-                let sound = evil_beats::render_kit(&kit, &hits, project.sample_rate)?;
+                let sound = evil_beats::render_kit_with_cancellation(
+                    kit,
+                    &hits,
+                    project.sample_rate,
+                    cancellation,
+                )?;
                 let mixer_automation: Vec<_> = track
                     .mixer_automation
                     .iter()
@@ -507,9 +745,16 @@ fn render_project_with_analysis_range(
                     dc_block: false,
                 });
             }
+            _ => {
+                return Err(Error::InvalidSelection(format!(
+                    "resolved instrument index {instrument} does not match its project source"
+                )));
+            }
         }
+        cancellation.check()?;
     }
 
+    cancellation.check()?;
     let tracks: Vec<_> = rendered
         .iter()
         .map(
@@ -556,13 +801,14 @@ fn render_project_with_analysis_range(
         })
         .collect();
     let track_count = tracks.len() + stereo_tracks.len();
-    let mixed = mix_stereo_with_sends_and_tempo_analyzed_range(
+    let mixed = mix_stereo_with_sends_and_tempo_analyzed_range_and_cancellation(
         &tracks,
         &stereo_tracks,
         &project.send_buses,
         project.master_gain,
         &tempo_changes,
         analysis_range,
+        cancellation,
     )?;
     let channel_meters = rendered_track_indices
         .into_iter()
@@ -1727,5 +1973,223 @@ mod tests {
                 .iter()
                 .any(|sample| sample.abs() > 0.01)
         );
+    }
+
+    #[test]
+    fn resolved_snapshot_reuses_shared_instruments_after_sources_change() {
+        let directory = tempfile::tempdir().unwrap();
+        let patch_path = directory.path().join("shared.json");
+        std::fs::write(&patch_path, Patch::default().to_json_pretty().unwrap()).unwrap();
+        let mut project = Project::new("Resolved snapshot");
+        project
+            .add_track(Track {
+                name: "First".to_owned(),
+                notes: vec![Note::default()],
+                ..Track::default()
+            })
+            .unwrap();
+        project
+            .add_track(Track {
+                name: "Second".to_owned(),
+                notes: vec![Note {
+                    pitch: 72,
+                    ..Note::default()
+                }],
+                ..Track::default()
+            })
+            .unwrap();
+        project.instruments[0].source = InstrumentSource::Synth {
+            patch: "shared.json".to_owned(),
+        };
+        let snapshot = RenderSnapshot::new(project, directory.path().to_path_buf());
+        let cancellation = RenderCancellation::default();
+        snapshot.resolve(&cancellation).unwrap();
+        std::fs::remove_file(patch_path).unwrap();
+
+        for track_index in 0..2 {
+            let rendered = render_snapshot_scoped(
+                &snapshot,
+                RenderScope::Track { track_index },
+                &cancellation,
+            )
+            .unwrap();
+            assert_eq!(rendered.note_count, 1);
+            assert!(rendered.sound.left.iter().any(|sample| *sample != 0.0));
+        }
+    }
+
+    #[test]
+    fn snapshot_resolution_surfaces_missing_malformed_and_cancelled_sources() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut missing = Project::new("Missing");
+        missing
+            .add_track(Track {
+                notes: vec![Note::default()],
+                ..Track::default()
+            })
+            .unwrap();
+        missing.instruments[0].source = InstrumentSource::Synth {
+            patch: "missing.json".to_owned(),
+        };
+        let error = RenderSnapshot::new(missing.clone(), directory.path().to_path_buf())
+            .resolve(&RenderCancellation::default())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("missing.json"), "{error}");
+
+        std::fs::write(directory.path().join("missing.json"), "{").unwrap();
+        let malformed = RenderSnapshot::new(missing, directory.path().to_path_buf())
+            .resolve(&RenderCancellation::default())
+            .unwrap_err()
+            .to_string();
+        assert!(!malformed.is_empty());
+
+        let cancellation = RenderCancellation::default();
+        cancellation.cancel();
+        assert!(matches!(
+            RenderSnapshot::new(Project::new("Cancelled"), directory.path().to_path_buf())
+                .resolve(&cancellation),
+            Err(Error::Synth(evil_synth::Error::RenderCancelled))
+        ));
+    }
+
+    #[test]
+    fn scoped_resolution_skips_muted_and_empty_sources_but_explicit_stems_load() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut project = Project::new("Scoped sources");
+        project
+            .add_track(Track {
+                name: "Audible".to_owned(),
+                notes: vec![Note::default()],
+                ..Track::default()
+            })
+            .unwrap();
+        let muted = project
+            .add_instrument(evil_project::Instrument::synth(
+                "Muted",
+                "muted-missing.json",
+            ))
+            .unwrap();
+        project
+            .add_track(Track {
+                name: "Muted".to_owned(),
+                instrument: muted,
+                notes: vec![Note::default()],
+                muted: true,
+                ..Track::default()
+            })
+            .unwrap();
+        let empty = project
+            .add_instrument(evil_project::Instrument::synth(
+                "Empty",
+                "empty-missing.json",
+            ))
+            .unwrap();
+        project
+            .add_track(Track {
+                name: "Empty".to_owned(),
+                instrument: empty,
+                ..Track::default()
+            })
+            .unwrap();
+
+        let full = render_project(&project, directory.path()).unwrap();
+        assert_eq!(full.note_count, 1);
+        let valid = render_project_scoped(
+            &project,
+            directory.path(),
+            RenderScope::Track { track_index: 0 },
+        )
+        .unwrap();
+        assert_eq!(valid.sound.left, full.sound.left);
+        let error = match render_project_scoped(
+            &project,
+            directory.path(),
+            RenderScope::Track { track_index: 1 },
+        ) {
+            Ok(_) => panic!("missing muted-stem source unexpectedly rendered"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("muted-missing.json"));
+        assert!(matches!(
+            render_project_scoped(
+                &project,
+                directory.path(),
+                RenderScope::Track { track_index: 2 },
+            ),
+            Err(Error::EmptySelection(_))
+        ));
+
+        std::fs::write(
+            directory.path().join("muted-missing.json"),
+            Patch::default().to_json_pretty().unwrap(),
+        )
+        .unwrap();
+        let snapshot = RenderSnapshot::new(project.clone(), directory.path().to_path_buf());
+        snapshot.resolve(&RenderCancellation::default()).unwrap();
+        let muted_stem = render_snapshot_scoped(
+            &snapshot,
+            RenderScope::Track { track_index: 1 },
+            &RenderCancellation::default(),
+        )
+        .unwrap();
+        assert_eq!(muted_stem.note_count, 1);
+
+        let later = project
+            .add_instrument(evil_project::Instrument::synth(
+                "Later",
+                "later-missing.json",
+            ))
+            .unwrap();
+        project
+            .add_track(Track {
+                name: "Later".to_owned(),
+                instrument: later,
+                notes: vec![Note {
+                    start_tick: 960,
+                    ..Note::default()
+                }],
+                ..Track::default()
+            })
+            .unwrap();
+        let section = render_project_range(&project, directory.path(), 0, Some(480)).unwrap();
+        assert_eq!(section.sound.left.len(), 24_000);
+
+        let controlled = project
+            .add_instrument(evil_project::Instrument::synth(
+                "Controlled",
+                "controlled-missing.json",
+            ))
+            .unwrap();
+        project
+            .add_track(Track {
+                name: "Controlled".to_owned(),
+                instrument: controlled,
+                notes: vec![Note {
+                    start_tick: 960,
+                    ..Note::default()
+                }],
+                controllers: vec![evil_project::ControllerEvent {
+                    tick: 0,
+                    controller: 11,
+                    value: 100,
+                }],
+                ..Track::default()
+            })
+            .unwrap();
+        let error = match render_project_range(&project, directory.path(), 0, Some(480)) {
+            Ok(_) => panic!("early controller source was not resolved"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("controlled-missing.json"));
+        std::fs::write(
+            directory.path().join("controlled-missing.json"),
+            Patch::default().to_json_pretty().unwrap(),
+        )
+        .unwrap();
+        let controlled_section =
+            render_project_range(&project, directory.path(), 0, Some(480)).unwrap();
+        assert_eq!(controlled_section.sound.left.len(), 24_000);
+        assert!(!snapshot.is_resolving());
     }
 }

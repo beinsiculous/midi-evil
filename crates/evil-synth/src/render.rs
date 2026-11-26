@@ -1,15 +1,16 @@
 use std::collections::{BTreeMap, HashMap};
 
-use crate::delay::{apply_delay, tempo_bpm_at};
+use crate::delay::{apply_delay_with_cancellation, tempo_bpm_at};
 use crate::insert_automation::{
-    apply_delay_automation, apply_waveshaper_automation, has_delay_automation,
-    has_waveshaper_automation,
+    apply_delay_automation_with_cancellation, apply_waveshaper_automation_with_cancellation,
+    has_delay_automation, has_waveshaper_automation,
 };
 use crate::polyphony;
 use crate::voice::{VoiceControls, VoiceState};
-use crate::waveshaper::apply_waveshaper;
+use crate::waveshaper::apply_waveshaper_with_cancellation;
 use crate::{
-    Error, Lfo, LfoDestination, LfoPhaseSync, LfoWaveform, Patch, StereoSound, VoiceMode, Waveform,
+    Error, Lfo, LfoDestination, LfoPhaseSync, LfoWaveform, Patch, RenderCancellation, StereoSound,
+    VoiceMode, Waveform,
 };
 
 const MAX_PERFORMANCE_SECONDS: f64 = 3_600.0;
@@ -86,9 +87,13 @@ pub fn render(patch: &Patch) -> Result<RenderedSound, Error> {
     );
     apply_waveshaper_insert(patch, &mut samples, controllers);
     apply_delay_insert(patch, &mut samples, controllers, &[]);
-    soft_limit(&mut samples);
+    soft_limit(&mut samples, &RenderCancellation::default())?;
     if patch.uses_output_dc_block() {
-        block_dc(&mut samples, patch.sample_rate);
+        block_dc(
+            &mut samples,
+            patch.sample_rate,
+            &RenderCancellation::default(),
+        )?;
     }
     Ok(RenderedSound {
         samples,
@@ -206,6 +211,29 @@ pub fn render_notes_dry_with_tempo_and_full_automation(
 }
 
 /// Render overlapping notes as independent stereo synth voices without insert effects.
+pub fn render_notes_dry_with_tempo_and_full_automation_and_cancellation(
+    patch: &Patch,
+    notes: &[SynthNote],
+    pitch_bends: &[SynthPitchBend],
+    aftertouch: &[SynthAftertouch],
+    controllers: &[SynthController],
+    tempo_changes: &[SynthTempoChange],
+    cancellation: &RenderCancellation,
+) -> Result<RenderedSound, Error> {
+    render_notes_inner_with_cancellation(
+        patch,
+        notes,
+        pitch_bends,
+        aftertouch,
+        controllers,
+        tempo_changes,
+        RenderOptions {
+            apply_insert_effects: false,
+            cancellation,
+        },
+    )
+}
+
 pub fn render_notes_stereo_dry(patch: &Patch, notes: &[SynthNote]) -> Result<StereoSound, Error> {
     render_notes_stereo_dry_with_tempo_and_full_automation(patch, notes, &[], &[], &[], &[])
 }
@@ -233,8 +261,42 @@ pub fn render_notes_stereo_dry_with_tempo_and_full_automation(
     else {
         unreachable!("stereo render returns stereo buffers");
     };
-    soft_limit(&mut left);
-    soft_limit(&mut right);
+    soft_limit(&mut left, &RenderCancellation::default())?;
+    soft_limit(&mut right, &RenderCancellation::default())?;
+    Ok(StereoSound {
+        left,
+        right,
+        sample_rate: patch.sample_rate,
+    })
+}
+
+pub fn render_notes_stereo_dry_with_tempo_and_full_automation_and_cancellation(
+    patch: &Patch,
+    notes: &[SynthNote],
+    pitch_bends: &[SynthPitchBend],
+    aftertouch: &[SynthAftertouch],
+    controllers: &[SynthController],
+    tempo_changes: &[SynthTempoChange],
+    cancellation: &RenderCancellation,
+) -> Result<StereoSound, Error> {
+    let RenderBuffers::Stereo {
+        mut left,
+        mut right,
+    } = render_notes_channels_with_cancellation::<true>(
+        patch,
+        notes,
+        pitch_bends,
+        aftertouch,
+        controllers,
+        tempo_changes,
+        cancellation,
+    )?
+    else {
+        unreachable!("stereo render returns stereo buffers");
+    };
+    soft_limit(&mut left, cancellation)?;
+    soft_limit(&mut right, cancellation)?;
+    cancellation.check()?;
     Ok(StereoSound {
         left,
         right,
@@ -327,25 +389,66 @@ fn render_notes_inner(
     tempo_changes: &[SynthTempoChange],
     apply_insert_effects: bool,
 ) -> Result<RenderedSound, Error> {
-    let RenderBuffers::Mono(mut samples) = render_notes_channels::<false>(
+    render_notes_inner_with_cancellation(
         patch,
         notes,
         pitch_bends,
         aftertouch,
         controllers,
         tempo_changes,
+        RenderOptions {
+            apply_insert_effects,
+            cancellation: &RenderCancellation::default(),
+        },
+    )
+}
+
+struct RenderOptions<'a> {
+    apply_insert_effects: bool,
+    cancellation: &'a RenderCancellation,
+}
+
+fn render_notes_inner_with_cancellation(
+    patch: &Patch,
+    notes: &[SynthNote],
+    pitch_bends: &[SynthPitchBend],
+    aftertouch: &[SynthAftertouch],
+    controllers: &[SynthController],
+    tempo_changes: &[SynthTempoChange],
+    options: RenderOptions<'_>,
+) -> Result<RenderedSound, Error> {
+    let RenderBuffers::Mono(mut samples) = render_notes_channels_with_cancellation::<false>(
+        patch,
+        notes,
+        pitch_bends,
+        aftertouch,
+        controllers,
+        tempo_changes,
+        options.cancellation,
     )?
     else {
         unreachable!("mono render returns mono buffers");
     };
-    if apply_insert_effects {
-        apply_waveshaper_insert(patch, &mut samples, controllers);
-        apply_delay_insert(patch, &mut samples, controllers, tempo_changes);
+    if options.apply_insert_effects {
+        apply_waveshaper_insert_with_cancellation(
+            patch,
+            &mut samples,
+            controllers,
+            options.cancellation,
+        )?;
+        apply_delay_insert_with_cancellation(
+            patch,
+            &mut samples,
+            controllers,
+            tempo_changes,
+            options.cancellation,
+        )?;
     }
-    soft_limit(&mut samples);
-    if apply_insert_effects && patch.uses_output_dc_block() {
-        block_dc(&mut samples, patch.sample_rate);
+    soft_limit(&mut samples, options.cancellation)?;
+    if options.apply_insert_effects && patch.uses_output_dc_block() {
+        block_dc(&mut samples, patch.sample_rate, options.cancellation)?;
     }
+    options.cancellation.check()?;
     Ok(RenderedSound {
         samples,
         sample_rate: patch.sample_rate,
@@ -360,6 +463,27 @@ fn render_notes_channels<const STEREO: bool>(
     controllers: &[SynthController],
     tempo_changes: &[SynthTempoChange],
 ) -> Result<RenderBuffers, Error> {
+    render_notes_channels_with_cancellation::<STEREO>(
+        patch,
+        notes,
+        pitch_bends,
+        aftertouch,
+        controllers,
+        tempo_changes,
+        &RenderCancellation::default(),
+    )
+}
+
+fn render_notes_channels_with_cancellation<const STEREO: bool>(
+    patch: &Patch,
+    notes: &[SynthNote],
+    pitch_bends: &[SynthPitchBend],
+    aftertouch: &[SynthAftertouch],
+    controllers: &[SynthController],
+    tempo_changes: &[SynthTempoChange],
+    cancellation: &RenderCancellation,
+) -> Result<RenderBuffers, Error> {
+    cancellation.check()?;
     patch.validate()?;
     validate_pitch_bends(pitch_bends)?;
     validate_aftertouch(aftertouch)?;
@@ -376,6 +500,7 @@ fn render_notes_channels<const STEREO: bool>(
             aftertouch,
             controllers,
             tempo_changes,
+            cancellation,
         );
     }
     let sample_rate = patch.sample_rate;
@@ -400,6 +525,7 @@ fn render_notes_channels<const STEREO: bool>(
     let mut cache = HashMap::<(u8, u32, u32, u32, u8), RenderBuffers>::new();
     let mut buffers = RenderBuffers::new(STEREO);
     for (index, note) in notes.iter().enumerate() {
+        cancellation.check()?;
         validate_note(note, index)?;
 
         let voice = voice_patch(patch, note, index)?;
@@ -449,27 +575,31 @@ fn render_notes_channels<const STEREO: bool>(
                 voice.duration_seconds.to_bits(),
                 note.velocity,
             );
-            let rendered = cache.entry(key).or_insert_with(|| {
-                let mut rendered = RenderBuffers::with_len(STEREO, render_frame_count);
-                render_voice_into_with_timing::<STEREO>(
-                    &voice,
-                    0,
-                    &mut rendered,
-                    VoiceAutomation {
-                        note_start_seconds: 0.0,
-                        note_pitch: note.pitch,
-                        lfo_seed: patch.seed,
-                        glide_from_pitch: None,
-                        pitch_bends: &[],
-                        aftertouch: &[],
-                        controllers: &[],
-                        tempo_changes: &[],
-                    },
-                    gate_seconds,
-                    render_frame_count,
-                );
-                rendered
-            });
+            let rendered = match cache.entry(key) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    let mut rendered = RenderBuffers::with_len(STEREO, render_frame_count);
+                    render_voice_into_with_timing::<STEREO>(
+                        &voice,
+                        0,
+                        &mut rendered,
+                        VoiceAutomation {
+                            note_start_seconds: 0.0,
+                            note_pitch: note.pitch,
+                            lfo_seed: patch.seed,
+                            glide_from_pitch: None,
+                            pitch_bends: &[],
+                            aftertouch: &[],
+                            controllers: &[],
+                            tempo_changes: &[],
+                        },
+                        gate_seconds,
+                        render_frame_count,
+                        cancellation,
+                    )?;
+                    entry.insert(rendered)
+                }
+            };
             buffers.add_slice(start_frame, mix_frame_count(rendered), rendered);
         } else if timing.is_some() {
             let mut rendered = RenderBuffers::with_len(STEREO, render_frame_count);
@@ -493,7 +623,8 @@ fn render_notes_channels<const STEREO: bool>(
                 },
                 gate_seconds,
                 render_frame_count,
-            );
+                cancellation,
+            )?;
             buffers.add_slice(start_frame, mix_frame_count(&rendered), &rendered);
         } else {
             render_voice_into_channels::<STEREO>(
@@ -514,9 +645,11 @@ fn render_notes_channels<const STEREO: bool>(
                     controllers,
                     tempo_changes,
                 },
-            );
+                cancellation,
+            )?;
         }
     }
+    cancellation.check()?;
     Ok(buffers)
 }
 
@@ -631,6 +764,7 @@ fn render_single_voice<const STEREO: bool>(
     aftertouch: &[SynthAftertouch],
     controllers: &[SynthController],
     tempo_changes: &[SynthTempoChange],
+    cancellation: &RenderCancellation,
 ) -> Result<RenderBuffers, Error> {
     let sample_rate = patch.sample_rate;
     let mut events = BTreeMap::<usize, Vec<SingleVoiceEvent>>::new();
@@ -662,6 +796,7 @@ fn render_single_voice<const STEREO: bool>(
     let mut buffers = RenderBuffers::with_len(STEREO, frame_count);
     let mut voice = None::<SingleVoice>;
     for frame in first_frame..frame_count {
+        cancellation.check_frame(frame)?;
         if voice.as_ref().is_some_and(SingleVoice::finished) {
             voice = None;
         }
@@ -1194,11 +1329,17 @@ fn integrated_beat_cycles(patch: &Patch, index: usize, lfo: &Lfo, beats: f64) ->
     effective_beats / cycles_per_beat_divisor
 }
 
-pub(crate) fn block_dc(samples: &mut [f32], sample_rate: u32) {
+pub(crate) fn block_dc(
+    samples: &mut [f32],
+    sample_rate: u32,
+    cancellation: &RenderCancellation,
+) -> Result<(), Error> {
     let mut blocker = DcBlocker::default();
-    for sample in samples {
+    for (frame, sample) in samples.iter_mut().enumerate() {
+        cancellation.check_frame(frame)?;
         *sample = blocker.process(*sample, sample_rate);
     }
+    Ok(())
 }
 
 fn render_voice_into(
@@ -1234,7 +1375,8 @@ fn render_voice_into_channels<const STEREO: bool>(
     start_frame: usize,
     buffers: &mut RenderBuffers,
     automation: VoiceAutomation<'_>,
-) {
+    cancellation: &RenderCancellation,
+) -> Result<(), Error> {
     render_voice_into_with_timing::<STEREO>(
         patch,
         start_frame,
@@ -1242,7 +1384,9 @@ fn render_voice_into_channels<const STEREO: bool>(
         automation,
         patch.duration_seconds,
         voice_frame_count(patch),
-    );
+        cancellation,
+    )?;
+    Ok(())
 }
 
 fn render_voice_into_with_timing<const STEREO: bool>(
@@ -1252,7 +1396,8 @@ fn render_voice_into_with_timing<const STEREO: bool>(
     automation: VoiceAutomation<'_>,
     gate_seconds: f32,
     frame_count: usize,
-) {
+    cancellation: &RenderCancellation,
+) -> Result<(), Error> {
     let mut voice = VoiceState::new(patch, automation.note_pitch);
     let mut modulation_state = ModulationState::at_with_seed(
         patch,
@@ -1261,6 +1406,7 @@ fn render_voice_into_with_timing<const STEREO: bool>(
         beats_at(automation.tempo_changes, automation.note_start_seconds),
     );
     for frame in 0..frame_count {
+        cancellation.check_frame(frame)?;
         let time = frame as f32 / patch.sample_rate as f32;
         let controls = voice_controls_at(
             patch,
@@ -1280,6 +1426,7 @@ fn render_voice_into_with_timing<const STEREO: bool>(
             }
         }
     }
+    Ok(())
 }
 
 fn voice_controls_at(
@@ -1312,14 +1459,35 @@ fn voice_controls_at(
 }
 
 fn apply_waveshaper_insert(patch: &Patch, samples: &mut [f32], controllers: &[SynthController]) {
+    let _ = apply_waveshaper_insert_with_cancellation(
+        patch,
+        samples,
+        controllers,
+        &RenderCancellation::default(),
+    );
+}
+
+fn apply_waveshaper_insert_with_cancellation(
+    patch: &Patch,
+    samples: &mut [f32],
+    controllers: &[SynthController],
+    cancellation: &RenderCancellation,
+) -> Result<(), Error> {
     if let Some(waveshaper) = &patch.waveshaper {
-        soft_limit(samples);
+        soft_limit(samples, cancellation)?;
         if has_waveshaper_automation(controllers) {
-            apply_waveshaper_automation(samples, patch.sample_rate, waveshaper, controllers);
+            apply_waveshaper_automation_with_cancellation(
+                samples,
+                patch.sample_rate,
+                waveshaper,
+                controllers,
+                cancellation,
+            )?;
         } else {
-            apply_waveshaper(patch, samples);
+            apply_waveshaper_with_cancellation(patch, samples, cancellation)?;
         }
     }
+    Ok(())
 }
 
 fn apply_delay_insert(
@@ -1328,25 +1496,45 @@ fn apply_delay_insert(
     controllers: &[SynthController],
     tempo_changes: &[SynthTempoChange],
 ) {
+    let _ = apply_delay_insert_with_cancellation(
+        patch,
+        samples,
+        controllers,
+        tempo_changes,
+        &RenderCancellation::default(),
+    );
+}
+
+fn apply_delay_insert_with_cancellation(
+    patch: &Patch,
+    samples: &mut Vec<f32>,
+    controllers: &[SynthController],
+    tempo_changes: &[SynthTempoChange],
+    cancellation: &RenderCancellation,
+) -> Result<(), Error> {
     if let Some(delay) = &patch.delay
         && has_delay_automation(controllers)
     {
-        apply_delay_automation(
+        apply_delay_automation_with_cancellation(
             samples,
             patch.sample_rate,
             delay,
             controllers,
             tempo_changes,
-        );
+            cancellation,
+        )?;
     } else {
-        apply_delay(patch, samples, tempo_changes);
+        apply_delay_with_cancellation(patch, samples, tempo_changes, cancellation)?;
     }
+    Ok(())
 }
 
-fn soft_limit(samples: &mut [f32]) {
-    for sample in samples {
+fn soft_limit(samples: &mut [f32], cancellation: &RenderCancellation) -> Result<(), Error> {
+    for (frame, sample) in samples.iter_mut().enumerate() {
+        cancellation.check_frame(frame)?;
         *sample = sample.tanh();
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1357,6 +1545,42 @@ mod tests {
         ModalPartial, Oscillator, OscillatorSync, PRESET_NAMES, SampleOscillator, Unison, Waveform,
         preset,
     };
+
+    #[test]
+    fn soft_limit_checks_cancellation_and_preserves_tanh_output() {
+        let source: [f32; 5] = [-2.0, -0.5, 0.0, 0.5, 2.0];
+        let expected = source.map(|sample| sample.tanh());
+        let mut limited = source;
+        soft_limit(&mut limited, &RenderCancellation::default()).unwrap();
+        assert_eq!(limited, expected);
+
+        let cancellation = RenderCancellation::default();
+        cancellation.cancel();
+        assert!(matches!(
+            soft_limit(&mut source.to_vec(), &cancellation),
+            Err(Error::RenderCancelled)
+        ));
+    }
+
+    #[test]
+    fn final_dc_block_checks_cancellation_and_preserves_deterministic_output() {
+        let source = vec![0.5; 1_024];
+        let mut expected = source.clone();
+        let mut blocker = DcBlocker::default();
+        for sample in &mut expected {
+            *sample = blocker.process(*sample, 48_000);
+        }
+        let mut blocked = source.clone();
+        block_dc(&mut blocked, 48_000, &RenderCancellation::default()).unwrap();
+        assert_eq!(blocked, expected);
+
+        let cancellation = RenderCancellation::default();
+        cancellation.cancel();
+        assert!(matches!(
+            block_dc(&mut source.clone(), 48_000, &cancellation),
+            Err(Error::RenderCancelled)
+        ));
+    }
 
     #[test]
     fn every_preset_renders_finite_bounded_audio() {

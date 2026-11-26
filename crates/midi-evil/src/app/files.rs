@@ -64,11 +64,14 @@ impl StudioApp {
     }
 
     pub(super) fn new_project(&mut self) {
+        self.recording_commit_status = None;
+        self.completed_cancelled_status = None;
         let discard = self.discard_changes();
         if discard == Discard::Kept {
             self.report("Kept the unsaved changes; no new project.");
             return;
         }
+        self.withdraw_queued_render();
         self.stop_preview();
         self.clear_all_sound_drafts();
         self.project = Project::new("Untitled");
@@ -114,9 +117,12 @@ impl StudioApp {
             self.report("Kept the unsaved changes; nothing opened.");
             return;
         }
-        self.stop_preview();
         match Project::load(path) {
             Ok(project) => {
+                self.recording_commit_status = None;
+                self.completed_cancelled_status = None;
+                self.withdraw_queued_render();
+                self.stop_preview();
                 self.clear_all_sound_drafts();
                 self.project = project;
                 self.imported_track_indices = None;
@@ -282,6 +288,7 @@ impl StudioApp {
     }
 
     pub(super) fn import_midi_path(&mut self, path: &Path) {
+        self.recording_commit_status = None;
         let discard = self.discard_changes();
         if discard == Discard::Kept {
             self.report("Kept the unsaved changes; nothing imported.");
@@ -310,6 +317,8 @@ impl StudioApp {
             });
         match result {
             Ok((project, file_indices, skipped, bends, pressure, controllers)) => {
+                self.completed_cancelled_status = None;
+                self.withdraw_queued_render();
                 self.stop_preview();
                 self.clear_all_sound_drafts();
                 self.project = project;
@@ -375,12 +384,18 @@ impl StudioApp {
     }
 
     pub(super) fn render_audio(&mut self) {
+        if self.batch_export_refused() {
+            return;
+        }
         if let Some(output) = self.wav_output("Untitled.wav") {
             self.start_render(PendingRender::Wav(output));
         }
     }
 
     pub(super) fn render_section_audio(&mut self) {
+        if self.batch_export_refused() {
+            return;
+        }
         let Some(output) = self.wav_output("Section.wav") else {
             return;
         };
@@ -392,11 +407,50 @@ impl StudioApp {
         });
     }
 
+    fn batch_export_refused(&mut self) -> bool {
+        if self.file_export_in_progress() {
+            self.report("WAV export in progress; cancel it before requesting another render");
+            return true;
+        }
+        false
+    }
+
+    fn batch_export_eligible(
+        &self,
+        plan: &evil_render::ExportPlan,
+        arrangement_parts: bool,
+    ) -> bool {
+        !plan.exports.is_empty()
+            || self.recorder.as_ref().is_some_and(|recorder| {
+                recorder.has_pending_notes()
+                    && (!arrangement_parts
+                        || matches!(
+                            recorder.target(),
+                            crate::recording::RecordingTarget::Part { .. }
+                        ))
+            })
+    }
+
     pub(super) fn render_track_stems(&mut self) {
+        if self.batch_export_refused() {
+            return;
+        }
+        match evil_render::stem_export_plan(&self.project, None) {
+            Ok(plan) if self.batch_export_eligible(&plan, false) => {}
+            Ok(_) => {
+                self.report("No track or arrangement part with notes to export.");
+                return;
+            }
+            Err(error) => {
+                self.report(format!("Could not plan the track stems: {error}."));
+                return;
+            }
+        }
         let Some(output_directory) = self.file_dialog().pick_folder() else {
             self.report("Nothing rendered.");
             return;
         };
+        self.finish_recording();
         match evil_render::stem_export_plan(&self.project, None) {
             Ok(plan) => self.start_wav_export_plan(output_directory, plan),
             Err(error) => self.report(format!("Could not plan the track stems: {error}.")),
@@ -404,10 +458,25 @@ impl StudioApp {
     }
 
     pub(super) fn render_arrangement_parts(&mut self) {
+        if self.batch_export_refused() {
+            return;
+        }
+        match evil_render::part_export_plan(&self.project, None, None) {
+            Ok(plan) if self.batch_export_eligible(&plan, true) => {}
+            Ok(_) => {
+                self.report("No track or arrangement part with notes to export.");
+                return;
+            }
+            Err(error) => {
+                self.report(format!("Could not plan the arrangement parts: {error}."));
+                return;
+            }
+        }
         let Some(output_directory) = self.file_dialog().pick_folder() else {
             self.report("Nothing rendered.");
             return;
         };
+        self.finish_recording();
         match evil_render::part_export_plan(&self.project, None, None) {
             Ok(plan) => self.start_wav_export_plan(output_directory, plan),
             Err(error) => self.report(format!("Could not plan the arrangement parts: {error}.")),
@@ -419,7 +488,13 @@ impl StudioApp {
         output_directory: PathBuf,
         plan: evil_render::ExportPlan,
     ) {
-        let mut queue = WavExportQueue::new(output_directory, plan);
+        self.finish_recording();
+        let snapshot = std::sync::Arc::new(evil_render::RenderSnapshot::with_scopes(
+            self.project.clone(),
+            self.patch_base().to_path_buf(),
+            plan.exports.iter().map(|spec| spec.scope).collect(),
+        ));
+        let mut queue = WavExportQueue::new(output_directory, plan, snapshot);
         if queue.is_empty() {
             self.report("No track or arrangement part with notes to export.");
             return;

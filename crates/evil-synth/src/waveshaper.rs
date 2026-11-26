@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{Error, Patch};
+use crate::{Error, Patch, RenderCancellation};
 
 /// Symmetric drive and contour shaping for the first instrument insert slot.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -55,24 +55,33 @@ impl Waveshaper {
     }
 }
 
-pub(crate) fn apply_waveshaper(patch: &Patch, samples: &mut [f32]) {
+pub(crate) fn apply_waveshaper_with_cancellation(
+    patch: &Patch,
+    samples: &mut [f32],
+    cancellation: &RenderCancellation,
+) -> Result<(), Error> {
     if let Some(waveshaper) = &patch.waveshaper {
-        for sample in samples {
+        for (frame, sample) in samples.iter_mut().enumerate() {
+            cancellation.check_frame(frame)?;
             *sample = waveshaper.process(*sample);
         }
     }
+    Ok(())
 }
 
-pub(crate) fn apply_stereo_waveshaper(
+pub(crate) fn apply_stereo_waveshaper_with_cancellation(
     left: &mut [f32],
     right: &mut [f32],
     waveshaper: &Waveshaper,
-) {
+    cancellation: &RenderCancellation,
+) -> Result<(), Error> {
     debug_assert_eq!(left.len(), right.len());
-    for (left, right) in left.iter_mut().zip(right) {
+    for (frame, (left, right)) in left.iter_mut().zip(right).enumerate() {
+        cancellation.check_frame(frame)?;
         *left = waveshaper.process(*left);
         *right = waveshaper.process(*right);
     }
+    Ok(())
 }
 
 #[cfg(test)]

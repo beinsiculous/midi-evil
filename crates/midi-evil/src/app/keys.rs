@@ -240,10 +240,7 @@ impl StudioApp {
         match command {
             AppCommand::NewProject => self.new_project(),
             AppCommand::OpenProject => self.open_project(),
-            AppCommand::SaveProject if self.view == View::Pads => {
-                self.beats.save(self.dialogs.as_mut());
-                self.link_saved_beats_bank();
-            }
+            AppCommand::SaveProject if self.view == View::Pads => self.save_beats_bank(),
             AppCommand::SaveProject => self.save_project(),
             // A text field being edited keeps its own undo, and its own Space and arrows.
             AppCommand::Undo | AppCommand::Redo if text_editing => return false,
@@ -255,8 +252,12 @@ impl StudioApp {
             AppCommand::NextSound => self.cycle_sound(false),
             AppCommand::PlayOrStop if !space_is_free => return false,
             AppCommand::PlayOrStop => {
-                if self.preview.is_some() || self.render_job.is_some() {
-                    self.stop_preview();
+                if self.queued_render.is_some() {
+                    self.stop_transport();
+                } else if self.render_is_cancelling() {
+                    self.preview_project();
+                } else if self.preview.is_some() || self.render_job.is_some() {
+                    self.stop_transport();
                 } else {
                     self.preview_project();
                 }
