@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The browser build's compile gate: the application and its web entry must keep compiling,
-# linting clean and linking for wasm32-unknown-unknown, so a native change cannot silently break
-# the browser build. The workflow in .github/workflows/wasm-check.yml runs exactly this script,
+# linting clean and linking for wasm32-unknown-unknown, without the gate feature and with it, so a
+# native change cannot silently break either browser build. The workflow in .github/workflows/wasm-check.yml runs exactly this script,
 # so the local command and the CI gate cannot drift.
 #
 # It deliberately does not:
@@ -19,14 +19,24 @@ cd "$(dirname "$0")/.."
 packages=(-p midi-evil -p evil-web)
 target=(--target wasm32-unknown-unknown)
 
-echo "==> cargo check ${packages[*]} ${target[*]}"
-cargo check --locked "${packages[@]}" "${target[@]}"
+# Each feature set in its own cargo target directory: the visitor's build in the default one, and
+# the gate's, which compiles the gate's tracked projects in, in one of its own, as
+# scripts/build_wasm.sh --gate keeps it.
+check() {
+    local name=$1
+    shift
+    echo "==> $name: cargo check ${packages[*]} ${target[*]} $*"
+    cargo check --locked "${packages[@]}" "${target[@]}" "$@"
 
-echo "==> cargo clippy ${packages[*]} --no-deps ${target[*]} -- -D warnings"
-cargo clippy --locked "${packages[@]}" --no-deps "${target[@]}" -- -D warnings
+    echo "==> $name: cargo clippy ${packages[*]} --no-deps ${target[*]} $* -- -D warnings"
+    cargo clippy --locked "${packages[@]}" --no-deps "${target[@]}" "$@" -- -D warnings
 
-# A type check never runs the linker; building the entry does.
-echo "==> cargo build -p evil-web ${target[*]}"
-cargo build --locked -p evil-web "${target[@]}"
+    # A type check never runs the linker; building the entry does.
+    echo "==> $name: cargo build -p evil-web ${target[*]} $*"
+    cargo build --locked -p evil-web "${target[@]}" "$@"
+}
 
-echo "wasm gate: clean"
+check "the visitor's build"
+check "the gate's build" --features evil-web/gate --target-dir target/wasm-check-gate
+
+echo "wasm gate: clean, both feature sets"

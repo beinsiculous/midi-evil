@@ -182,9 +182,9 @@ mod tests {
         let context = egui::Context::default();
         let mut app = StudioApp::create(&context, None, LaunchOptions::default(), None);
         app.add_drum_track();
-        assert!(app.view == View::Pads);
+        assert!(app.view() == View::Pads);
         app.add_track();
-        assert!(app.view == View::Synth);
+        assert!(app.view() == View::Synth);
         assert!(app.open_patch_lab());
     }
 }

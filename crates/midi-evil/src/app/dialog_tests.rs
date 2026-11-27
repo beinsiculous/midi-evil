@@ -214,7 +214,7 @@ fn the_eleven_dialogs_that_silence_first_still_do_and_ask_what_they_asked() {
     harness.app.project_base = Some(base.to_path_buf());
     harness.app.source_midi = Some(base.join("song.mid"));
     assert!(harness.app.open_patch_lab());
-    harness.app.view = View::Notes;
+    harness.app.select_view(View::Notes);
     harness.run(vec![]);
     harness.run(vec![]);
     harness.announcements();
@@ -314,7 +314,7 @@ fn the_drum_banks_dialogs_ask_what_they_asked_and_a_dirty_bank_asks_first() {
     let bank = directory.path().join("kit.evilkit");
     let pad = directory.path().join("pad.wav");
     let mut harness = Harness::new(project_with(&[&[note_at(60, 0, 480)]]));
-    harness.app.view = View::Pads;
+    harness.app.select_view(View::Pads);
     harness.run(vec![]);
     harness.run(vec![]);
     let bank_file = ("Evil drum bank", &["evilkit"][..]);
@@ -384,7 +384,7 @@ fn the_patch_labs_sample_dialogs_ask_what_they_asked() {
     let zone = directory.path().join("zone.wav");
     write_pulse(&zone);
     let mut harness = Harness::new(project_with(&[&[note_at(60, 0, 480)]]));
-    harness.app.view = View::Synth;
+    harness.app.select_view(View::Synth);
     harness.run(vec![]);
     harness.app.patch_lab.as_mut().unwrap().page = patch_lab::PatchPage::Samples;
     harness.run(vec![]);

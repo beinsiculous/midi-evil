@@ -1295,7 +1295,41 @@ a row not mentioned recorded as not answered:
 button, which are on a shown surface and silent — W-A2b takes them off the browser's toolbar
 until W3 gives them states.
 
-### W-A2b — the matrix, what is not shown, and the help — settled 2026-11-25
+### W-A2b — the matrix, what is not shown, and the help — BUILT 2026-11-26, sitting pending
+
+Built by Claude Opus 5.5 in three passes; 548 tests, the native gate at 455 expectations, and the
+web-app gate holding 57 rows in five groups in each browser, with eight negative controls. What
+differed from the section below:
+
+- **What the browser leaves out is fifteen lines** of `platform.rs`: the four views, the
+  Automation panel, the MIDI input, the six kinds of command that need a file or a renderer,
+  the export row, and moving a window and resizing the side panel. The executor's own search of
+  every way into a hidden view or a removed command found none the list did not name. The view
+  is private to `app/view_selection.rs` and chosen through `select_view`.
+- **One action is one write — W-A2a's rule, finished here.** The matrix found actions that
+  wrote twice, a frame apart, when the control just used changed or went away. In the browser a
+  frame that produces an outcome is now run again at once, so the outcome goes out with what
+  the action left: "Merged into the unique timeline. Nothing in the editor has focus; …". The
+  desktop still runs one pass. Two keys in one frame each act once through it — R-2's and
+  R-18's browser tests.
+- **The page's order** is the heading, the notes' button, the notes, a sentinel, the canvas,
+  the current element, the live region, a sentinel, "Leave the editor". The canvas's floor is
+  240 pixels or two fifths of the window's height, whichever is less, so a short window keeps
+  its controls.
+- **Three things the gate's bundle must carry or the gate refuses to start**: the marker only
+  the feature compiles in, a digest of the twelve tracked fixtures, and a build identity made
+  from the sources — which the visitor's bundle carries too, so the two are the same
+  application.
+- **The matrix is two groups**, the rows and the surfaces, to keep each inside five minutes a
+  browser; the whole gate takes about twenty-six. Firefox's matrix group runs at four and a
+  half of its five minutes.
+- **The inventory** is `w-a2-inventory.md`: 45 announced in the browser, 3 unavailable until W3
+  and W4, 41 absent, 33 standard, none failing.
+- **The wasm is 5.99 MiB raw, 2.43 MiB gzipped**; the gate's is 6.05.
+- **Heard and not changed:** after an Undo that empties the history the write ends
+  "…unavailable", and after a sound is chosen "…pressed" — the state alone, without the
+  control's name. It is the existing rule for a change of state, and a line of the sitting.
+
 
 W-A2a made the browser build speak. W-A2b makes the page show only what has passed (D12), holds
 it to W-A1's rows, and puts the keyboard notes where a visitor can read them before entering a

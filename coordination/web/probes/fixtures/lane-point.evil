@@ -1,0 +1,7 @@
+{"format":"midi-evil-project","version":2,"name":"Lane point","tempo_bpm":120,"beats_per_bar":4,
+ "beat_unit":4,"ticks_per_quarter":480,"sample_rate":44100,
+ "instruments":[{"name":"Lead","source":{"type":"synth","patch":"lead"}}],
+ "tracks":[{"name":"Lead","instrument":0,
+  "notes":[{"pitch":60,"velocity":100,"start_tick":0,"duration_ticks":480},
+           {"pitch":62,"velocity":100,"start_tick":480,"duration_ticks":480}],
+  "pitch_bends":[{"tick":480,"value":0}]}]}

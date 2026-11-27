@@ -30,7 +30,7 @@ fn arrangement() -> Project {
 
 pub(super) fn song_harness() -> Harness {
     let mut harness = Harness::new(arrangement());
-    harness.app.view = View::Song;
+    harness.app.select_view(View::Song);
     harness.run(vec![]);
     harness.run(vec![]);
     harness
@@ -149,7 +149,7 @@ fn enter_opens_the_cursors_part_in_the_roll_and_says_what_is_open_once_focus_is_
     harness.focus_song();
     harness.key(plain(egui::Key::ArrowRight));
     harness.run(vec![plain(egui::Key::Enter)]);
-    assert!(harness.app.view == View::Notes);
+    assert!(harness.app.view() == View::Notes);
     assert!(harness.roll_focused(), "focus follows into the roll");
     assert!(harness.roll_name().starts_with("Piano roll, "));
     assert!(harness.announcements().is_empty(), "the roll's name first");
@@ -389,7 +389,7 @@ fn a_part_opened_by_the_pointer_is_named_afresh_in_the_roll_and_its_outcome_foll
         roll_name(&harness),
         harness.app.roll.selected_part
     );
-    harness.app.view = View::Song;
+    harness.app.select_view(View::Song);
     harness.run(vec![]);
     harness.run(vec![]);
     let board = harness
@@ -430,7 +430,7 @@ fn a_part_opened_by_the_pointer_is_named_afresh_in_the_roll_and_its_outcome_foll
                 harness.announcements().is_empty(),
                 "the outcome comes after the roll's name"
             );
-            first_name = roll_name(&harness).filter(|_| harness.app.view == View::Notes);
+            first_name = roll_name(&harness).filter(|_| harness.app.view() == View::Notes);
         }
         harness.run(vec![]);
     }

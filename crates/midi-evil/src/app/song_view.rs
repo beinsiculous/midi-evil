@@ -127,7 +127,7 @@ impl StudioApp {
     /// Shows the cursor's timeline or part in the roll and moves focus there; what is open is
     /// said once the roll's name has been heard.
     fn open_in_roll(&mut self, cursor: SongCursor) {
-        self.view = View::Notes;
+        self.select_view(View::Notes);
         self.roll.focus_when_shown = true;
         let track = &self.project.tracks[cursor.track];
         let pattern = cursor.part.map(|part| {

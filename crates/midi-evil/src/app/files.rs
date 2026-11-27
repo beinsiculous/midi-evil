@@ -116,28 +116,37 @@ impl StudioApp {
         }
         self.stop_preview();
         match Project::load(path) {
-            Ok(project) => {
-                self.clear_all_sound_drafts();
-                self.project = project;
-                self.imported_track_indices = None;
-                self.show_about = false;
-                self.source_midi = self.project.source_midi.as_ref().map(PathBuf::from);
-                self.roll = RollState::default();
-                self.transport = Transport::new(piano_roll::bar_ticks(&self.project));
-                self.automation = AutomationState::default();
-                self.invalidate_beats_link();
-                self.project_path = Some(path.to_path_buf());
-                self.reset_history();
-                self.dirty = false;
-                self.report(format!(
-                    "{}Opened {}, {}.",
-                    discard.prefix(),
-                    file_name(path),
-                    track_count(&self.project)
-                ));
-            }
+            Ok(project) => self.adopt_project(project, Some(path), &file_name(path), discard),
             Err(error) => self.report(format!("Could not open {}: {error}.", file_name(path))),
         }
+    }
+
+    /// Makes an opened project the document, saved to the file at `path` when it came from one,
+    /// and says so by `name`.
+    pub(super) fn adopt_project(
+        &mut self,
+        project: Project,
+        path: Option<&Path>,
+        name: &str,
+        discard: Discard,
+    ) {
+        self.clear_all_sound_drafts();
+        self.project = project;
+        self.imported_track_indices = None;
+        self.show_about = false;
+        self.source_midi = self.project.source_midi.as_ref().map(PathBuf::from);
+        self.roll = RollState::default();
+        self.transport = Transport::new(piano_roll::bar_ticks(&self.project));
+        self.automation = AutomationState::default();
+        self.invalidate_beats_link();
+        self.project_path = path.map(Path::to_path_buf);
+        self.reset_history();
+        self.dirty = false;
+        self.report(format!(
+            "{}Opened {name}, {}.",
+            discard.prefix(),
+            track_count(&self.project)
+        ));
     }
 
     pub(super) fn save_project(&mut self) {

@@ -1,6 +1,7 @@
 use super::*;
 use crate::accessibility::{Accessible, Refusable};
 use crate::key_help::{self, AppCommand};
+use crate::platform::{self, Shown};
 use crate::regions::{self, Region};
 use crate::speech::Unavailable;
 use crate::{theme, workspace::View};
@@ -41,6 +42,12 @@ impl StudioApp {
                         });
                         ui.add_space(8.0);
                         let platform = crate::platform::of(ui.ctx());
+                        let shows = |thing| platform::shows(ui.ctx(), thing);
+                        let shows_import = shows(Shown::ImportMidi);
+                        let shows_recovery = shows(Shown::RecoverRhythmFromWav);
+                        let shows_relink = shows(Shown::RelinkMidi);
+                        let shows_export = shows(Shown::ExportMidi);
+                        let shows_renders = shows(Shown::WavRenders);
                         let project_menu = ui.menu_button("Project", |ui| {
                             let label = |title, gap, command| {
                                 key_help::menu_label(title, gap, command, platform)
@@ -55,11 +62,11 @@ impl StudioApp {
                                 ui.close();
                                 self.open_project();
                             }
-                            if ui.button("Import MIDI…").clicked() {
+                            if shows_import && ui.button("Import MIDI…").clicked() {
                                 ui.close();
                                 self.import_midi();
                             }
-                            if ui.button("Recover rhythm from WAV…").clicked() {
+                            if shows_recovery && ui.button("Recover rhythm from WAV…").clicked() {
                                 ui.close();
                                 self.stop_keyboard();
                                 self.beats.stop();
@@ -78,30 +85,22 @@ impl StudioApp {
                                 ui.close();
                                 self.save_project_as();
                             }
-                            if self.source_midi.is_some() && ui.button("Relink MIDI…").clicked() {
+                            if shows_relink
+                                && self.source_midi.is_some()
+                                && ui.button("Relink MIDI…").clicked()
+                            {
                                 ui.close();
                                 self.relink_midi();
                             }
-                            ui.separator();
-                            if ui.button("Export MIDI…").clicked() {
+                            if shows_export || shows_renders {
+                                ui.separator();
+                            }
+                            if shows_export && ui.button("Export MIDI…").clicked() {
                                 ui.close();
                                 self.export_midi();
                             }
-                            if ui.button("Render WAV…").clicked() {
-                                ui.close();
-                                self.render_audio();
-                            }
-                            if ui.button("Render section WAV…").clicked() {
-                                ui.close();
-                                self.render_section_audio();
-                            }
-                            if ui.button("Track stems…").clicked() {
-                                ui.close();
-                                self.render_track_stems();
-                            }
-                            if ui.button("Arrangement parts…").clicked() {
-                                ui.close();
-                                self.render_arrangement_parts();
+                            if shows_renders {
+                                self.render_menu_items(ui);
                             }
                             ui.separator();
                             if ui.button("Keyboard notes…").clicked() {
@@ -184,7 +183,9 @@ impl StudioApp {
                                 format!("{} EVENTS IN TAKE", recorder.pending_events()),
                             );
                         }
-                        self.midi_input.show(ui);
+                        if platform::shows(ui.ctx(), Shown::MidiInput) {
+                            self.midi_input.show(ui);
+                        }
                     });
                 });
             });
@@ -199,26 +200,27 @@ impl StudioApp {
                             110.0
                         };
                         for (index, (view, label)) in View::ALL.into_iter().enumerate() {
-                            if ui
-                                .add_enabled(
-                                    !matches!(view, View::Synth | View::Keyboard)
-                                        || !self.project.tracks.is_empty(),
-                                    egui::Button::image_and_text(
-                                        art::control(
-                                            &self.controls,
-                                            match view {
-                                                View::Keyboard => 7,
-                                                View::Pads => 8,
-                                                _ => index,
-                                            },
-                                        ),
-                                        label,
+                            if platform::shows(ui.ctx(), Shown::View(view))
+                                && ui
+                                    .add_enabled(
+                                        !matches!(view, View::Synth | View::Keyboard)
+                                            || !self.project.tracks.is_empty(),
+                                        egui::Button::image_and_text(
+                                            art::control(
+                                                &self.controls,
+                                                match view {
+                                                    View::Keyboard => 7,
+                                                    View::Pads => 8,
+                                                    _ => index,
+                                                },
+                                            ),
+                                            label,
+                                        )
+                                        .selected(self.view() == view)
+                                        .min_size(egui::vec2(tab_width, 30.0)),
                                     )
-                                    .selected(self.view == view)
-                                    .min_size(egui::vec2(tab_width, 30.0)),
-                                )
-                                .unavailable_because(Unavailable::NoTrack)
-                                .clicked()
+                                    .unavailable_because(Unavailable::NoTrack)
+                                    .clicked()
                             {
                                 if view == View::Synth
                                     && self.patch_lab.as_ref().is_none_or(|lab| {
@@ -227,14 +229,15 @@ impl StudioApp {
                                 {
                                     self.open_patch_lab();
                                 }
-                                self.view = view;
+                                self.select_view(view);
                             }
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             // A toggle, so a screen reader hears whether the export row is shown.
-                            if ui
-                                .add(egui::Button::new("Export").selected(self.show_export))
-                                .clicked()
+                            if platform::shows(ui.ctx(), Shown::ExportRow)
+                                && ui
+                                    .add(egui::Button::new("Export").selected(self.show_export))
+                                    .clicked()
                             {
                                 self.show_export = !self.show_export;
                             }
@@ -271,7 +274,7 @@ impl StudioApp {
                             self.report_refusal(&undo);
                         });
                     });
-                    if self.show_export {
+                    if self.show_export && platform::shows(ui.ctx(), Shown::ExportRow) {
                         ui.horizontal_wrapped(|ui| {
                             theme::label(ui, "EXPORT SONG");
                             if ui.button("Standard MIDI…").clicked() {
@@ -298,6 +301,26 @@ impl StudioApp {
                     }
                 });
             });
+    }
+
+    /// The Project menu's renders, which write a WAV file each.
+    fn render_menu_items(&mut self, ui: &mut egui::Ui) {
+        if ui.button("Render WAV…").clicked() {
+            ui.close();
+            self.render_audio();
+        }
+        if ui.button("Render section WAV…").clicked() {
+            ui.close();
+            self.render_section_audio();
+        }
+        if ui.button("Track stems…").clicked() {
+            ui.close();
+            self.render_track_stems();
+        }
+        if ui.button("Arrangement parts…").clicked() {
+            ui.close();
+            self.render_arrangement_parts();
+        }
     }
 
     fn open_about(&mut self) {
@@ -338,9 +361,10 @@ impl StudioApp {
                     open = ui
                         .add_sized([280.0, 32.0], egui::Button::new("Open project…"))
                         .clicked();
-                    import = ui
-                        .add_sized([280.0, 32.0], egui::Button::new("Import MIDI…"))
-                        .clicked();
+                    import = platform::shows(ui.ctx(), Shown::ImportMidi)
+                        && ui
+                            .add_sized([280.0, 32.0], egui::Button::new("Import MIDI…"))
+                            .clicked();
                     ui.add_space(8.0);
                     theme::label(ui, "MIDI EVIL   /   ORIGINAL SYNTHESIS   /   STEREO SOUND");
                 });
@@ -349,7 +373,7 @@ impl StudioApp {
         crate::accessibility::name_window_title_bar(context, egui::Id::new("about"), "About");
         if start {
             self.show_about = false;
-            self.view = View::Notes;
+            self.select_view(View::Notes);
             self.report(format!(
                 "The piano roll is open. {} moves between the toolbar, the side panel and the \
                  editor.",
@@ -379,6 +403,7 @@ impl StudioApp {
         );
         egui::Window::new("Keyboard notes")
             .id(egui::Id::new("keyboard-notes"))
+            .movable(platform::shows(context, Shown::MovingWindows))
             .open(&mut self.show_key_help)
             .default_width(520.0)
             .default_height(420.0)

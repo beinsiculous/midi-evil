@@ -51,7 +51,7 @@ fn the_browser_build_shows_and_says_no_chord_a_browser_keeps() {
     harness.click("Project");
     said.push_str(&everything_said(&mut harness));
     harness.app.show_key_help = true;
-    harness.app.view = View::Song;
+    harness.app.select_view(View::Song);
     said.push_str(&everything_said(&mut harness));
     said.push_str(&everything_said(&mut harness));
     assert!(said.contains("Keyboard notes"), "the window was open");
@@ -133,7 +133,7 @@ fn in_the_browser_play_and_undo_are_reachable_say_why_and_do_nothing() {
 #[test]
 fn in_the_browser_b_says_why_and_moves_nothing() {
     let mut harness = browser(three_notes());
-    harness.app.view = View::Song;
+    harness.app.select_view(View::Song);
     harness.run(vec![]);
     for _ in 0..3 {
         if harness.focused() == harness.app.song.widget_id {

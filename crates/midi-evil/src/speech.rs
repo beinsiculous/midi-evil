@@ -8,7 +8,8 @@ use crate::arranger::cursor::{self as arranger_cursor, SongCursor};
 use crate::arranger::edits::{SongCommand, SongOutcome};
 use crate::key_help::{self, AppCommand};
 use crate::piano_roll::edits::{Outcome, RollCommand};
-use crate::platform::Platform;
+use crate::platform::{Platform, Shown};
+use crate::workspace::View;
 
 mod controls;
 pub use controls::*;
@@ -245,6 +246,40 @@ pub fn unavailable_reason(reason: Unavailable) -> &'static str {
 
 /// "Bass, 4 of 12 synth sounds": which sound a track has and where it is in the list that
 /// Previous and Next walk. A sound the list does not hold says so.
+/// Why a chord does nothing, as a line of the keyboard notes says it after what the chord is for.
+pub fn refused_in_notes(reason: Unavailable) -> &'static str {
+    match reason {
+        Unavailable::NoPlaybackInBrowser => "not in the browser build yet",
+        other => unavailable_reason(other),
+    }
+}
+
+/// What a platform leaves out of what the desktop shows, as the page's list of what is
+/// desktop-only says it.
+pub fn left_out_name(thing: Shown) -> &'static str {
+    match thing {
+        Shown::View(View::Mixer) => "The Mixer",
+        Shown::View(View::Synth) => "The Synth view and its patch lab",
+        Shown::View(View::Keyboard) => "The Keyboard view",
+        Shown::View(View::Pads) => {
+            "The Pads view; a drum track's notes are edited in the piano roll"
+        }
+        Shown::View(View::Song) => "The Song view",
+        Shown::View(View::Notes) => "The piano roll",
+        Shown::Automation => "The Notes view's automation lanes",
+        Shown::MidiInput => "MIDI input from a device",
+        Shown::ImportMidi => "Importing a MIDI file",
+        Shown::RecoverRhythmFromWav => "Recovering a rhythm from a WAV file",
+        Shown::RelinkMidi => "Relinking the MIDI file a project was imported from",
+        Shown::ExportMidi => "Exporting MIDI",
+        Shown::WavRenders => "Rendering WAV files, track stems and arrangement parts",
+        Shown::ExportRow => "The export row",
+        Shown::LoadSoundFiles => "Loading sound files into the library",
+        Shown::MovingWindows => "Moving a window by its title bar",
+        Shown::ResizingTheSidePanel => "Resizing the side panel",
+    }
+}
+
 pub fn describe_sound(name: &str, position: Option<usize>, count: usize, kind: &str) -> String {
     let kind = kind.to_lowercase();
     let noun = if count == 1 { "sound" } else { "sounds" };

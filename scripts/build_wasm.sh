@@ -17,24 +17,47 @@
 # in particular not into the site: the smoke test serves its own copy, and the site receives a
 # bundle in a later, separate step.
 #
+# With --gate it builds the browser gate's own bundle instead, into target/web/dist-gate/: the
+# entry with its `gate` feature, which compiles the gate's tracked projects in and reads the
+# page's ?fixture= and ?shows=. A visitor never gets that bundle, so it is compiled in a cargo
+# target directory of its own, target/gate/, and a gate build can never leave its wasm where the
+# visitor's build picks one up. Both builds take the same lock and the same swap.
+#
 #   scripts/build_wasm.sh
+#   scripts/build_wasm.sh --gate
 #
 # Needs the target installed (rustup target add wasm32-unknown-unknown), and the network the first
 # time, when the CLI is installed.
 set -euo pipefail
 
-# The ceiling for the raw wasm, in mebibytes: the first good build's size rounded up to the next
-# mebibyte, plus one; that build was 5.94 MiB. A batch that needs more raises this number and says
-# why; it is never only a warning.
+# The ceiling for the visitor's raw wasm, in mebibytes: the first good build's size rounded up to
+# the next mebibyte, plus one; that build was 5.94 MiB. A batch that needs more raises this number
+# and says why; it is never only a warning. The gate's bundle is measured and not held to it.
 SIZE_BUDGET_MEBIBYTES=7
 
 repository=$(cd "$(dirname "$0")/.." && pwd)
-target_directory=$repository/target
-tools_root=$target_directory/tools
+tools_root=$repository/target/tools
 wasm_bindgen=$tools_root/bin/wasm-bindgen
-web_directory=$target_directory/web
-dist=$web_directory/dist
+web_directory=$repository/target/web
 page=$repository/crates/evil-web/index.html
+case "${1:-}" in
+    "")
+        bundle="the visitor's"
+        target_directory=$repository/target
+        features=()
+        dist=$web_directory/dist
+        ;;
+    --gate)
+        bundle="the gate's"
+        target_directory=$repository/target/gate
+        features=(--features gate)
+        dist=$web_directory/dist-gate
+        ;;
+    *)
+        echo "usage: scripts/build_wasm.sh [--gate]" >&2
+        exit 2
+        ;;
+esac
 
 lock_version=$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/"/, "", $3); print $3; exit }' \
     "$repository/Cargo.lock")
@@ -55,7 +78,7 @@ if [ "$(installed_version)" != "$lock_version" ]; then
     if ! cargo install wasm-bindgen-cli --version "$lock_version" --locked --force \
         --root "$tools_root"; then
         echo "ERROR: could not install wasm-bindgen-cli $lock_version under $tools_root;" \
-            "nothing was built and target/web/dist/ is as it was." >&2
+            "nothing was built and $dist is as it was." >&2
         exit 1
     fi
 fi
@@ -65,11 +88,18 @@ if [ "$(installed_version)" != "$lock_version" ]; then
     exit 1
 fi
 
+# Both bundles carry the identity of the tree they were built from, which the browser gate
+# compares with the other bundle's and with the tree's own.
+MIDI_EVIL_BUILD_IDENTITY=$("$repository/scripts/build_identity.sh")
+export MIDI_EVIL_BUILD_IDENTITY
+echo "==> build identity: $MIDI_EVIL_BUILD_IDENTITY"
+
 # An explicit target directory, so a CARGO_TARGET_DIR in the environment cannot send the wasm
 # somewhere this script does not look.
-echo "==> cargo build -p evil-web --profile wasm-release --target wasm32-unknown-unknown"
-cargo build --locked -p evil-web --profile wasm-release --target wasm32-unknown-unknown \
-    --manifest-path "$repository/Cargo.toml" --target-dir "$target_directory"
+echo "==> $bundle bundle: cargo build -p evil-web ${features[*]} --profile wasm-release --target wasm32-unknown-unknown"
+cargo build --locked -p evil-web "${features[@]}" --profile wasm-release \
+    --target wasm32-unknown-unknown --manifest-path "$repository/Cargo.toml" \
+    --target-dir "$target_directory"
 wasm=$target_directory/wasm32-unknown-unknown/wasm-release/evil_web.wasm
 
 mkdir -p "$web_directory"
@@ -90,8 +120,8 @@ gzipped_bytes=$(gzip -9 -c "$bound_wasm" | wc -c)
 mebibytes() { awk -v bytes="$1" 'BEGIN { printf "%.2f MiB", bytes / 1048576 }'; }
 echo "wasm size: $(mebibytes "$raw_bytes") raw ($raw_bytes bytes)," \
     "$(mebibytes "$gzipped_bytes") gzipped ($gzipped_bytes bytes)"
-if [ "$raw_bytes" -gt $((SIZE_BUDGET_MEBIBYTES * 1048576)) ]; then
-    echo "FAIL: the wasm is over its budget of $SIZE_BUDGET_MEBIBYTES MiB; target/web/dist/ is as" \
+if [ ${#features[@]} -eq 0 ] && [ "$raw_bytes" -gt $((SIZE_BUDGET_MEBIBYTES * 1048576)) ]; then
+    echo "FAIL: the wasm is over its budget of $SIZE_BUDGET_MEBIBYTES MiB; $dist is as" \
         "it was. Raise SIZE_BUDGET_MEBIBYTES at the top of this script only with a stated reason." >&2
     exit 1
 fi
@@ -110,7 +140,7 @@ if ! mv -T -- "$staging" "$dist"; then
     if [ -e "$dist.previous" ]; then
         mv -T -- "$dist.previous" "$dist"
     fi
-    echo "ERROR: the new bundle could not be moved into place; target/web/dist/ is as it was." >&2
+    echo "ERROR: the new bundle could not be moved into place; $dist is as it was." >&2
     exit 1
 fi
 rm -rf -- "$dist.previous"

@@ -106,7 +106,9 @@ impl StudioApp {
             return;
         };
         match &instrument.source {
-            InstrumentSource::Synth { .. } if matches!(self.view, View::Synth | View::Keyboard) => {
+            InstrumentSource::Synth { .. }
+                if matches!(self.view(), View::Synth | View::Keyboard) =>
+            {
                 for event in events {
                     match event {
                         InputEvent::NoteOn { pitch, velocity } if velocity > 0 => {
@@ -130,7 +132,7 @@ impl StudioApp {
                     }
                 }
             }
-            InstrumentSource::DrumKit { base_note, .. } if self.view == View::Pads => {
+            InstrumentSource::DrumKit { base_note, .. } if self.view() == View::Pads => {
                 for event in events {
                     match event {
                         InputEvent::NoteOn { pitch, velocity }

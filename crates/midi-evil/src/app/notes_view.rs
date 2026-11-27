@@ -26,14 +26,16 @@ impl StudioApp {
                 );
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.toggle_value(&mut self.show_automation, "Automation");
+                if crate::platform::shows(ui.ctx(), crate::platform::Shown::Automation) {
+                    ui.toggle_value(&mut self.show_automation, "Automation");
+                }
                 if ui.button("Arranger").clicked() {
                     to_arranger = true;
                 }
             });
         });
         if to_arranger {
-            self.view = View::Song;
+            self.select_view(View::Song);
             self.report(format!(
                 "The arranger is shown; {} reaches it.",
                 crate::key_help::next_region_chord(crate::platform::of(ui.ctx()))
@@ -127,7 +129,8 @@ impl StudioApp {
     }
 
     pub(super) fn automation_panel(&mut self, ui: &mut egui::Ui) {
-        if self.project.tracks.is_empty() {
+        let shown = crate::platform::shows(ui.ctx(), crate::platform::Shown::Automation);
+        if self.project.tracks.is_empty() || !shown {
             return;
         }
         egui::Panel::bottom("automation")

@@ -1,0 +1,11 @@
+{"format":"midi-evil-project","version":2,"name":"Arrangement","tempo_bpm":120,"beats_per_bar":4,
+ "beat_unit":4,"ticks_per_quarter":480,"sample_rate":44100,
+ "instruments":[{"name":"Lead","source":{"type":"synth","patch":"lead"}},
+                {"name":"Bass","source":{"type":"synth","patch":"lead"}}],
+ "patterns":[{"name":"Riff","length_ticks":1920,
+              "notes":[{"pitch":60,"velocity":100,"start_tick":0,"duration_ticks":480}]}],
+ "tracks":[{"name":"Lead","instrument":0,"notes":[],
+            "parts":[{"pattern":0,"start_tick":0,"length_ticks":1920},
+                     {"pattern":0,"start_tick":3840,"length_ticks":1920}]},
+           {"name":"Bass","instrument":1,
+            "notes":[{"pitch":36,"velocity":100,"start_tick":0,"duration_ticks":480}],"parts":[]}]}

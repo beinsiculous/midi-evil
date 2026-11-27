@@ -88,6 +88,10 @@ credential configured"). Deepseek stood in, as the `roles` skill allows.
 | 34 | W-A2b section v1 (plan) | deepseek | 13 | 13 | 0 | 0 | "`Project::load(path)` … uses `std::fs::read_to_string` — present but unsupported on wasm32" and "The page exposes exactly one accessibility node for the editor … there is no AX node named 'MIXER', so the clause passes" | 8:00 |
 | 35 | W-A2b section v2 (plan) | codex | 2 | 2 | 0 | 0 | "`native-gate.sh`'s R-21 changes `tempo.evil` from 90 to 100 BPM and saves it … The first run modifies the tracked inputs" | 3:00 |
 | 35 | W-A2b section v2 (plan) | deepseek | 12 | 12 | 0 | 0 | "The built visitor bundle … already contains the literal strings `tempo` (many occurrences), `long` (8), and `bass` (1)" — the proof that fixtures are absent would have failed on today's bundle | 10:00 |
+| 36 | W-A2b code, page and gate (diff) | codex | 2 | 2 | 0 | 0 | "`walkEveryStop` reaches 300 forward steps without leaving the editor … skips the reverse loop … and returns successfully" | 4:00 |
+| 36 | W-A2b code, page and gate (diff) | gemini | 5 | 3 | 1 | 1 | "`min-height: 15rem` … evaluates to 480px at 200% font size" — found by all three; that a bash prefix assignment outlives a function call was wrong | 10:40 |
+| 36 | W-A2b code, page and gate (diff) | deepseek | 6 | 6 | 0 | 0 | "Edit `twins.evil` … and run both gates without rebuilding the gate bundle: the native gate copies the new file … while `web-app-gate.sh` starts (marker present)" | 23:00 |
+| 37 | W-A2b code, page and gate v2 (diff) | codex | 3 | 3 | 0 | 0 | "The old gate bundle still passes `web-app-gate.sh`'s marker, fixture-digest and HTML checks because none identifies the application source" | 5:00 |
 
 Totals so far (through W-A1a; W-A1b's nineteen findings and W-A1c's twenty are in the rows above): codex 47 findings, 44 real, two refuted (a lockfile left out of a diff) and one
 the planner's own excerpt; deepseek 178 findings, 158 real, thirteen refuted, the rest rebutted on
