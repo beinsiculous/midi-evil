@@ -11,8 +11,14 @@ use crate::speech::{self, Meter, PlayingState, TransportState};
 
 impl StudioApp {
     pub(super) fn transport_block(&mut self, ui: &mut egui::Ui) {
+        let cancelling = self.render_is_cancelling();
+        let queued = self.queued_render.is_some();
         let active = self.render_job.is_some() || self.preview.is_some();
-        let label = if self.render_job.is_some() {
+        let label = if queued {
+            "CANCEL"
+        } else if cancelling {
+            "PLAY"
+        } else if self.render_job.is_some() {
             "CANCEL"
         } else if active {
             "STOP"
@@ -36,7 +42,13 @@ impl StudioApp {
         )
         .on_hover_text(format!("Render and play the song{play_key}"));
         if play.clicked() {
-            if active {
+            if queued {
+                self.stop_transport();
+            } else if cancelling {
+                self.preview_project();
+            } else if self.render_job.is_some() {
+                self.cancel_active_render();
+            } else if active {
                 self.stop_preview();
             } else {
                 self.preview_project();
@@ -202,6 +214,8 @@ impl StudioApp {
     pub(super) fn transport_state(&self) -> TransportState {
         let playing = if self.recorder.is_some() {
             PlayingState::Recording
+        } else if self.render_is_cancelling() {
+            PlayingState::Cancelling
         } else if self.render_job.is_some() {
             PlayingState::Rendering
         } else if self.preview.is_some() {

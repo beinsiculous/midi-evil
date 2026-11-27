@@ -1,3 +1,8 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
+
 mod aiff;
 mod aux_envelope;
 mod delay;
@@ -48,7 +53,8 @@ pub use mix::{
     AnalyzedMix, ChannelMeter, METER_BLOCK_FRAMES, MixAnalysis, MonoTrack, StereoSound,
     StereoTrack, SynthMixerAutomation, mix_stereo, mix_stereo_analyzed, mix_stereo_with_sends,
     mix_stereo_with_sends_and_tempo, mix_stereo_with_sends_and_tempo_analyzed,
-    mix_stereo_with_sends_and_tempo_analyzed_range, mix_stereo_with_tracks,
+    mix_stereo_with_sends_and_tempo_analyzed_range,
+    mix_stereo_with_sends_and_tempo_analyzed_range_and_cancellation, mix_stereo_with_tracks,
 };
 pub use modal::ModalPartial;
 pub use modulation::{Chorus, Flanger};
@@ -59,9 +65,12 @@ pub use render::{
     RenderedSound, SynthAftertouch, SynthController, SynthNote, SynthPitchBend, SynthTempoChange,
     render, render_notes, render_notes_dry, render_notes_dry_with_automation,
     render_notes_dry_with_full_automation, render_notes_dry_with_pitch_bend,
-    render_notes_dry_with_tempo_and_full_automation, render_notes_stereo_dry,
-    render_notes_stereo_dry_with_tempo_and_full_automation, render_notes_with_automation,
-    render_notes_with_full_automation, render_notes_with_pitch_bend, render_notes_with_tempo,
+    render_notes_dry_with_tempo_and_full_automation,
+    render_notes_dry_with_tempo_and_full_automation_and_cancellation, render_notes_stereo_dry,
+    render_notes_stereo_dry_with_tempo_and_full_automation,
+    render_notes_stereo_dry_with_tempo_and_full_automation_and_cancellation,
+    render_notes_with_automation, render_notes_with_full_automation, render_notes_with_pitch_bend,
+    render_notes_with_tempo,
 };
 pub use reverb::Reverb;
 pub use sample::{SampleDirection, SampleOscillator, SampleZone};
@@ -90,6 +99,51 @@ pub fn read_audio(path: impl AsRef<std::path::Path>) -> Result<DecodedAudio, Err
 }
 pub use waveshaper::Waveshaper;
 
+#[derive(Clone, Debug, Default)]
+pub struct RenderCancellation {
+    cancelled: Arc<AtomicBool>,
+    checkpoints: Arc<AtomicUsize>,
+}
+
+impl RenderCancellation {
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    pub fn check(&self) -> Result<(), Error> {
+        if self.is_cancelled() {
+            Err(Error::RenderCancelled)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) fn check_frame(&self, frame: usize) -> Result<(), Error> {
+        if frame.is_multiple_of(256) {
+            self.checkpoints.fetch_add(1, Ordering::Relaxed);
+            self.check()
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn checkpoint_count(&self) -> usize {
+        self.checkpoints.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn check_range_frame(&self, frame: usize, range_start: usize) -> Result<(), Error> {
+        if frame == range_start {
+            self.check()
+        } else {
+            self.check_frame(frame - range_start)
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("invalid synth patch: {0}")]
@@ -112,4 +166,6 @@ pub enum Error {
     InvalidAiff(String),
     #[error("WAV I/O error: {0}")]
     Wav(#[from] hound::Error),
+    #[error("render cancelled")]
+    RenderCancelled,
 }

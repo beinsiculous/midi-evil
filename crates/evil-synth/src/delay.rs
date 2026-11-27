@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{Error, Patch, SynthTempoChange};
+use crate::{Error, Patch, RenderCancellation, SynthTempoChange};
 
 const DELAY_TAIL_TAPS: usize = 16;
 
@@ -112,16 +112,25 @@ impl Delay {
     }
 }
 
-pub(crate) fn apply_delay(
+pub(crate) fn apply_delay_with_cancellation(
     patch: &Patch,
     samples: &mut Vec<f32>,
     tempo_changes: &[SynthTempoChange],
-) {
+    cancellation: &RenderCancellation,
+) -> Result<(), Error> {
     if let Some(delay) = &patch.delay {
-        apply_mono_delay(samples, patch.sample_rate, delay, tempo_changes);
+        apply_mono_delay_with_cancellation(
+            samples,
+            patch.sample_rate,
+            delay,
+            tempo_changes,
+            cancellation,
+        )?;
     }
+    Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn apply_stereo_delay_with_tempo(
     left: &mut Vec<f32>,
     right: &mut Vec<f32>,
@@ -129,11 +138,29 @@ pub(crate) fn apply_stereo_delay_with_tempo(
     delay: &Delay,
     tempo_changes: &[SynthTempoChange],
 ) {
+    let _ = apply_stereo_delay_with_tempo_and_cancellation(
+        left,
+        right,
+        sample_rate,
+        delay,
+        tempo_changes,
+        &RenderCancellation::default(),
+    );
+}
+
+pub(crate) fn apply_stereo_delay_with_tempo_and_cancellation(
+    left: &mut Vec<f32>,
+    right: &mut Vec<f32>,
+    sample_rate: u32,
+    delay: &Delay,
+    tempo_changes: &[SynthTempoChange],
+    cancellation: &RenderCancellation,
+) -> Result<(), Error> {
     debug_assert_eq!(left.len(), right.len());
     if delay.mode == DelayMode::Mono {
-        apply_mono_delay(left, sample_rate, delay, tempo_changes);
-        apply_mono_delay(right, sample_rate, delay, tempo_changes);
-        return;
+        apply_mono_delay_with_cancellation(left, sample_rate, delay, tempo_changes, cancellation)?;
+        apply_mono_delay_with_cancellation(right, sample_rate, delay, tempo_changes, cancellation)?;
+        return Ok(());
     }
 
     let maximum_delay = maximum_delay_frames(sample_rate, delay, tempo_changes);
@@ -145,6 +172,7 @@ pub(crate) fn apply_stereo_delay_with_tempo(
     let mut right_line = vec![0.0; maximum_delay + 1];
     let mut position = 0;
     for frame in 0..left.len() {
+        cancellation.check_frame(frame)?;
         let time = frame as f64 / f64::from(sample_rate);
         let [left_frames, right_frames] =
             stereo_delay_frame_counts(sample_rate, delay, tempo_bpm_at(tempo_changes, time));
@@ -166,14 +194,16 @@ pub(crate) fn apply_stereo_delay_with_tempo(
         right[frame] = dry_right + delayed_right * delay.mix;
         position = (position + 1) % left_line.len();
     }
+    Ok(())
 }
 
-fn apply_mono_delay(
+fn apply_mono_delay_with_cancellation(
     samples: &mut Vec<f32>,
     sample_rate: u32,
     delay: &Delay,
     tempo_changes: &[SynthTempoChange],
-) {
+    cancellation: &RenderCancellation,
+) -> Result<(), Error> {
     let maximum_delay = maximum_delay_frames(sample_rate, delay, tempo_changes);
     let original_len = samples.len();
     samples.resize(
@@ -183,6 +213,7 @@ fn apply_mono_delay(
     let mut delay_line = vec![0.0; maximum_delay + 1];
     let mut position = 0;
     for (frame, sample) in samples.iter_mut().enumerate() {
+        cancellation.check_frame(frame)?;
         let time = frame as f64 / f64::from(sample_rate);
         let delay_frames = delay_frame_count(sample_rate, delay, tempo_bpm_at(tempo_changes, time));
         let read = (position + delay_line.len() - delay_frames) % delay_line.len();
@@ -192,6 +223,7 @@ fn apply_mono_delay(
         *sample = dry + delayed * delay.mix;
         position = (position + 1) % delay_line.len();
     }
+    Ok(())
 }
 
 pub(crate) fn stereo_delay_frame_counts(

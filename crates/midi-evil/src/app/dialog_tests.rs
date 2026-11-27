@@ -4,6 +4,7 @@
 
 use super::test_harness::*;
 use super::*;
+use evil_project::{Part, Pattern};
 
 /// A command run outside a frame, as a menu item or a key would run it.
 type Command = fn(&mut StudioApp);
@@ -210,7 +211,25 @@ fn a_file_dialog_is_silent_before_anything_is_asked() {
 fn the_eleven_dialogs_that_silence_first_still_do_and_ask_what_they_asked() {
     let base = tempfile::tempdir().unwrap();
     let base = base.path();
-    let mut harness = Harness::new(project_with(&[&[note_at(60, 0, 480)]]));
+    let mut project = project_with(&[&[note_at(60, 0, 480)]]);
+    let pattern = project
+        .add_pattern(Pattern {
+            length_ticks: 480,
+            notes: vec![note_at(60, 0, 480)],
+            ..Pattern::default()
+        })
+        .unwrap();
+    project
+        .add_part(
+            0,
+            Part {
+                pattern,
+                start_tick: 0,
+                length_ticks: 480,
+            },
+        )
+        .unwrap();
+    let mut harness = Harness::new(project);
     harness.app.project_base = Some(base.to_path_buf());
     harness.app.source_midi = Some(base.join("song.mid"));
     assert!(harness.app.open_patch_lab());
@@ -304,6 +323,159 @@ fn the_eleven_dialogs_that_silence_first_still_do_and_ask_what_they_asked() {
         let expected: Vec<String> = heard.into_iter().map(str::to_owned).collect();
         assert_eq!(harness.heard_after_a_frame(), expected, "command {index}");
     }
+}
+
+#[test]
+fn cancelled_batch_export_dialogs_leave_the_take_active() {
+    for command in [
+        StudioApp::render_track_stems as Command,
+        StudioApp::render_arrangement_parts as Command,
+    ] {
+        let mut project = project_with(&[&[note_at(60, 0, 480)]]);
+        let pattern = project
+            .add_pattern(Pattern {
+                length_ticks: 480,
+                notes: vec![note_at(60, 0, 480)],
+                ..Pattern::default()
+            })
+            .unwrap();
+        project
+            .add_part(
+                0,
+                Part {
+                    pattern,
+                    start_tick: 0,
+                    length_ticks: 480,
+                },
+            )
+            .unwrap();
+        let mut harness = Harness::new(project);
+        let mut recorder = crate::recording::Recorder::new(
+            crate::recording::RecordingTarget::Track(0),
+            0,
+            1_920,
+            None,
+        );
+        recorder.hit(64, 100, 0, &harness.app.project);
+        harness.app.recorder = Some(recorder);
+        harness.app.recording_started_at = Some(std::time::Instant::now());
+        harness.dialogs.answer(Answer::Nothing);
+
+        command(&mut harness.app);
+
+        assert!(harness.app.recorder.is_some());
+        assert_eq!(harness.app.project.tracks[0].notes.len(), 1);
+        assert!(harness.app.render_job.is_none());
+    }
+}
+
+#[test]
+fn accepted_batch_exports_commit_the_take_before_planning() {
+    for arrangement_parts in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let mut project = project_with(&[&[]]);
+        let (pattern, target) = if arrangement_parts {
+            let pattern = project
+                .add_pattern(Pattern {
+                    length_ticks: 480,
+                    ..Pattern::default()
+                })
+                .unwrap();
+            project
+                .add_part(
+                    0,
+                    Part {
+                        pattern,
+                        start_tick: 0,
+                        length_ticks: 480,
+                    },
+                )
+                .unwrap();
+            (
+                Some(pattern),
+                crate::recording::RecordingTarget::Part { track: 0, part: 0 },
+            )
+        } else {
+            (None, crate::recording::RecordingTarget::Track(0))
+        };
+        let mut harness = Harness::new(project);
+        let mut recorder = crate::recording::Recorder::new(target, 0, 1_920, None);
+        recorder.hit(64, 100, 0, &harness.app.project);
+        harness.app.recorder = Some(recorder);
+        harness.app.recording_started_at = Some(std::time::Instant::now());
+        harness
+            .dialogs
+            .answer(Answer::Paths(vec![directory.path().to_path_buf()]));
+
+        if arrangement_parts {
+            harness.app.render_arrangement_parts();
+            assert_eq!(
+                harness.app.project.patterns[pattern.unwrap()].notes.len(),
+                1
+            );
+        } else {
+            harness.app.render_track_stems();
+            assert_eq!(harness.app.project.tracks[0].notes.len(), 1);
+        }
+        assert!(harness.app.recorder.is_none());
+        assert!(harness.app.render_job.is_some());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while harness.app.render_job.is_some() && std::time::Instant::now() < deadline {
+            harness.run(vec![]);
+            std::thread::yield_now();
+        }
+        assert!(harness.app.render_job.is_none());
+        assert_eq!(directory.path().read_dir().unwrap().count(), 1);
+    }
+}
+
+#[test]
+fn refused_or_empty_batch_exports_do_not_open_a_dialog_or_commit_the_take() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut harness = Harness::new(project_with(&[&[evil_project::Note {
+        duration_ticks: 50_000,
+        ..evil_project::Note::default()
+    }]]));
+    harness
+        .app
+        .start_render(PendingRender::Wav(directory.path().join("active.wav")));
+    let mut recorder = crate::recording::Recorder::new(
+        crate::recording::RecordingTarget::Track(0),
+        0,
+        1_920,
+        None,
+    );
+    recorder.hit(64, 100, 0, &harness.app.project);
+    harness.app.recorder = Some(recorder);
+    harness.app.recording_started_at = Some(std::time::Instant::now());
+    for command in [
+        StudioApp::render_audio as Command,
+        StudioApp::render_section_audio,
+        StudioApp::render_track_stems,
+        StudioApp::render_arrangement_parts,
+    ] {
+        command(&mut harness.app);
+        assert!(harness.dialogs.take_asked().is_empty());
+        assert!(harness.app.recorder.is_some());
+    }
+    harness.app.cancel_active_render();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while harness.app.render_job.is_some() && std::time::Instant::now() < deadline {
+        harness.app.poll_render();
+        std::thread::yield_now();
+    }
+
+    let mut empty = Harness::new(project_with(&[&[]]));
+    empty.app.recorder = Some(crate::recording::Recorder::new(
+        crate::recording::RecordingTarget::Track(0),
+        0,
+        1_920,
+        None,
+    ));
+    empty.app.recording_started_at = Some(std::time::Instant::now());
+    empty.app.render_track_stems();
+    assert!(empty.dialogs.take_asked().is_empty());
+    assert!(empty.app.recorder.is_some());
 }
 
 #[test]

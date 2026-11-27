@@ -171,6 +171,7 @@ impl StudioApp {
             )),
             Err(error) => self.report(format!("Could not commit the recording: {error}.")),
         }
+        self.recording_commit_status = Some(self.status.clone());
     }
 
     fn record_input(&mut self, events: &[InputEvent]) {

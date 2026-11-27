@@ -68,6 +68,14 @@ impl Recorder {
         }
     }
 
+    pub fn target(&self) -> RecordingTarget {
+        self.target
+    }
+
+    pub fn has_pending_notes(&self) -> bool {
+        !self.notes.is_empty() || !self.active.is_empty()
+    }
+
     pub fn target_track(&self) -> usize {
         match self.target {
             RecordingTarget::Track(track) | RecordingTarget::Part { track, .. } => track,

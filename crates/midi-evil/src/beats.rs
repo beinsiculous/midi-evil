@@ -245,6 +245,7 @@ impl BeatsPage {
         ui: &mut egui::Ui,
         tempo: f32,
         dialogs: &mut dyn Dialogs,
+        allow_bank_save: bool,
     ) -> Vec<PadHit> {
         self.tempo_bpm = tempo;
         let mut hits = Vec::new();
@@ -302,7 +303,7 @@ impl BeatsPage {
                     self.dirty |= ui.text_edit_singleline(&mut self.kit.name).changed();
                     ui.horizontal(|ui| {
                         if ui.button("Open bank").clicked() { action = Some(Action::Open); }
-                        if ui.button("Save bank").clicked() { action = Some(Action::Save); }
+                        if ui.add_enabled(allow_bank_save, egui::Button::new("Save bank")).clicked() { action = Some(Action::Save); }
                     });
                     if self.page == Page::Play {
                         ui.horizontal(|ui| {

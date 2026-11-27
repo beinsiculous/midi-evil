@@ -1,19 +1,21 @@
 use std::collections::BTreeMap;
 
-use crate::delay::apply_stereo_delay_with_tempo;
+use crate::delay::apply_stereo_delay_with_tempo_and_cancellation;
 use crate::effects::{
-    apply_insert_automated, apply_insert_with_tempo, effect_parameter, insert_is_bypassed,
+    AutomatedInsertOptions, apply_insert_automated_with_cancellation,
+    apply_insert_with_tempo_and_cancellation, effect_parameter, insert_is_bypassed,
     insert_tail_frames, set_effect_parameter,
 };
 use crate::insert_automation::{
-    apply_stereo_delay_automation_with_tempo, apply_stereo_waveshaper_automation,
-    has_delay_automation, has_waveshaper_automation,
+    apply_stereo_delay_automation_with_tempo_and_cancellation,
+    apply_stereo_waveshaper_automation_with_cancellation, has_delay_automation,
+    has_waveshaper_automation,
 };
 use crate::render::block_dc;
-use crate::waveshaper::apply_stereo_waveshaper;
+use crate::waveshaper::apply_stereo_waveshaper_with_cancellation;
 use crate::{
-    Delay, Error, INSERT_LIMIT, InsertEffect, RenderedSound, SEND_COUNT, SendBus, SynthController,
-    SynthTempoChange, Waveshaper,
+    Delay, Error, INSERT_LIMIT, InsertEffect, RenderCancellation, RenderedSound, SEND_COUNT,
+    SendBus, SynthController, SynthTempoChange, Waveshaper,
 };
 use evil_performance::MixerParameter;
 
@@ -374,6 +376,27 @@ pub fn mix_stereo_with_sends_and_tempo_analyzed_range(
     tempo_changes: &[SynthTempoChange],
     analysis_range: Option<(usize, usize)>,
 ) -> Result<AnalyzedMix, Error> {
+    mix_stereo_with_sends_and_tempo_analyzed_range_and_cancellation(
+        tracks,
+        stereo_tracks,
+        send_buses,
+        master_gain,
+        tempo_changes,
+        analysis_range,
+        &RenderCancellation::default(),
+    )
+}
+
+pub fn mix_stereo_with_sends_and_tempo_analyzed_range_and_cancellation(
+    tracks: &[MonoTrack<'_>],
+    stereo_tracks: &[StereoTrack<'_>],
+    send_buses: &[SendBus; SEND_COUNT],
+    master_gain: f32,
+    tempo_changes: &[SynthTempoChange],
+    analysis_range: Option<(usize, usize)>,
+    cancellation: &RenderCancellation,
+) -> Result<AnalyzedMix, Error> {
+    cancellation.check()?;
     if tracks.is_empty() && stereo_tracks.is_empty() {
         return Err(Error::InvalidMix(
             "a mix needs at least one track".to_owned(),
@@ -405,6 +428,7 @@ pub fn mix_stereo_with_sends_and_tempo_analyzed_range(
     let (analysis_start, requested_analysis_end) = analysis_range.unwrap_or((0, usize::MAX));
 
     for track in tracks {
+        cancellation.check()?;
         if track.sound.sample_rate != sample_rate {
             return Err(Error::InvalidMix(
                 "all tracks must use the same sample rate".to_owned(),
@@ -435,6 +459,7 @@ pub fn mix_stereo_with_sends_and_tempo_analyzed_range(
         let mut track_left = vec![0.0; track.sound.samples.len()];
         let mut track_right = vec![0.0; track.sound.samples.len()];
         for (frame, sample) in track.sound.samples.iter().enumerate() {
+            cancellation.check_frame(frame)?;
             if has_gain_or_pan {
                 let time = frame as f64 / f64::from(sample_rate);
                 let (gain, pan) = automation.gain_and_pan(time, track.gain, track.pan);
@@ -449,10 +474,13 @@ pub fn mix_stereo_with_sends_and_tempo_analyzed_range(
             &mut track_left,
             &mut track_right,
             sample_rate,
-            track.waveshaper,
-            track.delay,
-            track.controllers,
             tempo_changes,
+            InstrumentInsertOptions {
+                waveshaper: track.waveshaper,
+                delay: track.delay,
+                controllers: track.controllers,
+                cancellation,
+            },
         )?;
         channel_meters.push(mix_channel(
             &mut buffers,
@@ -466,9 +494,11 @@ pub fn mix_stereo_with_sends_and_tempo_analyzed_range(
             sample_rate,
             tempo_changes,
             (analysis_start, requested_analysis_end),
+            cancellation,
         )?);
     }
     for track in stereo_tracks {
+        cancellation.check()?;
         if track.sound.sample_rate != sample_rate
             || track.sound.left.len() != track.sound.right.len()
         {
@@ -509,6 +539,7 @@ pub fn mix_stereo_with_sends_and_tempo_analyzed_range(
         let mut track_left = track.sound.left.clone();
         let mut track_right = track.sound.right.clone();
         for frame in 0..track_left.len() {
+            cancellation.check_frame(frame)?;
             if has_gain_or_pan {
                 let time = frame as f64 / f64::from(sample_rate);
                 let pan;
@@ -523,10 +554,13 @@ pub fn mix_stereo_with_sends_and_tempo_analyzed_range(
             &mut track_left,
             &mut track_right,
             sample_rate,
-            track.waveshaper,
-            track.delay,
-            track.controllers,
             tempo_changes,
+            InstrumentInsertOptions {
+                waveshaper: track.waveshaper,
+                delay: track.delay,
+                controllers: track.controllers,
+                cancellation,
+            },
         )?;
         channel_meters.push(mix_channel(
             &mut buffers,
@@ -540,9 +574,11 @@ pub fn mix_stereo_with_sends_and_tempo_analyzed_range(
             sample_rate,
             tempo_changes,
             (analysis_start, requested_analysis_end),
+            cancellation,
         )?);
     }
     for (index, bus) in send_buses.iter().enumerate() {
+        cancellation.check()?;
         bus.validate()?;
         if buffers.send_left[index].is_empty() || bus.gain == 0.0 {
             continue;
@@ -550,12 +586,13 @@ pub fn mix_stereo_with_sends_and_tempo_analyzed_range(
         let mut bus_left = std::mem::take(&mut buffers.send_left[index]);
         let mut bus_right = std::mem::take(&mut buffers.send_right[index]);
         if let Some(effect) = &bus.effect {
-            apply_insert_with_tempo(
+            apply_insert_with_tempo_and_cancellation(
                 &mut bus_left,
                 &mut bus_right,
                 sample_rate,
                 effect,
                 tempo_changes,
+                cancellation,
             )?;
         }
         if buffers.left.len() < bus_left.len() {
@@ -563,6 +600,7 @@ pub fn mix_stereo_with_sends_and_tempo_analyzed_range(
             buffers.right.resize(bus_left.len(), 0.0);
         }
         for frame in 0..bus_left.len() {
+            cancellation.check_frame(frame)?;
             buffers.left[frame] += bus_left[frame] * bus.gain;
             buffers.right[frame] += bus_right[frame] * bus.gain;
         }
@@ -576,6 +614,7 @@ pub fn mix_stereo_with_sends_and_tempo_analyzed_range(
     }
     let mut analysis = MixAnalysis::default();
     for (frame, (left, right)) in buffers.left.iter_mut().zip(&mut buffers.right).enumerate() {
+        cancellation.check_frame(frame)?;
         if (analysis_start..analysis_end).contains(&frame) {
             let frame_peak = [left.abs(), right.abs()];
             analysis.pre_saturator_peak[0] = analysis.pre_saturator_peak[0].max(frame_peak[0]);
@@ -587,9 +626,10 @@ pub fn mix_stereo_with_sends_and_tempo_analyzed_range(
     }
     if tracks.iter().any(|track| track.dc_block) || stereo_tracks.iter().any(|track| track.dc_block)
     {
-        block_dc(&mut buffers.left, sample_rate);
-        block_dc(&mut buffers.right, sample_rate);
+        block_dc(&mut buffers.left, sample_rate, cancellation)?;
+        block_dc(&mut buffers.right, sample_rate, cancellation)?;
     }
+    cancellation.check()?;
     Ok(AnalyzedMix {
         sound: StereoSound {
             left: buffers.left,
@@ -602,36 +642,58 @@ pub fn mix_stereo_with_sends_and_tempo_analyzed_range(
     })
 }
 
+struct InstrumentInsertOptions<'a> {
+    waveshaper: Option<&'a Waveshaper>,
+    delay: Option<&'a Delay>,
+    controllers: &'a [SynthController],
+    cancellation: &'a RenderCancellation,
+}
+
 fn apply_instrument_inserts(
     left: &mut Vec<f32>,
     right: &mut Vec<f32>,
     sample_rate: u32,
-    waveshaper: Option<&Waveshaper>,
-    delay: Option<&Delay>,
-    controllers: &[SynthController],
     tempo_changes: &[SynthTempoChange],
+    options: InstrumentInsertOptions<'_>,
 ) -> Result<(), Error> {
-    if let Some(waveshaper) = waveshaper {
+    let controllers = options.controllers;
+    let cancellation = options.cancellation;
+    if let Some(waveshaper) = options.waveshaper {
         waveshaper.validate()?;
         if has_waveshaper_automation(controllers) {
-            apply_stereo_waveshaper_automation(left, right, sample_rate, waveshaper, controllers);
+            apply_stereo_waveshaper_automation_with_cancellation(
+                left,
+                right,
+                sample_rate,
+                waveshaper,
+                controllers,
+                cancellation,
+            )?;
         } else {
-            apply_stereo_waveshaper(left, right, waveshaper);
+            apply_stereo_waveshaper_with_cancellation(left, right, waveshaper, cancellation)?;
         }
     }
-    if let Some(delay) = delay {
+    if let Some(delay) = options.delay {
         delay.validate()?;
         if has_delay_automation(controllers) {
-            apply_stereo_delay_automation_with_tempo(
+            apply_stereo_delay_automation_with_tempo_and_cancellation(
                 left,
                 right,
                 sample_rate,
                 delay,
                 controllers,
                 tempo_changes,
-            );
+                cancellation,
+            )?;
         } else {
-            apply_stereo_delay_with_tempo(left, right, sample_rate, delay, tempo_changes);
+            apply_stereo_delay_with_tempo_and_cancellation(
+                left,
+                right,
+                sample_rate,
+                delay,
+                tempo_changes,
+                cancellation,
+            )?;
         }
     }
     Ok(())
@@ -658,6 +720,7 @@ fn mix_channel(
     sample_rate: u32,
     tempo_changes: &[SynthTempoChange],
     analysis_range: (usize, usize),
+    cancellation: &RenderCancellation,
 ) -> Result<ChannelMeter, Error> {
     let ProcessedChannel {
         left: mut track_left,
@@ -667,6 +730,7 @@ fn mix_channel(
         automation,
     } = channel;
     let (analysis_start, analysis_end) = analysis_range;
+    cancellation.check()?;
     if inserts.len() > INSERT_LIMIT {
         return Err(Error::InvalidMix(
             "a channel supports at most four inserts".to_owned(),
@@ -679,27 +743,32 @@ fn mix_channel(
         return Err(Error::InvalidMix("send gains must be 0..=1".to_owned()));
     }
     for (slot, effect) in inserts.iter().enumerate() {
+        cancellation.check()?;
         if automation.has_insert(slot) {
             let tail_frames =
                 automation.insert_tail_frames(slot, effect, sample_rate, tempo_changes);
-            apply_insert_automated(
+            apply_insert_automated_with_cancellation(
                 &mut track_left,
                 &mut track_right,
                 sample_rate,
                 effect,
-                tempo_changes,
-                tail_frames,
                 |processor, time| {
                     automation.automate_insert(slot, time, processor, sample_rate);
                 },
+                AutomatedInsertOptions {
+                    tempo_changes,
+                    tail_frames,
+                    cancellation,
+                },
             )?;
         } else {
-            apply_insert_with_tempo(
+            apply_insert_with_tempo_and_cancellation(
                 &mut track_left,
                 &mut track_right,
                 sample_rate,
                 effect,
                 tempo_changes,
+                cancellation,
             )?;
         }
     }
@@ -708,6 +777,7 @@ fn mix_channel(
         buffers.right.resize(track_left.len(), 0.0);
     }
     for frame in 0..track_left.len() {
+        cancellation.check_frame(frame)?;
         buffers.left[frame] += track_left[frame];
         buffers.right[frame] += track_right[frame];
     }
@@ -719,6 +789,7 @@ fn mix_channel(
             }
         }
         for frame in 0..track_left.len() {
+            cancellation.check_frame(frame)?;
             let time = frame as f64 / f64::from(sample_rate);
             let gains = automation.send_gains(time, send_gains);
             for (index, gain) in gains.into_iter().enumerate() {
@@ -737,6 +808,7 @@ fn mix_channel(
                 buffers.send_right[index].resize(track_left.len(), 0.0);
             }
             for frame in 0..track_left.len() {
+                cancellation.check_frame(frame)?;
                 buffers.send_left[index][frame] += track_left[frame] * gain;
                 buffers.send_right[index][frame] += track_right[frame] * gain;
             }
@@ -746,6 +818,7 @@ fn mix_channel(
     let analysis_end = analysis_end.min(track_left.len());
     let analysis_start = analysis_start.min(analysis_end);
     for frame in analysis_start..analysis_end {
+        cancellation.check_range_frame(frame, analysis_start)?;
         let peak = [track_left[frame].abs(), track_right[frame].abs()];
         meter.pre_sum_peak[0] = meter.pre_sum_peak[0].max(peak[0]);
         meter.pre_sum_peak[1] = meter.pre_sum_peak[1].max(peak[1]);
@@ -1386,5 +1459,15 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn offset_analysis_range_checks_cancellation_at_its_relative_start() {
+        let cancellation = RenderCancellation::default();
+        cancellation.cancel();
+        assert!(matches!(
+            cancellation.check_range_frame(1, 1),
+            Err(Error::RenderCancelled)
+        ));
     }
 }

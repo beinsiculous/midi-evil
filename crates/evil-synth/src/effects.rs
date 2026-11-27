@@ -1,16 +1,17 @@
 use serde::{Deserialize, Serialize};
 
 use crate::delay::{
-    allocated_tail_frames, apply_stereo_delay_with_tempo, maximum_delay_frames,
+    allocated_tail_frames, apply_stereo_delay_with_tempo_and_cancellation, maximum_delay_frames,
     stereo_delay_frame_counts, stereo_delay_input, tempo_bpm_at,
 };
 use crate::dynamics::CompressorProcessor;
 use crate::equalizer::EqualizerProcessor;
 use crate::modulation::ModulatedDelayProcessor;
 use crate::reverb::ReverbProcessor;
-use crate::waveshaper::apply_stereo_waveshaper;
+use crate::waveshaper::apply_stereo_waveshaper_with_cancellation;
 use crate::{
-    Chorus, Compressor, Delay, Equalizer, Error, Flanger, Reverb, SynthTempoChange, Waveshaper,
+    Chorus, Compressor, Delay, Equalizer, Error, Flanger, RenderCancellation, Reverb,
+    SynthTempoChange, Waveshaper,
 };
 use evil_performance::EffectParameter;
 
@@ -277,22 +278,49 @@ pub(crate) fn apply_insert_with_tempo(
     effect: &InsertEffect,
     tempo_changes: &[SynthTempoChange],
 ) -> Result<(), Error> {
+    apply_insert_with_tempo_and_cancellation(
+        left,
+        right,
+        sample_rate,
+        effect,
+        tempo_changes,
+        &RenderCancellation::default(),
+    )
+}
+
+pub(crate) fn apply_insert_with_tempo_and_cancellation(
+    left: &mut Vec<f32>,
+    right: &mut Vec<f32>,
+    sample_rate: u32,
+    effect: &InsertEffect,
+    tempo_changes: &[SynthTempoChange],
+    cancellation: &RenderCancellation,
+) -> Result<(), Error> {
+    cancellation.check()?;
     effect.validate()?;
     let bypass = insert_is_bypassed(effect);
     if bypass {
         return Ok(());
     }
     match effect {
-        InsertEffect::Waveshaper(effect) => apply_stereo_waveshaper(left, right, effect),
-        InsertEffect::Delay(effect) => {
-            apply_stereo_delay_with_tempo(left, right, sample_rate, effect, tempo_changes)
+        InsertEffect::Waveshaper(effect) => {
+            apply_stereo_waveshaper_with_cancellation(left, right, effect, cancellation)?
         }
+        InsertEffect::Delay(effect) => apply_stereo_delay_with_tempo_and_cancellation(
+            left,
+            right,
+            sample_rate,
+            effect,
+            tempo_changes,
+            cancellation,
+        )?,
         InsertEffect::Bitcrush(effect) => {
             let original_len = left.len();
             left.resize(original_len + usize::from(effect.downsample) - 1, 0.0);
             right.resize(original_len + usize::from(effect.downsample) - 1, 0.0);
             let mut held = [0.0; 2];
             for (frame, (left, right)) in left.iter_mut().zip(right).enumerate() {
+                cancellation.check_frame(frame)?;
                 if frame % usize::from(effect.downsample) == 0 {
                     held = [effect.quantize(*left), effect.quantize(*right)];
                 }
@@ -307,10 +335,17 @@ pub(crate) fn apply_insert_with_tempo(
             effect,
             sample_rate as usize / 20,
             tempo_changes,
-        ),
-        InsertEffect::Compressor(_) => {
-            apply_stateful_insert(left, right, sample_rate, effect, 0, tempo_changes)
-        }
+            cancellation,
+        )?,
+        InsertEffect::Compressor(_) => apply_stateful_insert(
+            left,
+            right,
+            sample_rate,
+            effect,
+            0,
+            tempo_changes,
+            cancellation,
+        )?,
         InsertEffect::Chorus(_) | InsertEffect::Flanger(_) | InsertEffect::Reverb(_) => {
             apply_stateful_insert(
                 left,
@@ -319,9 +354,11 @@ pub(crate) fn apply_insert_with_tempo(
                 effect,
                 sample_rate as usize * 2,
                 tempo_changes,
-            )
+                cancellation,
+            )?
         }
     }
+    cancellation.check()?;
     Ok(())
 }
 
@@ -400,25 +437,36 @@ pub(crate) fn insert_tail_frames(
     }
 }
 
-pub(crate) fn apply_insert_automated(
+pub(crate) struct AutomatedInsertOptions<'a> {
+    pub tempo_changes: &'a [SynthTempoChange],
+    pub tail_frames: usize,
+    pub cancellation: &'a RenderCancellation,
+}
+
+pub(crate) fn apply_insert_automated_with_cancellation(
     left: &mut Vec<f32>,
     right: &mut Vec<f32>,
     sample_rate: u32,
     effect: &InsertEffect,
-    tempo_changes: &[SynthTempoChange],
-    tail_frames: usize,
     mut automate: impl FnMut(&mut InsertProcessor, f64),
+    options: AutomatedInsertOptions<'_>,
 ) -> Result<(), Error> {
+    options.cancellation.check()?;
     effect.validate()?;
     let original_len = left.len();
-    left.resize(original_len + tail_frames, 0.0);
-    right.resize(original_len + tail_frames, 0.0);
+    left.resize(original_len + options.tail_frames, 0.0);
+    right.resize(original_len + options.tail_frames, 0.0);
     let mut processor = InsertProcessor::new(effect, sample_rate);
     for (frame, (left, right)) in left.iter_mut().zip(right).enumerate() {
+        options.cancellation.check_frame(frame)?;
         let mut stereo = [*left, *right];
         let time = frame as f64 / f64::from(sample_rate);
         automate(&mut processor, time);
-        processor.process_with_tempo(&mut stereo, sample_rate, tempo_bpm_at(tempo_changes, time));
+        processor.process_with_tempo(
+            &mut stereo,
+            sample_rate,
+            tempo_bpm_at(options.tempo_changes, time),
+        );
         *left = stereo[0];
         *right = stereo[1];
     }
@@ -432,18 +480,21 @@ fn apply_stateful_insert(
     effect: &InsertEffect,
     tail_frames: usize,
     tempo_changes: &[SynthTempoChange],
-) {
+    cancellation: &RenderCancellation,
+) -> Result<(), Error> {
     let original_len = left.len();
     left.resize(original_len + tail_frames, 0.0);
     right.resize(original_len + tail_frames, 0.0);
     let mut processor = InsertProcessor::new(effect, sample_rate);
     for (frame, (left, right)) in left.iter_mut().zip(right).enumerate() {
+        cancellation.check_frame(frame)?;
         let mut stereo = [*left, *right];
         let time = frame as f64 / f64::from(sample_rate);
         processor.process_with_tempo(&mut stereo, sample_rate, tempo_bpm_at(tempo_changes, time));
         *left = stereo[0];
         *right = stereo[1];
     }
+    Ok(())
 }
 
 pub(crate) enum InsertProcessor {
@@ -819,5 +870,31 @@ mod tests {
         ] {
             assert!(effect.validate().is_err());
         }
+    }
+
+    #[test]
+    fn cancellation_interrupts_one_long_effect_pass() {
+        let cancellation = RenderCancellation::default();
+        let mut left = vec![0.25; 4_000_000];
+        let mut right = vec![-0.25; 4_000_000];
+        let result = std::thread::scope(|scope| {
+            let cancel = cancellation.clone();
+            scope.spawn(move || {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while cancel.checkpoint_count() == 0 && std::time::Instant::now() < deadline {
+                    std::thread::yield_now();
+                }
+                cancel.cancel();
+            });
+            apply_insert_with_tempo_and_cancellation(
+                &mut left,
+                &mut right,
+                48_000,
+                &InsertEffect::Reverb(Reverb::default()),
+                &[],
+                &cancellation,
+            )
+        });
+        assert!(matches!(result, Err(Error::RenderCancelled)));
     }
 }
