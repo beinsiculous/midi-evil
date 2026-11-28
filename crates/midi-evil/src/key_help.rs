@@ -9,9 +9,11 @@ use eframe::egui;
 use crate::arranger::edits::SongCommand;
 use crate::piano_roll::edits::RollCommand;
 use crate::platform::Platform;
-use crate::speech;
+use crate::speech::{self, Unavailable};
 
 mod page_keys;
+#[cfg(test)]
+mod page_notes_tests;
 pub use page_keys::KeyTable;
 
 /// The modifier half of a chord. `Command` is Control, or Command on macOS.
@@ -72,6 +74,8 @@ pub struct KeyNote {
     pub modifier: ChordModifier,
     pub key: egui::Key,
     pub action: &'static str,
+    /// Why this platform refuses the command, which the chord then only says.
+    pub refused: Option<Unavailable>,
 }
 
 impl KeyNote {
@@ -307,6 +311,9 @@ impl Surface {
                             modifier,
                             key,
                             action: speech::app_command_action(command),
+                            refused: platform
+                                .playback_refused()
+                                .filter(|_| command == AppCommand::PlayOrStop),
                         })
                 })
                 .collect(),
@@ -317,6 +324,9 @@ impl Surface {
                         modifier,
                         key,
                         action: speech::song_command_action(command),
+                        refused: platform
+                            .playback_refused()
+                            .filter(|_| command == SongCommand::StartHere),
                     })
                 })
                 .collect(),
@@ -328,6 +338,7 @@ impl Surface {
                         modifier,
                         key,
                         action: speech::roll_command_action(command),
+                        refused: None,
                     }
                 })
                 .collect(),
@@ -363,24 +374,62 @@ pub fn help_text(command_key: &str, keep: impl Fn(&KeyNote) -> bool) -> String {
     help_text_on(command_key, Platform::Desktop, keep)
 }
 
-/// The help window's text on this platform: each surface's title, then one chord a line. `keep`
-/// leaves out further chords.
+/// One surface's keyboard notes as a person reads them: its title, then one line a chord.
+pub struct NotesSection {
+    pub title: &'static str,
+    pub lines: Vec<String>,
+}
+
+/// The title of the notes' last section, on a platform that leaves something out.
+pub const DESKTOP_ONLY_TITLE: &str = "Desktop-only for now";
+
+/// The keyboard notes on this platform, for the help window and for the page the browser build
+/// is on, which say the same of every chord: "Space: plays or stops the song — not in the
+/// browser build yet" where the platform refuses the command. Then, where the platform leaves
+/// anything out, what it leaves out. `keep` leaves out further chords.
+pub fn keyboard_notes(
+    command_key: &str,
+    platform: Platform,
+    keep: impl Fn(&KeyNote) -> bool,
+) -> Vec<NotesSection> {
+    let desktop_only = NotesSection {
+        title: DESKTOP_ONLY_TITLE,
+        lines: platform
+            .left_out()
+            .iter()
+            .map(|&thing| speech::left_out_name(thing).to_owned())
+            .collect(),
+    };
+    Surface::ALL
+        .into_iter()
+        .map(|surface| NotesSection {
+            title: surface.title(),
+            lines: surface
+                .notes_on(platform)
+                .iter()
+                .filter(|note| keep(note))
+                .map(|note| {
+                    let line = format!("{}: {}", note.chord(command_key), note.action);
+                    match note.refused {
+                        Some(reason) => format!("{line} — {}", speech::refused_in_notes(reason)),
+                        None => line,
+                    }
+                })
+                .collect(),
+        })
+        .chain((!desktop_only.lines.is_empty()).then_some(desktop_only))
+        .collect()
+}
+
+/// The help window's text on this platform: each surface's title, then one chord a line.
 pub fn help_text_on(
     command_key: &str,
     platform: Platform,
     keep: impl Fn(&KeyNote) -> bool,
 ) -> String {
-    Surface::ALL
+    keyboard_notes(command_key, platform, keep)
         .into_iter()
-        .map(|surface| {
-            let lines: Vec<String> = surface
-                .notes_on(platform)
-                .iter()
-                .filter(|note| keep(note))
-                .map(|note| format!("{}: {}", note.chord(command_key), note.action))
-                .collect();
-            format!("{}\n{}", surface.title(), lines.join("\n"))
-        })
+        .map(|section| format!("{}\n{}", section.title, section.lines.join("\n")))
         .collect::<Vec<_>>()
         .join("\n\n")
 }

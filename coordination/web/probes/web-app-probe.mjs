@@ -8,10 +8,15 @@
 // Firefox row says so: its real tree is the sitting's.
 //
 //   PLAYWRIGHT_FROM=…/insiculous_web/package.json \
-//   node web-app-probe.mjs --url http://127.0.0.1:PORT/bundle/index.html --browser chromium \
-//       [--rows nine-steps,held-key]
+//   node web-app-probe.mjs --url http://127.0.0.1:PORT/bundle/index.html \
+//       --gate-url http://127.0.0.1:PORT/gate/index.html --browser chromium \
+//       [--group matrix] [--rows nine-steps,held-key] [--shows-desktop] [--marker TEXT]
 //
-// The rows are in web-app-rows.mjs. Each runs in a fresh page. Keys are Playwright's, delivered to
+// The rows are in web-app-rows.mjs and the matrix's in web-app-matrix-rows.mjs. Each runs in a
+// fresh page, on the bundle it names: the visitor's (--url) or the gate's (--gate-url), which
+// opens the row's fixture by `?fixture=`. --shows-desktop adds `?shows=desktop` to every page
+// of the gate's bundle, as the absence walk's negative control asks; --marker is the text only
+// the gate's bundle compiles in. Keys are Playwright's, delivered to
 // the page past the browser's own shortcut handling, so what a browser itself does with a chord —
 // open a dialog, go back, print — is never shown here: the rows that hand a chord to the browser
 // show that the application never received it, did nothing and wrote nothing, and that the
@@ -23,7 +28,18 @@
 
 import { createRequire } from "node:module";
 
-import { ROWS, plain } from "./web-app-rows.mjs";
+import { MATRIX_ROWS } from "./web-app-matrix-rows.mjs";
+import { PAGE_ROWS } from "./web-app-page-rows.mjs";
+import { ROWS as EARLIER_ROWS, plain } from "./web-app-rows.mjs";
+
+// Every row, each in the group it runs in. The groups run apart, each under its own deadline.
+const ROWS = Object.fromEntries(
+  [
+    ...Object.entries(PAGE_ROWS),
+    ...Object.entries(EARLIER_ROWS).map(([name, row]) => [name, { group: "keys-and-bridge", ...row }]),
+    ...Object.entries(MATRIX_ROWS).map(([name, row]) => [name, { group: "matrix", bundle: "gate", ...row }]),
+  ],
+);
 
 // A browser's tree collapses runs of white space in a description; so does every comparison.
 function collapsed(text) {
@@ -37,22 +53,52 @@ const VIEWPORT = { width: 1440, height: 900 };
 class ToolingFailure extends Error {}
 
 function parseArguments(argv) {
-  const settings = { url: null, browser: null, rows: null };
+  const settings = { url: null, gateUrl: null, browser: null, rows: null, group: null, showsDesktop: false, marker: null, groupSeconds: null };
   for (let index = 0; index < argv.length; index += 2) {
-    const [flag, value] = [argv[index], argv[index + 1]];
+    const flag = argv[index];
+    if (flag === "--shows-desktop") {
+      settings.showsDesktop = true;
+      index -= 1;
+      continue;
+    }
+    const value = argv[index + 1];
     if (value === undefined) throw new ToolingFailure(`${flag} needs a value`);
     if (flag === "--url") settings.url = value;
+    else if (flag === "--gate-url") settings.gateUrl = value;
     else if (flag === "--browser") settings.browser = value;
     else if (flag === "--rows") settings.rows = value.split(",");
+    else if (flag === "--group") settings.group = value;
+    else if (flag === "--marker") settings.marker = value;
+    else if (flag === "--group-seconds") settings.groupSeconds = Number(value);
     else throw new ToolingFailure(`unknown argument ${flag}`);
   }
   if (!settings.url || !["chromium", "firefox"].includes(settings.browser)) {
-    throw new ToolingFailure("usage: --url URL --browser chromium|firefox [--rows A,B]");
+    throw new ToolingFailure("usage: --url URL [--gate-url URL] --browser chromium|firefox [--group G] [--rows A,B] [--shows-desktop] [--marker TEXT]");
   }
   for (const row of settings.rows ?? []) {
     if (!ROWS[row]) throw new ToolingFailure(`no row named ${row}`);
   }
+  if (settings.group && !Object.values(ROWS).some((row) => row.group === settings.group)) {
+    throw new ToolingFailure(`no group named ${settings.group}`);
+  }
+  // A row that may take most of its group's time would leave the group's own deadline nothing to
+  // stand for.
+  for (const [name, row] of Object.entries(ROWS)) {
+    const seconds = row.deadlineSeconds ?? ROW_DEADLINE_MILLISECONDS / 1000;
+    if (settings.groupSeconds && seconds > settings.groupSeconds / 2) {
+      throw new ToolingFailure(`the row ${name} may take ${seconds} s, more than half its group's ${settings.groupSeconds} s`);
+    }
+  }
   return settings;
+}
+
+// The page a row starts on: its bundle's, with its fixture and, for the negative control, the
+// desktop's set of controls.
+function rowUrl(settings, row) {
+  if (row.bundle !== "gate" && !settings.showsDesktop) return settings.url;
+  if (!settings.gateUrl) throw new ToolingFailure("a row on the gate's bundle needs --gate-url");
+  const query = [row.fixture ? `fixture=${row.fixture}` : null, settings.showsDesktop ? "shows=desktop" : null].filter(Boolean);
+  return `${settings.gateUrl}${query.length ? `?${query.join("&")}` : ""}`;
 }
 
 function loadPlaywright() {
@@ -138,13 +184,14 @@ class Probe {
   // A fresh page in a context of its own: a page left with unsaved work asks before it is left,
   // and that prompt is never part of a row. (Playwright's handling of it differs: with no dialog
   // listener, Chromium's prompt is accepted for the script; headless Firefox raises none for a
-  // navigation no person started.)
-  async open(url) {
+  // navigation no person started.) `before` runs on the new page before it loads, and with
+  // `waitForEditor` false the row reads the page before the application has started.
+  async open(url, { viewport = VIEWPORT, before = null, waitForEditor = true } = {}) {
     this.url = url;
     // Closing a context runs no leave-page handler.
     if (this.page) await this.page.context().close();
     const context = await this.browser.newContext({
-      viewport: VIEWPORT,
+      viewport,
       ...(this.userAgent ? { userAgent: this.userAgent } : {}),
     });
     this.page = await context.newPage();
@@ -154,7 +201,9 @@ class Probe {
       if (message.type() === "error") this.errors.push(`the console logged an error: ${message.text().slice(0, 300)}`);
     });
     this.cdp = null;
+    if (before) await before(this.page);
     await this.page.goto(url, { waitUntil: "load", timeout: LOAD_DEADLINE_MILLISECONDS });
+    if (!waitForEditor) return;
     await this.page.waitForFunction(
       () => document.getElementById("midi-evil-current")?.textContent !== "Loading the editor",
       null,
@@ -207,9 +256,10 @@ class Probe {
     );
   }
 
-  async press(chord, label = chord) {
+  // `extraMilliseconds` past the frames a key asks for; a walk over every stop waits less.
+  async press(chord, label = chord, extraMilliseconds = 80) {
     await this.page.keyboard.press(chord);
-    await this.settle();
+    await this.settle(extraMilliseconds);
     const state = await this.read();
     this.describe(label, state);
     return state;
@@ -223,11 +273,23 @@ class Probe {
     return state;
   }
 
-  // Presses `chord` until the current element begins with `text`.
+  // Presses `chord` until the current element begins with `text`. A Tab that leaves the editor
+  // comes round again into it, as the next Tab would in a browser with a window around the page
+  // (headless Firefox has none, and leaves the focus where it went): by the sentinel on the side
+  // it would enter from, whatever stands between it and the top or the end of the page.
   async pressUntil(chord, text, most = 60) {
     for (let count = 0; count < most; count += 1) {
-      const state = await this.press(chord);
+      let state = await this.press(chord);
       if (plain(state.current).startsWith(text)) return state;
+      const left = state.activeId !== "midi-evil-canvas" && state.activeId !== "midi-evil-text-entry";
+      if (left && (chord === "Tab" || chord === "Shift+Tab")) {
+        const sentinel = chord === "Tab" ? "midi-evil-enter-first" : "midi-evil-enter-last";
+        await this.page.evaluate((id) => document.getElementById(id).focus(), sentinel);
+        await this.settle();
+        state = await this.read();
+        this.describe(`${chord}, coming round into the editor`, state);
+        if (plain(state.current).startsWith(text)) return state;
+      }
     }
     this.fail(`${chord} never reached a control beginning ${JSON.stringify(text)}`);
     return this.last;
@@ -315,12 +377,15 @@ async function runRow(engine, settings, name, log) {
     });
   try {
     const probe = new Probe(browser, settings.browser, ROWS[name].userAgent, log);
+    probe.settings = settings;
     let timer;
+    // A row that walks every stop several times says so by a deadline of its own.
+    const rowDeadline = (ROWS[name].deadlineSeconds ?? ROW_DEADLINE_MILLISECONDS / 1000) * 1000;
     const deadline = new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error(`the row outlived its ${ROW_DEADLINE_MILLISECONDS / 1000} s deadline`)), ROW_DEADLINE_MILLISECONDS);
+      timer = setTimeout(() => reject(new Error(`the row outlived its ${rowDeadline / 1000} s deadline`)), rowDeadline);
     });
     const row = (async () => {
-      await probe.open(settings.url);
+      if (ROWS[name].opens !== false) await probe.open(rowUrl(settings, ROWS[name]));
       await ROWS[name].run(probe);
     })();
     // A row stopped by its deadline goes on failing as the browser closes under it; that is not
@@ -344,7 +409,7 @@ async function main() {
   const settings = parseArguments(process.argv.slice(2));
   const playwright = loadPlaywright();
   const engine = settings.browser === "firefox" ? playwright.firefox : playwright.chromium;
-  const names = settings.rows ?? Object.keys(ROWS);
+  const names = settings.rows ?? Object.keys(ROWS).filter((name) => !settings.group || ROWS[name].group === settings.group);
   let failed = 0;
   for (const name of names) {
     console.log(`\n## ${settings.browser}: ${name} — ${ROWS[name].title}`);
@@ -353,9 +418,15 @@ async function main() {
     }
     if (ROWS[name].sitting) console.log(`   (the sitting's: ${ROWS[name].sitting})`);
     if (ROWS[name].userAgent) console.log(`   (as a Mac: ${ROWS[name].userAgent})`);
+    console.log(`   (on the ${ROWS[name].bundle === "gate" ? "gate's" : "visitor's"} bundle${ROWS[name].fixture ? `, from ${ROWS[name].fixture}.evil` : ""})`);
+    const started = Date.now();
     const failures = await runRow(engine, settings, name, (line) => console.log(line));
-    if (failures.length === 0) console.log(`PASSED: ${name}`);
-    else failed += 1;
+    const seconds = Math.round((Date.now() - started) / 1000);
+    if (failures.length === 0) console.log(`PASSED: ${name} (${seconds} s)`);
+    else {
+      console.log(`FAILED ROW: ${name} (${seconds} s)`);
+      failed += 1;
+    }
   }
   console.log(`\n${settings.browser}: ${names.length - failed} of ${names.length} rows held`);
   return failed > 0 ? 1 : 0;

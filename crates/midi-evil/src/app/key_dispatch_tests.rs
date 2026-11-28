@@ -402,22 +402,25 @@ fn undo_leaves_the_view_alone_unless_the_restored_tracks_kind_rules_it_out() {
         .history
         .record(harness.app.project.clone(), selection, None);
     harness.app.roll.select_track(0);
-    harness.app.view = View::Synth;
+    harness.app.select_view(View::Synth);
     harness.app.project.name = "Edited".into();
     harness.app.undo();
     assert_eq!(harness.app.roll.selected_track, 1);
-    assert!(harness.app.view == View::Pads, "a kit cannot stay in Synth");
+    assert!(
+        harness.app.view() == View::Pads,
+        "a kit cannot stay in Synth"
+    );
 
     let mut harness = Harness::new(project_with(&[&[note_at(60, 0, 480)]]));
     harness.focus_roll();
     harness.run(vec![plain(egui::Key::ArrowRight)]);
     harness.run(vec![plain(egui::Key::ArrowUp)]);
-    harness.app.view = View::Song;
+    harness.app.select_view(View::Song);
     harness.run(vec![]);
     harness.run(vec![press(egui::Key::Z, CONTROL)]);
     assert_eq!(harness.notes(0)[0].pitch, 60, "undone");
     assert!(
-        harness.app.view == View::Song,
+        harness.app.view() == View::Song,
         "from Song, undo stays in Song"
     );
 }

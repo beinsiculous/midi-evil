@@ -20,10 +20,10 @@ impl StudioApp {
         // A menu, a combo box's list or a window owns Escape and the arrows while it is up.
         let behind_a_popup = self.popup_or_window_open(context);
         let mut roll = self.roll.widget_id.filter(|_| {
-            self.view == View::Notes && !self.project.tracks.is_empty() && !behind_a_popup
+            self.view() == View::Notes && !self.project.tracks.is_empty() && !behind_a_popup
         });
         let mut song = self.song.widget_id.filter(|_| {
-            self.view == View::Song && !self.project.tracks.is_empty() && !behind_a_popup
+            self.view() == View::Song && !self.project.tracks.is_empty() && !behind_a_popup
         });
         // A field whose edit ended keeps its place without egui's focus, and Tab moves on from
         // it: the Tab is taken here, before egui walks from nothing to the first control.
@@ -177,7 +177,7 @@ impl StudioApp {
                 });
                 let showing =
                     piano_roll::sequence_context(&self.project, &self.roll, self.document);
-                let view = self.view;
+                let view = self.view();
                 handled[position] = app_command.is_some_and(|command| {
                     self.command_key(command, platform, text_editing, space_is_free)
                 });
@@ -187,12 +187,12 @@ impl StudioApp {
                     piano_roll::sequence_context(&self.project, &self.roll, self.document);
                 if handled[position]
                     && (still_showing != showing
-                        || self.view != view
+                        || self.view() != view
                         || self.project.tracks.is_empty())
                 {
                     roll = None;
                 }
-                if handled[position] && (self.view != view || self.project.tracks.is_empty()) {
+                if handled[position] && (self.view() != view || self.project.tracks.is_empty()) {
                     song = None;
                 }
                 if handled[position] {
@@ -278,7 +278,7 @@ impl StudioApp {
         match command {
             AppCommand::NewProject => self.new_project(),
             AppCommand::OpenProject => self.open_project(),
-            AppCommand::SaveProject if self.view == View::Pads => self.save_beats_bank(),
+            AppCommand::SaveProject if self.view() == View::Pads => self.save_beats_bank(),
             AppCommand::SaveProject => self.save_project(),
             // A text field being edited keeps its own undo, and its own Space and arrows.
             AppCommand::Undo | AppCommand::Redo if text_editing => return false,

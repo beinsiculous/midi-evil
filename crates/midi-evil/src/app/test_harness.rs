@@ -290,7 +290,7 @@ impl Harness {
         app.project = project;
         app.reset_history();
         app.roll = RollState::default();
-        app.view = View::Notes;
+        app.select_view(View::Notes);
         app.show_about = false;
         let mut harness = Self {
             context,

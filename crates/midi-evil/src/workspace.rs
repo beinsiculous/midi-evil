@@ -1,4 +1,4 @@
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum View {
     #[default]
     Song,

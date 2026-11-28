@@ -13,19 +13,24 @@
 #
 #   coordination/web/probes/native-gate.sh > native-gate-transcript.txt
 #
-# MIDI_EVIL_BINARY chooses the build, as for run-probe.sh. Rows without a fixture of their own
-# open the tracked Bach invention, which starts on its first track: its first note is C 5 at bar 1
-# beat 1.5, a sixteenth long, then B 4 at beat 1.75, in 4/4 at 64 beats per minute.
+# MIDI_EVIL_BINARY chooses the build, as for run-probe.sh. Every row opens a project from the
+# tracked set in fixtures/, the one the web gate starts from too. Rows without a fixture of their
+# own open the Bach invention's, the tracked MIDI file imported, which starts on its first track:
+# its first note is C 5 at bar 1 beat 1.5, a sixteenth long, then B 4 at beat 1.75, in 4/4 at 64
+# beats per minute. W0's main sequence imports the MIDI file itself, so the import stays covered.
 set -u
 
 probes=$(cd "$(dirname "$0")" && pwd)
 bach=$(cd "$probes/../../.." && pwd)/examples/public-domain/bach-invention-02/bach-invention-02.mid
 failed=0
-# A row opens the Bach invention unless run_with names a fixture for that row alone, whatever
+# A row opens the Bach project unless run_with names a fixture for that row alone, whatever
 # MIDI_EVIL_FILE the caller's environment holds.
 row_fixture=
+# Some rows save into their fixture, so the tracked set is never opened in place: each run copies
+# it into a private directory, removed on exit.
 fixtures=$(mktemp -d /tmp/midi-evil-gate.XXXXXX) || exit 1
 trap 'rm -rf -- "$fixtures"' EXIT
+cp -- "$probes"/fixtures/*.evil "$fixtures"/ || exit 1
 stand_in_runtime=
 
 run() {
@@ -33,7 +38,7 @@ run() {
     shift
     echo
     echo "################ $title  [XWayland, private bus]"
-    if ! MIDI_EVIL_FILE=${row_fixture:-$bach} "$probes/run-probe.sh" --heading "$title" "$@"; then
+    if ! MIDI_EVIL_FILE=${row_fixture:-$fixtures/bach.evil} "$probes/run-probe.sh" --heading "$title" "$@"; then
         echo "################ FAILED: $title"
         failed=1
     fi
@@ -45,52 +50,10 @@ run_with() {
     row_fixture=$fixtures/$fixture.evil run "$@"
 }
 
-# A project in 4/4 at 480 ticks a quarter; each argument after the name is one track, written
-# "name|pitch,start,length;pitch,start,length".
-fixture() {
-    local name=$1
-    shift
-    local tracks=() instruments=() notes=() note_list=() index=0 track note pitch start length
-    for track in "$@"; do
-        notes=()
-        IFS=';' read -ra note_list <<< "${track#*|}"
-        for note in "${note_list[@]}"; do
-            IFS=',' read -r pitch start length <<< "$note"
-            notes+=("{\"pitch\":$pitch,\"velocity\":100,\"start_tick\":$start,\"duration_ticks\":$length}")
-        done
-        instruments+=("{\"name\":\"${track%%|*}\",\"source\":{\"type\":\"synth\",\"patch\":\"lead\"}}")
-        tracks+=("{\"name\":\"${track%%|*}\",\"instrument\":$index,\"notes\":[$(IFS=,; echo "${notes[*]}")]}")
-        index=$((index + 1))
-    done
-    cat > "$fixtures/$name.evil" << JSON
-{"format":"midi-evil-project","version":2,"name":"$name","tempo_bpm":120,"beats_per_bar":4,
- "beat_unit":4,"ticks_per_quarter":480,"sample_rate":44100,
- "instruments":[$(IFS=,; echo "${instruments[*]}")],"tracks":[$(IFS=,; echo "${tracks[*]}")]}
-JSON
+# The one row that imports the MIDI file rather than opening its project.
+run_imported() {
+    row_fixture=$bach run "$@"
 }
-
-fixture twins "Twins|60,0,480;60,0,480"
-fixture bass "Bass|36,0,480;38,480,480;40,960,480;31,1440,480"
-fixture two-tracks "one|60,0,480" "two|64,0,480"
-fixture three-notes "Three|60,0,240;62,60,240;64,960,240"
-fixture same-pitch-overlap "Overlap|60,0,960;60,480,480"
-# Sixty-four one-beat notes at 120 beats a minute: half a minute of song, long enough to read the
-# transport twice while it plays.
-long_notes=$(for beat in $(seq 0 63); do echo -n "$((60 + beat % 12)),$((beat * 480)),480;"; done)
-fixture long "Long|${long_notes%;}"
-# A clean project at 90 beats a minute, so a tempo change and a new project each read differently.
-fixture tempo "Tempo|60,0,480"
-sed -i 's/"tempo_bpm":120/"tempo_bpm":90/' "$fixtures/tempo.evil"
-# Two notes and one pitch-bend point, for the roll's Delete beside an automation lane.
-cat > "$fixtures/lane-point.evil" << 'JSON'
-{"format":"midi-evil-project","version":2,"name":"Lane point","tempo_bpm":120,"beats_per_bar":4,
- "beat_unit":4,"ticks_per_quarter":480,"sample_rate":44100,
- "instruments":[{"name":"Lead","source":{"type":"synth","patch":"lead"}}],
- "tracks":[{"name":"Lead","instrument":0,
-  "notes":[{"pitch":60,"velocity":100,"start_tick":0,"duration_ticks":480},
-           {"pitch":62,"velocity":100,"start_tick":480,"duration_ticks":480}],
-  "pitch_bends":[{"tick":480,"value":0}]}]}
-JSON
 
 # F6 from nothing focused: the toolbar region, the side panel's stop (the selected track), then
 # the editor's (the roll). No --focus anywhere: the roll is reached by keys, as a person would.
@@ -166,7 +129,7 @@ refusal_row "refusal: the probe's own check, called without the launcher" \
     "atspi-probe: refuses to run" 1 python3 "$probes/atspi-probe.py" --dump
 
 ################ W0's sequence, the transport's step now included, and its five edges
-run "W0 main sequence, with R-5: read the transport, read a note, change its pitch, start and length, delete it, leave and return" \
+run_imported "W0 main sequence, with R-5: read the transport, read a note, change its pitch, start and length, delete it, leave and return" \
     --press "PIANO ROLL" \
     --key F6 --expect-region Toolbar \
     --expect "Transport, stopped, tempo 64 beats per minute, 4 4 time, bar 1 beat 1, position 0 minutes, 0 seconds" \

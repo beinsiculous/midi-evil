@@ -100,8 +100,8 @@ impl StudioApp {
         self.roll.select_track(index);
         self.sync_sound_drafts();
         self.dirty = true;
-        if self.view == View::Pads {
-            self.view = View::Synth;
+        if self.view() == View::Pads {
+            self.select_view(View::Synth);
         }
         Ok(name)
     }
@@ -126,7 +126,7 @@ impl StudioApp {
             Ok(index) => {
                 self.roll.select_track(index);
                 self.sync_sound_drafts();
-                self.view = View::Pads;
+                self.select_view(View::Pads);
                 self.dirty = true;
                 self.report(speech::track_added(&name, "drum", "Maxwell kit"));
             }

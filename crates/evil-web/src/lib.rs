@@ -5,6 +5,8 @@
 #![cfg(target_arch = "wasm32")]
 
 mod bridge;
+#[cfg(feature = "gate")]
+mod gate;
 mod keyboard;
 mod shell;
 
@@ -14,6 +16,13 @@ use wasm_bindgen::{JsCast, prelude::*};
 
 /// The id of the canvas the page gives the workstation to draw on.
 const CANVAS_ID: &str = "midi-evil-canvas";
+
+/// What the bundle was built from, as `scripts/build_identity.sh` names it; `scripts/build_wasm.sh`
+/// sets it for both bundles, so the browser gate can refuse a pair built from different trees.
+const BUILD_IDENTITY: &str = match option_env!("MIDI_EVIL_BUILD_IDENTITY") {
+    Some(identity) => identity,
+    None => "midi-evil-build-unidentified",
+};
 
 /// Writes the `log` records eframe and the workstation raise to the console, warnings and worse.
 /// An error is written as a console error: eframe's own web logger writes it as a warning, which
@@ -72,11 +81,14 @@ async fn start_on_canvas() -> Result<(), JsValue> {
         .ok_or_else(|| format!("the page has no element with the id {CANVAS_ID}"))?
         .dyn_into::<web_sys::HtmlCanvasElement>()
         .map_err(|_| format!("the element with the id {CANVAS_ID} is not a canvas"))?;
+    canvas.set_attribute("data-build-identity", BUILD_IDENTITY)?;
     let mut bridge = bridge::Bridge::attach(&document, canvas.clone())?;
     let shared = Rc::new(keyboard::Shared::default());
     // Installed before eframe's own listeners, which it adds to the canvas when it starts; a
     // window listener in the capture phase runs before them all the same.
     keyboard::install(&window, &canvas, &shared)?;
+    #[cfg(feature = "gate")]
+    let gate_canvas = canvas.clone();
     // The runner's event handlers hold their own references to it, so it keeps running after
     // this handle is dropped.
     eframe::WebRunner::new()
@@ -91,12 +103,16 @@ async fn start_on_canvas() -> Result<(), JsValue> {
                 // The frame's own accessibility tree is what the page is told from; with no
                 // adapter attached, eframe builds none unless asked.
                 creation.egui_ctx.enable_accesskit();
+                #[cfg(not(feature = "gate"))]
                 let app = midi_evil::StudioApp::new(
                     creation,
                     midi_evil::LaunchOptions::default(),
                     None,
                     Box::new(()),
                 );
+                #[cfg(feature = "gate")]
+                let app = gate::application(creation, &gate_canvas)
+                    .map_err(|error| format!("{error:?}"))?;
                 Ok(Box::new(shell::Shell::new(app, bridge, shared)))
             }),
         )

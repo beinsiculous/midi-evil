@@ -5,6 +5,12 @@
 //! are kept here as the commands say them, paired at the frame's end with the focused control as
 //! it now is — before any hold-back — and compared with what a listener was last told, so one
 //! action is one string and the frame after it says nothing.
+//!
+//! A control an action changes is drawn as it was until the next pass: the button that undid the
+//! last edit is still available, the part's button that merged the part is still there. In the
+//! browser a pass with an outcome is therefore discarded and run again with no new input, and the
+//! outcome is paired with the controls as the action left them — where focus now is, what the
+//! control now says — so nothing is left to say a frame later for the same action.
 
 use std::collections::HashMap;
 
@@ -46,6 +52,18 @@ pub struct FrontEnd {
     place_kept: Option<egui::Id>,
     kept_neighbours: (Option<egui::Id>, Option<egui::Id>),
     made: FrameWords,
+    /// The keys of a pass discarded so its outcome waits for the controls it changed: the pass
+    /// run again has no input of its own.
+    deferred_keys: Option<FrameKeys>,
+}
+
+/// What a pass's input says about an edit: whether Enter or Escape was pressed, and whether text
+/// was typed, pasted, cut or deleted.
+#[derive(Debug, Default, Clone, Copy)]
+struct FrameKeys {
+    enter: bool,
+    escape: bool,
+    typed: bool,
 }
 
 impl FrontEnd {
@@ -78,6 +96,28 @@ impl FrontEnd {
     /// them.
     pub fn end_frame(&mut self, context: &egui::Context, holding: bool, waiting: bool) {
         let platform = platform::of(context);
+        let keys = Self::keys_of(context);
+        let keys = match self.deferred_keys.take() {
+            Some(earlier) => FrameKeys {
+                enter: earlier.enter || keys.enter,
+                escape: earlier.escape || keys.escape,
+                typed: earlier.typed || keys.typed,
+            },
+            None => keys,
+        };
+        if platform.pairs_an_outcome_with_the_controls_it_changed()
+            && !self.outcomes.is_empty()
+            && !holding
+            && !waiting
+            && context.current_pass_index() == 0
+        {
+            context.request_discard("an outcome waits for the controls its action changed");
+            if context.will_discard() {
+                self.deferred_keys = Some(keys);
+                self.current_names.clear();
+                return;
+            }
+        }
         // A control in a menu that closed this frame, or one not drawn at all, loses the focus
         // when the frame ends; told now, an outcome and the focus's move are one announcement,
         // not two in a row.
@@ -85,28 +125,11 @@ impl FrontEnd {
             .memory(|memory| memory.focused())
             .filter(|widget| drawn(context, *widget) && !in_a_closed_menu(context, *widget));
         let editing_now = context.output(|output| output.ime.is_some());
-        let (enter, escape, typed) = context.input(|input| {
-            let pressed = |wanted: egui::Key| {
-                input.events.iter().any(|event| {
-                    matches!(event, egui::Event::Key { key, pressed: true, .. } if *key == wanted)
-                })
-            };
-            let typed = input.events.iter().any(|event| {
-                matches!(
-                    event,
-                    egui::Event::Text(_)
-                        | egui::Event::Paste(_)
-                        | egui::Event::Cut
-                        | egui::Event::Ime(_)
-                        | egui::Event::Key {
-                            key: egui::Key::Backspace | egui::Key::Delete,
-                            pressed: true,
-                            ..
-                        }
-                )
-            });
-            (pressed(egui::Key::Enter), pressed(egui::Key::Escape), typed)
-        });
+        let FrameKeys {
+            enter,
+            escape,
+            typed,
+        } = keys;
         let ended = self
             .editing
             .filter(|field| focus != Some(*field) && drawn(context, *field) && (enter || escape));
@@ -216,6 +239,34 @@ impl FrontEnd {
             announcement,
         };
         self.told = now;
+    }
+
+    fn keys_of(context: &egui::Context) -> FrameKeys {
+        context.input(|input| {
+            let pressed = |wanted: egui::Key| {
+                input.events.iter().any(|event| {
+                    matches!(event, egui::Event::Key { key, pressed: true, .. } if *key == wanted)
+                })
+            };
+            FrameKeys {
+                enter: pressed(egui::Key::Enter),
+                escape: pressed(egui::Key::Escape),
+                typed: input.events.iter().any(|event| {
+                    matches!(
+                        event,
+                        egui::Event::Text(_)
+                            | egui::Event::Paste(_)
+                            | egui::Event::Cut
+                            | egui::Event::Ime(_)
+                            | egui::Event::Key {
+                                key: egui::Key::Backspace | egui::Key::Delete,
+                                pressed: true,
+                                ..
+                            }
+                    )
+                }),
+            }
+        })
     }
 
     /// The focused control as its node holds it, with an editor's name as it now is rather than

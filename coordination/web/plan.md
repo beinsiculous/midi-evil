@@ -1026,7 +1026,7 @@ report, and native behaviour still does not change.
 **Leaves out:** the accessibility bridge and the shipped page (W-A2); audio and MIDI (W3); the
 worker (W4); files (W5); syncing the bundle to the site (W6).
 
-## W-A2 — the keyboard model in the browser (`#8`, second half) — settled 2026-11-25
+## W-A2 — the keyboard model in the browser (`#8`, second half) — DONE 2026-11-27
 
 W0-web proved a mechanism on a scratch harness that held the roll alone. W-A2 builds it in
 `crates/evil-web`, on the application W2 started, and holds it to W-A1's rows. Two batches:
@@ -1295,7 +1295,50 @@ a row not mentioned recorded as not answered:
 button, which are on a shown surface and silent — W-A2b takes them off the browser's toolbar
 until W3 gives them states.
 
-### W-A2b — the matrix, what is not shown, and the help — settled 2026-11-25
+### W-A2b — the matrix, what is not shown, and the help — DONE 2026-11-27
+
+**Sitting, 2026-11-27:** Jesse, with Orca, on the visitor's bundle built from `87fa107`: "sitting
+passes". Unitemised: recorded as the batch passing as a whole, and W-A2 closed with it. Neither
+question of the sitting's third part was answered by itself, so a change of state goes on being
+said as the state alone — "…unavailable", "…pressed" — without the control's name.
+
+Landed as `9c075c1`, then merged with the render lifecycle (`8e7caa5`) as `87fa107`: two files
+conflicted, the resolution was reviewed, and the merged tree passed every gate below with 616
+tests.
+
+Built by Claude Opus 5.5 in three passes; 548 tests, the native gate at 455 expectations, and the
+web-app gate holding 57 rows in five groups in each browser, with eight negative controls. What
+differed from the section below:
+
+- **What the browser leaves out is fifteen lines** of `platform.rs`: the four views, the
+  Automation panel, the MIDI input, the six kinds of command that need a file or a renderer,
+  the export row, and moving a window and resizing the side panel. The executor's own search of
+  every way into a hidden view or a removed command found none the list did not name. The view
+  is private to `app/view_selection.rs` and chosen through `select_view`.
+- **One action is one write — W-A2a's rule, finished here.** The matrix found actions that
+  wrote twice, a frame apart, when the control just used changed or went away. In the browser a
+  frame that produces an outcome is now run again at once, so the outcome goes out with what
+  the action left: "Merged into the unique timeline. Nothing in the editor has focus; …". The
+  desktop still runs one pass. Two keys in one frame each act once through it — R-2's and
+  R-18's browser tests.
+- **The page's order** is the heading, the notes' button, the notes, a sentinel, the canvas,
+  the current element, the live region, a sentinel, "Leave the editor". The canvas's floor is
+  240 pixels or two fifths of the window's height, whichever is less, so a short window keeps
+  its controls.
+- **Three things the gate's bundle must carry or the gate refuses to start**: the marker only
+  the feature compiles in, a digest of the twelve tracked fixtures, and a build identity made
+  from the sources — which the visitor's bundle carries too, so the two are the same
+  application.
+- **The matrix is two groups**, the rows and the surfaces, to keep each inside five minutes a
+  browser; the whole gate takes about twenty-six. Firefox's matrix group runs at four and a
+  half of its five minutes.
+- **The inventory** is `w-a2-inventory.md`: 45 announced in the browser, 3 unavailable until W3
+  and W4, 41 absent, 33 standard, none failing.
+- **The wasm is 5.99 MiB raw, 2.43 MiB gzipped**; the gate's is 6.05.
+- **Heard and not changed:** after an Undo that empties the history the write ends
+  "…unavailable", and after a sound is chosen "…pressed" — the state alone, without the
+  control's name. It is the existing rule for a change of state, and a line of the sitting.
+
 
 W-A2a made the browser build speak. W-A2b makes the page show only what has passed (D12), holds
 it to W-A1's rows, and puts the keyboard notes where a visitor can read them before entering a
@@ -1452,6 +1495,344 @@ panel, hearing nothing that leads somewhere that is not there. This sitting clos
 it is `#25`, not a batch; everything a row above gives to W3, W4 or W5b; a
 probe of Firefox's own accessibility tree, which stays the sitting's.
 
+## W3 — audio and MIDI in the browser (`#5`) — settled 2026-11-27
+
+W-A2 left the browser build silent: Play, B and Record keep their stops and say "not in the
+browser build yet". W3 makes Play heard and a take recordable from a MIDI input. Two batches, one
+out at a time: **W3a**, Play; **W3b**, the MIDI input and Record. A spike measured what the
+section stands on before it was settled: `coordination/web/w3-spike-result.md`, cited below by
+its numbered findings.
+
+### What this section decides
+
+- **The library goes on naming no browser API.** The browser's sound and the browser's MIDI
+  are each a seam the application is handed where it is made, as it is handed its `Dialogs`,
+  and `evil-web` implements both. The desktop's side of each seam is today's code, moved and
+  not changed.
+- **In the browser a preview is one buffer on the page's own audio context — not rodio.** The
+  record said to turn on rodio's `wasm-bindgen` feature. The spike did, and it plays in time
+  (finding 3), but cpal feeds its stream from the page's own thread and the sound drops out
+  whenever the page stops for longer than about 85 ms (finding 5); a sink kept between Plays
+  plays the song at double speed after any such stop (finding 4); and nothing above rodio can
+  see whether the context ever started (finding 2). A preview is already a whole rendered
+  stereo buffer, which is the thing a browser plays best: handed to the context once, it is
+  played on the browser's audio thread, in time whatever the page is doing (finding 6), and
+  its position is the context's own clock. So rodio's feature stays off, and the played key and
+  the pad — live sources, which a buffer is not — choose their own way in the batch that
+  shows them. **Jesse's to overturn:** the other choice is the record's, a smaller batch by one
+  seam and one module, with the dropouts.
+- **Until W4, a render in the browser runs in place, and only a short one.** `RenderJob` does
+  its work on a thread (`render_job.rs`, the one `std::thread::spawn` in `spawn`), and a page
+  has none; the worker that replaces it is W4, which stands on W5a's byte interfaces, and D2's
+  order is not reopened. So where there is no thread the same closure runs before `spawn`
+  returns, its result waits in the same channel, and the application takes it on the next frame
+  as it does today. The page does not answer while it runs: 0.6 s in Chromium and 3.3 s in
+  Firefox for the Bach invention (finding 7). **What is rendered is bounded, by work and not
+  by length alone.** *(Ruled by Jesse, 2026-11-27: a limit of five minutes, lowered until the
+  page stops for no more than five seconds in either browser.)* A render's cost grows with how
+  much sound is made, so the limit is on **track-minutes**: the tracks that sound, times the
+  time from the song's start to the end of what is played — the renderer works from the start
+  and hands back the range — at 48,000 samples a second, more in proportion at a higher rate.
+  The Bach invention is 3.4 track-minutes and stops Firefox for 3.3 s; repeated to five
+  minutes it is 10 and stops it for 6.1 s. The limit is **five track-minutes**. In the
+  browser a preview over it is refused aloud — "Too much to play in the browser build yet." —
+  and nothing is rendered. **It is a bound on a placeholder, not a promise**: notes sounding
+  together cost more than notes in a line, and no count of them is taken. The batch adds a
+  fixture of four tracks of chords at the limit and reports how long each browser stops for
+  it; over five seconds, the limit comes down until it is not, and this section is corrected.
+  W4 removes the limit with the freeze; D10 stands, and W6's inventory asserts the render
+  runs in the worker.
+- **One device site is gated now: Play.** *(Ruled by Jesse, 2026-11-27.)* Of the three places
+  a device is opened (`app.rs` for the preview, `keyboard_page.rs` for a played key, `beats.rs`
+  for a pad) only the first is on a surface the browser shows. D12 holds the Keyboard and Pads
+  views back from the first release and D2's order has no batch that shows them, so the
+  record's "press a pad, press a piano key" leaves W3's gate; whichever batch one day shows
+  either view owns its device site.
+- **The record said midir; the browser's MIDI is written on `web-sys` instead.** midir's web
+  backend (`midir-0.11.1/src/backend/webmidi`) asks for access with system-exclusive rights, which
+  is the wider permission, and reports nothing a page can turn into "unsupported", "refused" or
+  "granted". midir stays the desktop's.
+- **Asking is its own act.** Access to MIDI is asked for by the refresh button and by nothing
+  else — not by making the application, not by reading the list.
+
+### W3a — Play is heard
+
+**Builds:**
+
+1. **The seam.** The application is handed what plays a preview: given what a render
+   returned — the sound and its channel meters — and whether it repeats, it returns the
+   thing being played, which can be stopped and says whether it has finished, where it is,
+   what its meters read, and whether its device is running; or the reason it could not
+   start. `PreviewPlayer` is the desktop's side, unchanged, meters and all; its device is
+   always running. The browser's side reads no meters: the Mixer is not shown there. The
+   sound handed over is the range that was asked for, so where it starts and where it
+   repeats are the application's as they are now.
+2. **The browser's side, in `evil-web`.** One `AudioContext` for the page's life, made in the
+   first `keydown` or `pointerdown` that reaches the listeners `keyboard.rs` already installs
+   — tried again at each until one is made — and `resume()` called in every one after, its
+   refusal caught and not logged: inside the event's own handler, where no browser's rule can
+   call it late. With nothing pressed the page has made no context. A preview is one
+   `AudioBuffer` at the sound's own sample rate through one `AudioBufferSourceNode`, with
+   `loop` for a repeat; its position is the context's clock less the clock when it started,
+   folded by the length when it repeats; **it has finished when that clock passes its
+   length** — no listener is set on the node, so none can outlive it. Stop stops the node. A
+   sound at a rate the browser will not make a buffer for is a device that could not start. Firefox makes a context suspended and starts it a moment later (finding 1),
+   so the state read when the context is made decides nothing.
+3. **The render, in place** — the decision above, as one function in `render_job.rs` that
+   either spawns the worker or runs it. The in-place form is compiled where there is no
+   thread and for tests, and a test holds it to the threaded form's result for one snapshot.
+   `detach_if_stalled`, which spawns, is not reachable when nothing can stall; the batch shows
+   that by a test or removes the path for the target.
+4. **Play, Stop and B stop being refused.** `Platform::playback_refused` goes, and
+   `Unavailable::NoPlaybackInBrowser` with it. Record keeps its stop and a reason of its own —
+   "Recording is not in the browser build yet." — until W3b. The limit above is one function
+   beside the platform's other answers, asked before a render is accepted. It reads the end
+   of what is played from the project's timing and counts the tracks that are not muted and
+   have a part before that end; it does not expand the song into a performance, which is
+   most of what a render costs, and the batch reports how long it takes on the largest
+   fixture.
+5. **A device that does not start says so**, and saying is reporting — what the status line,
+   the announcer and the bridge all read; today a failure to open is only shown:
+   - the device cannot be opened: "Could not start audio preview: …", reported, on the desktop
+     as in the browser. Nothing is played;
+   - a preview whose device has not been running for three seconds — at its start or in its
+     middle — is stopped, and "The browser is not playing the sound; press Play again." is
+     reported. The context is kept: the press that follows resumes it in its handler. The
+     desktop's device is always running, so nothing there changes. The application already
+     wakes ten times a second, which is what counts the three seconds.
+6. **A key pressed while the page was rendering.** It arrives in the frame that takes the
+   finished render, after it (finding 8): the preview is started and stopped within the
+   frame. The spike heard nothing then, but through rodio and a context made that instant; a
+   node started and stopped in one turn on a context already running is not measured. The
+   order is left as it is and the row decides: if the tap hears anything, the batch handles
+   the frame's keys before a finished render is played, in the browser, and says so.
+7. **Sources a page cannot read.** A track whose sound is a patch or a kit named by a path
+   cannot be resolved before W5a. The render's existing error for it is reported, and the
+   transport returns to stopped. The built-in sounds, all the browser's sound list offers
+   until W5b, resolve without a file (`evil-render`'s `load_patch` reads one only for a name
+   ending `.json`).
+8. **What moves with the refusals** — listed so that no gate is left asserting the opposite:
+   the browser-platform tests that hear "Playback is not in the browser build yet."
+   (`front_end_browser_tests.rs`); the page-notes test's suffixes (`page_notes_tests.rs`) and
+   `index.html` regenerated from it; in `web-app-gate.sh`, the `unavailable` row for Play,
+   Space and B (`web-app-rows.mjs`), the page group's `REFUSED` and `BROWSER_CHORDS` lists
+   (`web-app-page-rows.mjs`), and the matrix's `r22-unavailable-controls` and
+   `song-by-keyboard`, which hear the refusal from Play and from B
+   (`web-app-matrix-rows.mjs`); and the inventory's three lines. Each is changed to what is
+   now true, and Record's new reason takes the place of the old wherever Record is heard.
+   The executor does not trust this list: it searches the tests and the probes for the old
+   sentence and for `PLAYBACK`, and reports any place the list does not name.
+
+**Known, and not this batch's:** a sound made in the browser is the rendered sound resampled
+by the browser to the device's rate, where the desktop's is resampled by rodio; nothing holds
+the two to each other and nothing needs to.
+
+**Gate** — in this order: the native suite, with item 8's browser-platform tests changed and
+no other; clippy, fmt, the audit; the native gate, whose transcript must not change by one
+expectation; `check_wasm.sh`; `build_wasm.sh` within its budget, and `build_wasm.sh --gate`,
+whose size is reported — the budget is the visitor's; `web-smoke.sh`, with one assertion added
+to its two passing runs — no `AudioContext` was constructed; and `web-app-gate.sh`, with item
+8's rows changed and a new group, `playing`, in both browsers on the gate's bundle.
+
+The probe's tap and its onset detector are the spike's, made the gate's and **committed
+with this batch under `coordination/web/probes/`** — until then they are in no commit, and
+the handoff carries them: a script
+installed before the page's own that counts constructions of `AudioContext`, hears everything
+connected **into** a destination, and passes it on at no volume — headless Firefox plays
+through the machine's real audio server (finding 9), and a gate is not to be heard. Three
+things the gate says before any row: that its tap hears an oscillator the probe connects and
+nothing without one; that Firefox has an audio server to play to, without which its context
+never starts and the group is refused, not failed; and that **a row about a page nobody has
+touched reads the page only through its console until that row's own key or click is past**,
+because `page.evaluate` is itself a gesture to both browsers (finding 10). The rows:
+
+- **R-11 in the browser**: read the transport stopped; Space; read it playing; the position
+  read twice a second apart has advanced by about a second; the tap heard sound; Space; read
+  stopped; the tap falls silent. From the `long` fixture, as natively;
+- the same by a click on Play and Stop — **a real click**, the browser's own pointer moved to
+  the button and pressed, since an event the page makes for itself is no gesture and the
+  gate's existing pointer rows make theirs; where the button is comes from the bridge or
+  from a stated place at the gate's window size, and the row passes on what the tap hears;
+- **in time**: the `long` fixture's first sixteen onsets are each within 25 ms of half a
+  second after the last — the spike's detector is good to 12 — on a first Play, on a second,
+  and with the page stopped for 200 ms every second while it plays;
+- **keys alone**: on a fresh page that has had no pointer event, Tab to Play and Space — the
+  tap hears it. And **a click alone**: on a fresh page, one click on Play;
+- **twenty Plays and Stops**: one context was constructed, and the twentieth is heard;
+- **Space twice with the render between**: the tap hears nothing and the transport reads
+  stopped;
+- **the end of the song**: the `arrangement` fixture plays to its end and the transport then
+  reads stopped; **a repeat** plays past its end and the position read has gone back;
+- **B, then Space** plays from the bar and the position read says so;
+- **too much**: the fixture at the limit plays; one a bar longer is refused with its
+  sentence, on Play of the whole and on Play of two bars at its end, and nothing is rendered
+  — the frame that refuses is as short as any — while Play of its first bars is heard;
+- **Record** keeps its stop and says its new reason;
+- **a device that will not open**: the probe makes the constructor throw; Play says the
+  failure, the transport reads stopped, and with the constructor restored Play is heard;
+- **a context that never starts**: the probe keeps it suspended; within four seconds item
+  5's sentence is heard and the transport reads stopped; released, the next Play is heard,
+  and still one context was constructed. **And one that stops**: suspended by the probe ten
+  seconds into a song, the same;
+- **Stop, then wait**, and the song's end, then wait: five seconds on, the page answers a
+  key and has logged nothing;
+- **negative control**: on a page where Play was never pressed the tap hears nothing, and the
+  row that expects sound fails on it.
+
+The batch reports, measured: how long the frame that handles Play takes for `bach`, for
+the Bach invention at the limit and for the four tracks of chords at the limit, in both
+browsers.
+
+**Sitting** (Firefox, then Chromium; with Orca): Play by Space and by the button — is the song
+heard, from its start, in time; is what Orca says on Play heard over the music or lost under
+it, and which would Jesse rather; move about the roll and open a menu while it plays — does
+the sound hold; Stop; play to the end.
+
+**Leaves out:** Record and the MIDI input (W3b); a played key and a pad; any render off the
+page's thread (W4); a sound from a file (W5a, W5b).
+
+### W3b — the MIDI input, and a take
+
+**Builds:**
+
+1. **The seam.** The application is handed its MIDI ports. Three acts and a standing:
+   **ask** — the only one that may put a prompt in front of a person; **the ports**, each
+   with a name and an identity, read from whatever access there already is and never asking;
+   **connect**, by identity, to a callback; and where things stand — unsupported, not asked,
+   asking, refused, granted, or failed with a reason. The desktop's side is midir, as now:
+   asking does nothing, the standing is granted, or failed with the sentence a failed
+   enumeration shows today. `MidiInput` is made without asking — its constructor's refresh
+   reads the ports and nothing more, and what it finds is neither reported nor made the
+   control's description, so a page nobody touched and the native gate's dump both read as
+   they do now. The refresh button asks, then reads.
+2. **The browser's side, in `evil-web`**, over `navigator.requestMIDIAccess` without
+   system-exclusive. **One access object is kept**: once access is granted, Refresh reads
+   that object's inputs again and asks the browser nothing, so a Refresh in the middle of a
+   take changes no port and no listener. The browser answers later than it is asked; the
+   application already wakes ten times a second and reads where things stand each time, so
+   an answer is said within that, with no pointer moved.
+3. **The chosen port is kept by its identity, not its place in the list**, on both builds —
+   the browser's `MIDIPort.id`, midir's `MidiInputPort::id`. A list that changes around the
+   chosen port leaves it chosen and connected; the selection ends only when that port is gone.
+   Today a port removed ahead of the chosen one moves the selection to its neighbour or drops
+   a port that is still there; that is fixed on the desktop too, with a test, since it is one
+   rule.
+4. **One listener, and the newest choice wins.** A connection asks the browser to open its
+   port and stands at opening, open or failed. It is open when the port itself reads open and
+   connected — not when the promise resolves, which it may do with the port still pending
+   because the device left meanwhile; "Recording MIDI from …" is said then and not before; a
+   failure says "Could not open the MIDI input: …" and leaves nothing chosen. **A port that
+   stays pending is read again on each wake**: when it reads open — the device came back —
+   its listener is set and its sentence said then, under the same generation. Every choice —
+   a port, Off, the same port again — is a new generation: the listener is taken off the
+   port the moment a choice ends, before anything of it is dropped, since a message for a
+   listener that has gone would end the page; an answer that comes for an older generation
+   changes nothing and sets no listener; so a port never has two. **Ports are not closed**:
+   a port with no listener sends the page nothing, and the browser lets go of them when the
+   page goes — so there is no close to race the next opening.
+5. **`Shown::MidiInput` leaves the list of what the browser leaves out**, and every sentence
+   is said, not only shown. The port list and the refresh button are drawn, named as they are
+   natively. Each change of standing or of connection after the first read is reported once —
+   today it is a small label beside the control and nothing reads it — and is the control's
+   description until the next. One sentence each, made in `speech.rs`:
+   - not asked — "Press Refresh MIDI inputs to look for a MIDI input."; in the browser this
+     is the description from the start, said to whoever reaches the control;
+   - unsupported — "This browser has no MIDI input.";
+   - asking — "Waiting for the browser's permission for MIDI."; a Refresh pressed meanwhile
+     says it again and asks nothing;
+   - refused — "The browser refused MIDI input; allow it in the browser's settings for this
+     page."; a Refresh after it asks the browser again and says what comes back, which may be
+     the same refusal with no prompt;
+   - granted — "MIDI inputs: " and the count, or "No MIDI input found.";
+   - failed — the desktop's existing sentence for a failed enumeration;
+   - in the browser, a port that appears or goes after access is granted is said when the
+     browser says the list changed. The desktop reads its list when Refresh is pressed, as
+     now, and says a change then: its enumeration opens a MIDI client each time and is not
+     run on every wake;
+   - the chosen port going — the desktop's existing sentence.
+6. **Record stops being refused**, and its reason goes. A take records what the chosen port
+   sends — notes, pitch bend, pressure and controllers — through the channel the desktop's
+   connection feeds, stamped as the desktop stamps them, when the frame reads them.
+7. **A take keeps the desktop's rule for a preview it cannot have, and says it every time.**
+   The recorder has its own clock, made when Record is pressed, and a take goes on without a
+   preview: `render_job_queued_file_refuses_preview_but_recording_continues_independently`
+   holds that the take continues. What says so today is one branch — a render that fails
+   while a take runs reports "Recording with the independent clock; audio preview
+   unavailable: …". A preview can now fail a take four more ways: the limit refuses it, the
+   device cannot be opened, the device is not running, the sound's rate has no buffer. **One
+   function makes that sentence from a reason, and every way a preview is lost while a take
+   runs reports through it** — the existing branch included, on both builds — so a person is
+   never told only that the preview failed and left to guess whether the take did. None ends
+   the take. In the
+   browser the recorder is made after the render has run, so its clock starts a frame before
+   the sound.
+8. **What moves:** `shown_tests.rs`'s two lines for the MIDI input, the absence walk's
+   (`web-app-page-rows.mjs`), every row and test that hears Record's reason, the page's
+   desktop-only list and its test, and the inventory's lines for Record, the MIDI input and
+   "MIDI support could not be initialized".
+
+**Known, and W4's to end:** what a person plays while the page is rendering reaches the page
+when the render is done, and lands at the take's first moment. For three seconds in Firefox
+the page is not answering and nothing sounds; the sitting is told, and no row pretends
+otherwise.
+
+**What the first run may find:** whether Firefox answers `requestMIDIAccess` through a prompt
+Playwright can answer — it has the function: `web-smoke.sh`'s `asks-for-midi` control wraps
+the browser's own and fails in Firefox as it must; and whether headless Chromium lists the
+machine's ALSA sequencer ports. Where it does, a row through the kernel's MIDI Through port
+is **required**, not offered; where it does not, a real port is the sitting's alone and that
+is said here before the batch is built (D4).
+
+**Gate** — the native suite with item 3's test and item 8's changes; clippy, fmt,
+the audit; the native gate's transcript unchanged; the wasm check and both builds;
+`web-smoke.sh`, still proving a page nobody touched asks for no MIDI; and `web-app-gate.sh`'s
+new group, `midi`, in both browsers. The probe stands in for the browser's MIDI with a script
+installed before the page's own — an access object whose inputs the probe adds, removes,
+opens, leaves pending or refuses to open, and sends from, and which records every listener
+set and taken off — so every state has a row in both browsers whatever either offers:
+
+- nothing is asked before Refresh — counted by the probe — on a page that has been played and
+  edited; the control's description then is the not-asked sentence; and one Refresh asks once;
+- unsupported: the function is absent; Refresh says so;
+- refused: the sentence; a second Refresh asks again and says the same;
+- asking: the request is left unanswered; the sentence; a second Refresh asks nothing; the
+  page still answers keys. Answered with no input from the probe after, the list is said
+  within a second;
+- granted with two inputs: the list holds both by name; choosing one is announced when it
+  opens;
+- **a port that will not open**: its sentence, and nothing is chosen; **one whose opening
+  resolves still pending** is not said to be recording, and when the probe then makes it
+  open, is — and a note sent after is in the take; and one whose opening is answered
+  after Off was chosen changes nothing and sets no listener;
+- **Off, then a message**: after Off, and after another port is chosen, the first port has no
+  listener, the probe sends from it, and the page goes on answering keys;
+- **the same port again while it opens**: A, Off, A, then both answers in either order — one
+  listener, and one note sent is one note in the take;
+- **Refresh during a take**: the browser is asked nothing, and the take goes on with one
+  listener;
+- **a take**: choose the input, Record, the probe sends two notes a second apart, a bend and a
+  controller, Stop take; the roll reads two notes about a second apart, the first within a
+  tenth of a second of where the transport's position read when it was sent, and the take
+  is one undo entry;
+- **Record over the limit**, **Record with a context that never starts** and **Record with a
+  constructor that throws**: the take goes
+  on, the independent clock's sentence is said with the reason, and a note sent is in it;
+- **R-20 in the browser**: undo during a take, as natively;
+- **the list changing around the chosen port**: the first of two removed while the second is
+  chosen; one added ahead of it; two with the same name — the chosen one goes on recording;
+- the chosen port removed with a note held: said once, and after Stop take the note has its
+  end;
+- negative control: with the stand-in sending nothing, the take row fails.
+
+**Sitting** (Chromium, with Orca, and Firefox if it offers a prompt): Jesse's own keyboard or
+a virtual port — Refresh, the browser's prompt, choose the input, record four notes while the
+song plays, stop, hear them back in time. Then the same with the permission refused. The real
+prompt and a real device are judged here.
+
+**Leaves out:** MIDI output; a played key on the Keyboard view and a pad; system-exclusive
+messages, which this build never asks the right to read; an event's own timestamp, which
+neither build uses — an issue for both, filed when this section settles.
+
 ## The later batches — constraints, not yet sections
 
 Each is the record's step plus what follows. Each gets its files and gates in a reviewed revision of
@@ -1530,6 +1911,13 @@ W2, corrected with its section (2026-11-25): `build_wasm.sh` has no `--sync` —
 the site in W6; "green in CI" cannot be shown by the batch that adds the workflow, so the first
 run is checked after the push and W-A2 waits on it; and the batch runs the application in both
 browsers once, clicking nothing, which the record did not ask for.
+
+W3, corrected with its section (2026-11-27): the browser's preview is not played through rodio
+— `rodio/wasm-bindgen` stays off, and a preview is one buffer on a context the web entry owns;
+the browser's MIDI is written on `web-sys`, not midir's web backend; "press a pad, press a
+piano key" leaves the gate with the views D12 holds back; and until W4 a render in the browser
+runs on the page's own thread under a limit, which the record did not foresee because it put
+the render before the sound. `coordination/web/w3-spike-result.md` is the measurement.
 
 ## What is asked of Jesse
 

@@ -47,11 +47,11 @@ impl StudioApp {
                     .as_ref()
                     .is_none_or(|lab| lab.track_index != index)
             {
-                let view = self.view;
+                let view = self.view();
                 if !self.open_patch_lab() {
                     self.keyboard_error = Some(self.status.clone());
                 }
-                self.view = view;
+                self.select_view(view);
             }
             self.keyboard_binding = Some(binding);
         }
@@ -77,7 +77,7 @@ impl StudioApp {
         ui.horizontal_wrapped(|ui| {
             theme::label(ui, format!("TRACK {:02}  /  {}", index + 1, track_name));
             if ui.button("Edit / save synth patch").clicked() {
-                self.view = View::Synth;
+                self.select_view(View::Synth);
             }
             ui.label(
                 RichText::new("XY edits share this synth draft")

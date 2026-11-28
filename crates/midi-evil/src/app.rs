@@ -9,11 +9,15 @@ mod command_outcome_tests;
 mod dialog_tests;
 mod drafts;
 mod files;
+#[cfg(test)]
+mod fixture_tests;
 mod front_end;
 #[cfg(test)]
 mod front_end_browser_tests;
 #[cfg(test)]
 mod front_end_tests;
+#[cfg(feature = "gate")]
+mod gate;
 #[cfg(test)]
 mod key_dispatch_tests;
 #[cfg(test)]
@@ -21,7 +25,11 @@ mod keyboard_model_tests;
 mod keyboard_page;
 mod keys;
 mod notes_view;
+#[cfg(test)]
+mod one_action_tests;
 mod recording;
+#[cfg(test)]
+mod shown_tests;
 #[cfg(test)]
 mod song_tests;
 mod song_view;
@@ -35,6 +43,7 @@ mod track_rack;
 mod tracks;
 mod transport_readout;
 mod undo;
+mod view_selection;
 
 use crate::{
     mixer::{self, MixerState},
@@ -76,7 +85,7 @@ pub struct StudioApp {
     mascot: TextureHandle,
     splash: TextureHandle,
     controls: TextureHandle,
-    view: View,
+    view: view_selection::SelectedView,
     show_export: bool,
     show_automation: bool,
     show_about: bool,
@@ -195,7 +204,7 @@ impl StudioApp {
             mascot: art::load_mascot(context),
             splash: art::load_splash(context),
             controls: art::load_controls(context),
-            view: View::default(),
+            view: view_selection::SelectedView::new(context),
             show_export: false,
             show_automation: false,
             show_about: true,
@@ -330,7 +339,7 @@ impl StudioApp {
                     format!("{source}-custom.json")
                 };
                 self.patch_lab = Some(PatchLab::new(patch, file_name, track_index));
-                self.view = View::Synth;
+                self.select_view(View::Synth);
                 true
             }
             Err(error) => {
@@ -1288,21 +1297,21 @@ impl eframe::App for StudioApp {
         self.toolbar(root);
         self.sound_bar(root);
         self.status_bar(root);
-        if self.view != View::Pads {
+        if self.view() != View::Pads {
             self.track_panel(root);
             self.beats.stop();
         }
-        if !matches!(self.view, View::Synth | View::Keyboard) || self.project.tracks.is_empty() {
+        if !matches!(self.view(), View::Synth | View::Keyboard) || self.project.tracks.is_empty() {
             self.stop_keyboard();
         }
-        if matches!(self.view, View::Synth | View::Keyboard | View::Pads)
+        if matches!(self.view(), View::Synth | View::Keyboard | View::Pads)
             || self.recorder.is_some()
-            || (self.view == View::Mixer && self.preview.is_some())
+            || (self.view() == View::Mixer && self.preview.is_some())
         {
             root.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(16));
         }
-        if self.view == View::Notes {
+        if self.view() == View::Notes {
             self.note_inspector(root);
             if self.show_automation {
                 self.automation_panel(root);
@@ -1339,7 +1348,7 @@ impl eframe::App for StudioApp {
 
 impl StudioApp {
     fn editor(&mut self, ui: &mut egui::Ui) {
-        if self.project.tracks.is_empty() && self.view != View::Pads {
+        if self.project.tracks.is_empty() && self.view() != View::Pads {
             ui.centered_and_justified(|ui| {
                 if ui.button("+ Add a track to begin composing").clicked() {
                     self.add_track();
@@ -1347,7 +1356,7 @@ impl StudioApp {
             });
             return;
         }
-        match self.view {
+        match self.view() {
             View::Song => self.song_view(ui),
             View::Notes => self.notes_view(ui),
             View::Mixer => {
@@ -2673,7 +2682,7 @@ mod tests {
             })
             .unwrap();
         let project = app.project.clone();
-        app.view = View::Pads;
+        app.select_view(View::Pads);
         app.render_job = Some(RenderJob::resolving_for_test());
 
         app.save_beats_bank();

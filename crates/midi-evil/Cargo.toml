@@ -18,6 +18,12 @@ include = [
 description = "Desktop music workstation for original synthesis, drums, MIDI, and .evil projects"
 readme = "README.md"
 
+[features]
+# What the browser gate's own bundle adds, and a visitor's never has: the application started
+# from a project given as text, and shown as the desktop is shown, for the gate's negative
+# control. Off by default; nothing a desktop build or a visitor's bundle runs is behind it.
+gate = []
+
 [dependencies]
 eframe = { version = "0.35", default-features = false, features = ["accesskit", "default_fonts", "glow", "persistence", "x11", "wayland"] }
 png = "0.18"

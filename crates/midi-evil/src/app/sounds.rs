@@ -57,13 +57,13 @@ impl StudioApp {
     pub(super) fn keep_view_with_sound_kind(&mut self) {
         if let Some(sound) = self.selected_sound() {
             match sound.kind {
-                crate::instruments::SoundKind::Synth if self.view == View::Pads => {
-                    self.view = View::Synth
+                crate::instruments::SoundKind::Synth if self.view() == View::Pads => {
+                    self.select_view(View::Synth);
                 }
                 crate::instruments::SoundKind::Kit
-                    if matches!(self.view, View::Synth | View::Keyboard) =>
+                    if matches!(self.view(), View::Synth | View::Keyboard) =>
                 {
-                    self.view = View::Pads
+                    self.select_view(View::Pads);
                 }
                 _ => {}
             }
@@ -295,6 +295,19 @@ impl StudioApp {
         ))
     }
 
+    fn load_files_button(&mut self, ui: &mut egui::Ui, recording: bool) {
+        let load = Refusable::add(
+            ui,
+            recording.then_some(Unavailable::WhileRecording),
+            egui::Button::new("Load files…"),
+        )
+        .on_hover_text("Load one or more instruments; remember them in your library");
+        if load.clicked() {
+            self.load_sound_files();
+        }
+        self.report_refusal(&load);
+    }
+
     pub(super) fn sound_bar(&mut self, ui: &mut egui::Ui) {
         egui::Panel::top("sound-bar")
             .frame(
@@ -420,18 +433,10 @@ impl StudioApp {
                             self.cycle_sound(false);
                         }
                         self.report_refusal(&next);
-                        let load = Refusable::add(
-                            ui,
-                            recording.then_some(Unavailable::WhileRecording),
-                            egui::Button::new("Load files…"),
-                        )
-                        .on_hover_text(
-                            "Load one or more instruments; remember them in your library",
-                        );
-                        if load.clicked() {
-                            self.load_sound_files();
+                        if crate::platform::shows(ui.ctx(), crate::platform::Shown::LoadSoundFiles)
+                        {
+                            self.load_files_button(ui, recording);
                         }
-                        self.report_refusal(&load);
                         theme::label(
                             ui,
                             format!("{} · {} sounds", current.kind.label(), choices.len()),

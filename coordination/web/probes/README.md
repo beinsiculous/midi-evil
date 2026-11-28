@@ -26,6 +26,23 @@ The application opens the tracked fixture
 `examples/public-domain/bach-invention-02/bach-invention-02.mid`; `MIDI_EVIL_FILE` and
 `MIDI_EVIL_BINARY` choose another file or build.
 
+## `fixtures/` — the gates' projects
+
+One set of tracked `.evil` projects that both gates start from. The native gate opens each by
+launch argument; the browser gate's own bundle compiles them in and opens one by `?fixture=`. The
+native gate saves into `saved.evil`, so neither gate opens the set in place: `native-gate.sh`
+copies it into a private temporary directory at every run, and a run leaves the tracked files
+unchanged. `bach.evil` is the tracked Bach invention imported from MIDI, kept as a project because
+a browser cannot import a file; `the_tracked_bach_project_is_the_midi_file_imported_note_for_note`
+holds it to the import, and W0's main sequence goes on importing the MIDI file itself. The rest:
+
+- `twins` — one track, two identical notes; `bass` — four bass notes; `two-tracks` — one note
+  each; `three-notes` — three, the second overlapping the first; `same-pitch-overlap` — two
+  overlapping notes at one pitch; `long` — sixty-four one-beat notes, half a minute at 120 beats
+  a minute; `tempo` — one note at 90 beats a minute; `lane-point` — two notes and one pitch-bend
+  point; `clean` and `saved` — one note each, nothing unsaved; `arrangement` — two tracks, the
+  first playing one shared pattern in bars 1 and 3, the second a unique timeline of one note.
+
 Steps, run in command-line order:
 
 - `--press NAME` performs the first action (click) of the node with that name — this is how the
@@ -133,9 +150,9 @@ the file the project was opened from, and a relaunch on that file that finds the
 the gate's private fixture directory, removed on exit. Open from the menu and Save As on a new
 project open the desktop's own dialog, which keys sent to the application's window cannot drive;
 those two are the sitting's alone, under Jesse's written waiver. Every step a row names carries an
-expectation, so exit status 0 means each key did what the row says. Rows that need a project of
-their own — two identical notes, a bass part, two tracks — write it as a small `.evil` file into a
-private temporary directory, removed on exit. What keys cannot show from outside (which of two
+expectation, so exit status 0 means each key did what the row says. Every row opens a project of
+`fixtures/` — the Bach project unless it names another, two identical notes, a bass part, two
+tracks — from a copy of the set in a private temporary directory, removed on exit. What keys cannot show from outside (which of two
 identical notes a Delete took, a lane point clicked with a pointer) is proven by the crate's
 tests, and those rows say so in their titles. Each row is headed with the configuration it ran in;
 the other half of the gate is a person performing the same keys with Orca, Wayland-native.
@@ -343,24 +360,51 @@ expectations are listed at the top of `web-probe.mjs`.
   harness gives it back to the same control in the next pass, which is what announces a committed
   value.
 
-## `web-app-probe.mjs`, `web-app-rows.mjs` and `web-app-gate.sh` — the application's own bundle
+## `web-app-probe.mjs`, its rows and `web-app-gate.sh` — the application's own bundles
 
-W0's harness above stays as that half's evidence; this is the gate for the real application, built
-by `scripts/build_wasm.sh` into `target/web/dist/`, from its own default project.
-`web-app-gate.sh` serves a copy of the bundle on `127.0.0.1`, runs every row of `web-app-rows.mjs`
-through `web-app-probe.mjs` in headless Chromium and then headless Firefox — each row in a fresh
-page — then three negative controls in each browser, each a copy of the bundle with one line put
-into its page, run on the row that shows it, and each of which must fail for its own reason:
+W0's harness above stays as that half's evidence; this is the gate for the real application, on
+its two bundles: the visitor's, built by `scripts/build_wasm.sh` into `target/web/dist/`, and the
+gate's, built by `scripts/build_wasm.sh --gate` into `target/web/dist-gate/`, which compiles
+`fixtures/` in and reads `?fixture=` and `?shows=desktop`. A visitor never gets the gate's bundle;
+the gate refuses to start without one whose wasm carries the marker only that build compiles in
+(read from `crates/evil-web/src/gate.rs`), carries the digest of the fixture set it was compiled
+from — the gate computes the same over `fixtures/`, so the two gates can never open different
+projects under one row — and whose page is the source tree's. Both bundles also carry the identity
+of the tree they were built from (`scripts/build_identity.sh`, over everything under `crates/`, the
+workspace's manifest and lock file and the fixtures), and the gate refuses to start unless the
+visitor's, the gate's and the tree's are one, so neither bundle can be left from an older tree.
+
+`web-app-gate.sh` serves copies of both on `127.0.0.1` and runs every row through
+`web-app-probe.mjs` in headless Chromium and then headless Firefox — each row in a fresh page — in
+five groups, each under a deadline of its own (`WEB_APP_GROUP_TIMEOUT_SECONDS`, default 300, in
+each browser; the probe refuses to start a row whose own deadline is more than half of it): **keys-and-bridge**
+(`web-app-rows.mjs`, and the owed click row in `web-app-page-rows.mjs`: the keys, the bridge, the
+focus boundary and the text entry, from the default project, on the visitor's bundle), **matrix**
+(`web-app-matrix-rows.mjs`: the native gate's W0 and R rows, each from the fixture its native row
+opens and first asserting it by name and track count, on the gate's bundle), **surfaces** (the
+same file's sequences for the instrument list, the Song view, the roll's toolbar, the track panel
+and the windows, the same way), **absence** and **page**
+(`web-app-page-rows.mjs`, on the visitor's bundle). Then four negative controls in each browser,
+each run on the row that shows it and each of which must fail for its own reason:
 `live-never-written` (the live region ignores every write), `current-stale` (the current element
-keeps its first text) and `binds-not-bound` (the page turns Control+O into the application's
-Save). It exits 0 only if every row held in both browsers and all six controls failed as they
+keeps its first text), `binds-not-bound` (the page turns Control+O into the application's Save) —
+each a copy of the visitor's bundle with one line put into its page — and `shows-desktop` (the
+gate's bundle drawing what the desktop draws, on which the absence walk must reach the Mixer's
+tab). It exits 0 only if every row held in both browsers and all eight controls failed as they
 must; it stops the server however it ends.
 
 ```sh
 coordination/web/probes/web-app-gate.sh > web-app-gate-transcript.txt
 node coordination/web/probes/web-app-probe.mjs --url http://127.0.0.1:PORT/bundle/index.html \
-    --browser firefox --rows nine-steps,held-key
+    --gate-url http://127.0.0.1:PORT/gate/index.html --browser firefox --group matrix
 ```
+
+**The page's order.** The heading; the notes' button, a stop a visitor meets before the editor,
+whose notes — the keyboard notes, what is desktop-only and the browsers it was tested in — are
+static text in `crates/evil-web/index.html`, closed when the page loads; the notes when open, a
+named region that scrolls within itself; the sentinel; the canvas; the current element; the live
+region; the sentinel; "Leave the editor". Every row that enters from the page passes the notes'
+button first.
 
 **What a row holds.** Every check of where the page's focus is reads the element that has it: the
 canvas, or eframe's text entry while a field is edited, which must be named and described by what

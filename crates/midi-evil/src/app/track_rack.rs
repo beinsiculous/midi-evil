@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::accessibility::{self, Accessible, Refusable};
+use crate::platform::{self, Shown};
 use crate::regions::{self, Region};
 use crate::speech::Unavailable;
 use crate::workspace::View;
@@ -12,7 +13,7 @@ impl StudioApp {
             .default_size(252.0)
             .min_size(225.0)
             .max_size(340.0)
-            .resizable(true)
+            .resizable(platform::shows(ui.ctx(), Shown::ResizingTheSidePanel))
             .frame(theme::panel())
             .show(ui, |ui| {
                 regions::group(ui, Region::SidePanel, |ui| self.track_rack(ui));
@@ -38,6 +39,9 @@ impl StudioApp {
                     self.add_track();
                 }
                 self.report_refusal(&add);
+                if !platform::shows(ui.ctx(), Shown::View(View::Pads)) {
+                    return;
+                }
                 let add_kit =
                     Refusable::add(ui, self.structure_refused(), egui::Button::new("+KIT"))
                         .on_hover_text("Add a Maxwell drum-kit track")
@@ -96,7 +100,7 @@ impl StudioApp {
                     }
                     if response.double_clicked() {
                         self.select_sound_track(index);
-                        self.view = View::Notes;
+                        self.select_view(View::Notes);
                     }
                     response.on_hover_text(format!(
                         "{} · {} notes",
@@ -143,6 +147,13 @@ impl StudioApp {
         let mut name_field = None;
         let mut mute_toggled = false;
         let mut browse = false;
+        let mut to_mixer = false;
+        let mut to_lanes = false;
+        let shows = |thing| platform::shows(ui.ctx(), thing);
+        let shows_synth = shows(Shown::View(View::Synth));
+        let shows_pads = shows(Shown::View(View::Pads));
+        let shows_mixer = shows(Shown::View(View::Mixer));
+        let shows_lanes = shows(Shown::Automation);
         let settings = egui::ScrollArea::vertical()
             .id_salt("track-settings")
             .auto_shrink([false, false])
@@ -169,21 +180,22 @@ impl StudioApp {
                         browse = true;
                     }
                     open_pads = matches!(instrument.source, InstrumentSource::DrumKit { .. });
-                    open_patch = ui
-                        .add_sized(
-                            [ui.available_width(), 32.0],
-                            egui::Button::image_and_text(
-                                art::control(&self.controls, 3),
-                                if open_pads {
-                                    "Open Pads"
-                                } else {
-                                    "Open Evil Synth"
-                                },
-                            ),
-                        )
-                        .clicked();
+                    open_patch = (if open_pads { shows_pads } else { shows_synth })
+                        && ui
+                            .add_sized(
+                                [ui.available_width(), 32.0],
+                                egui::Button::image_and_text(
+                                    art::control(&self.controls, 3),
+                                    if open_pads {
+                                        "Open Pads"
+                                    } else {
+                                        "Open Evil Synth"
+                                    },
+                                ),
+                            )
+                            .clicked();
                     ui.add_space(6.0);
-                    if !open_pads {
+                    if !open_pads && shows_synth {
                         ui.horizontal_wrapped(|ui| {
                             for (title, page) in [
                                 ("Samples", patch_lab::PatchPage::Samples),
@@ -196,13 +208,8 @@ impl StudioApp {
                         });
                     }
                     ui.horizontal_wrapped(|ui| {
-                        if ui.button("Mixer & FX").clicked() {
-                            self.view = View::Mixer;
-                        }
-                        if ui.button("Automation").clicked() {
-                            self.view = View::Notes;
-                            self.show_automation = true;
-                        }
+                        to_mixer = shows_mixer && ui.button("Mixer & FX").clicked();
+                        to_lanes = shows_lanes && ui.button("Automation").clicked();
                     });
                     ui.add_space(8.0);
                     theme::label(ui, "CHANNEL");
@@ -245,8 +252,15 @@ impl StudioApp {
         if browse {
             self.open_sound_library();
         }
+        if to_mixer {
+            self.select_view(View::Mixer);
+        }
+        if to_lanes {
+            self.select_view(View::Notes);
+            self.show_automation = true;
+        }
         if let Some(page) = synth_page {
-            self.view = View::Synth;
+            self.select_view(View::Synth);
             if self
                 .patch_lab
                 .as_ref()
@@ -260,9 +274,9 @@ impl StudioApp {
         }
         if open_patch {
             if open_pads {
-                self.view = View::Pads;
+                self.select_view(View::Pads);
             } else {
-                self.view = View::Synth;
+                self.select_view(View::Synth);
                 if self
                     .patch_lab
                     .as_ref()

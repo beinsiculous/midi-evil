@@ -65,7 +65,7 @@ fn project_with_a_part() -> Project {
 #[test]
 fn every_focusable_control_on_the_shown_surfaces_is_named() {
     let mut harness = Harness::new(project_with_a_part());
-    harness.app.view = View::Song;
+    harness.app.select_view(View::Song);
     harness.app.roll.select_part(0, Some(0));
     harness.run(vec![]);
     harness.run(vec![]);
@@ -79,7 +79,7 @@ fn every_focusable_control_on_the_shown_surfaces_is_named() {
         Vec::<String>::new(),
         "Song"
     );
-    harness.app.view = View::Notes;
+    harness.app.select_view(View::Notes);
     harness.app.roll.select_part(0, None);
     harness.run(vec![]);
     harness.run(vec![]);
@@ -108,7 +108,7 @@ fn every_focusable_control_on_the_shown_surfaces_is_named() {
 #[test]
 fn every_disabled_button_on_the_shown_surfaces_says_why_and_loses_it_when_enabled() {
     let mut harness = Harness::new(project_with_a_part());
-    harness.app.view = View::Song;
+    harness.app.select_view(View::Song);
     harness.app.roll.select_part(0, Some(0));
     harness.run(vec![]);
     harness.run(vec![]);
@@ -160,7 +160,7 @@ fn every_disabled_button_on_the_shown_surfaces_says_why_and_loses_it_when_enable
             "{label} once the take stops"
         );
     }
-    harness.app.view = View::Notes;
+    harness.app.select_view(View::Notes);
     harness.app.roll.select_part(0, None);
     harness.run(vec![]);
     for label in ["Earlier", "Later", "Shorter", "Longer", "Delete"] {
@@ -231,7 +231,7 @@ fn alt_arrows_announce_the_sound_a_track_now_has_and_where_it_is_in_the_list() {
 #[test]
 fn every_open_menu_and_window_on_the_shown_surfaces_is_named_too() {
     let mut harness = Harness::new(project_with(&[&[note_at(60, 0, 480)]]));
-    harness.app.view = View::Song;
+    harness.app.select_view(View::Song);
     harness.run(vec![]);
     harness.click("Project");
     harness.run(vec![]);

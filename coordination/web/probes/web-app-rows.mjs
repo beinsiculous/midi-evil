@@ -6,12 +6,55 @@ export function plain(text) {
   return text.replaceAll("\u00a0", " ").trimEnd();
 }
 
-const PLAYBACK = "Playback is not in the browser build yet.";
+export const PLAYBACK = "Playback is not in the browser build yet.";
+
+// Every stop of the editor as it now is: Tab from egui's focus to the editor's end, then Shift+Tab
+// back in and on to its first stop, so the whole ring is walked from wherever it starts. `each`
+// judges every stop's state. A walk that runs out of steps either way fails, as does one that
+// does not leave by the end, come back in at the last stop and finish on the first. Each step
+// waits less than a row's key does: a stop whose words were not ready would be read again.
+const MOST_STEPS = 300;
+export async function walkEveryStop(probe, where, each) {
+  const inEditor = (state) => state.activeId === "midi-evil-canvas" || state.activeId === "midi-evil-text-entry";
+  let forwards = 0;
+  let state = probe.last;
+  for (; forwards < MOST_STEPS; forwards += 1) {
+    state = await probe.press("Tab", "Tab", 20);
+    if (!inEditor(state)) break;
+    each(state);
+  }
+  probe.check(!inEditor(state), `${where}: the walk ran out of ${MOST_STEPS} steps without leaving the editor`);
+  state = await probe.press("Shift+Tab", "Shift+Tab back in at the last stop");
+  probe.check(inEditor(state) && (state.edge === "last" || state.edge === "both"), `${where}: Shift+Tab from after the editor came in at ${state.activeId}, edge ${state.edge}, not the last stop`);
+  each(state);
+  let backwards = 0;
+  for (; state.edge !== "first" && state.edge !== "both" && backwards < MOST_STEPS; backwards += 1) {
+    state = await probe.press("Shift+Tab", "Shift+Tab", 20);
+    each(state);
+  }
+  probe.check(inEditor(state) && (state.edge === "first" || state.edge === "both"), `${where}: the walk back ran out of ${MOST_STEPS} steps or left the editor before the first stop`);
+  probe.log(`    ${where}: the walk passed ${forwards} stops forwards and ${backwards + 1} back`);
+  return forwards + backwards + 1;
+}
+
+// From the top of the page into the editor: the page's order puts the notes' button first, a stop
+// a visitor meets before the editor, then the notes while they are open, then the editor's first
+// stop.
+export async function enterTheEditor(probe) {
+  const button = await probe.press("Tab", "Tab from the page, to the notes' button");
+  probe.check(button.activeId === "midi-evil-notes-toggle", `the page's first stop is ${button.activeId}, not the notes' button`);
+  const open = await probe.page.evaluate(() => !document.getElementById("midi-evil-notes").hidden);
+  if (open) {
+    const notes = await probe.press("Tab", "Tab past the notes' button, to the open notes");
+    probe.check(notes.activeId === "midi-evil-notes", `the stop after the notes' button is ${notes.activeId}, not the open notes`);
+  }
+  return probe.press("Tab", "Tab into the editor");
+}
 
 // Into the editor from the page, then Project › New: the About window the application opens on
 // is closed, and the document is a new, clean one.
-async function newProjectFromTheMenu(probe) {
-  await probe.press("Tab", "Tab from the page");
+export async function newProjectFromTheMenu(probe) {
+  await enterTheEditor(probe);
   await probe.pressUntil("Tab", "Project, button");
   const opened = await probe.press("Enter");
   probe.check(plain(opened.current).includes("menu open"), "the Project menu does not say it is open");
@@ -35,7 +78,7 @@ async function addNotes(probe, count) {
 
 // A chord the browser keeps: it never reaches eframe, is not cancelled, and the application does
 // nothing and writes nothing.
-async function expectTheBrowsers(probe, chord) {
+export async function expectTheBrowsers(probe, chord) {
   const before = probe.last.current;
   const state = await probe.press(chord);
   // A chord's modifiers are keys of their own, pressed first; the record wanted is the chord's key.
@@ -48,10 +91,9 @@ async function expectTheBrowsers(probe, chord) {
 }
 
 // Shift+Tab at the first stop: the page keeps the key from eframe and leaves it to the browser,
-// uncancelled. Where the browser puts focus next is its own: Chromium moves it off the canvas;
-// headless Firefox, with nothing before the editor and no window around the page, leaves it
-// where it is, which a real Firefox, with its toolbar, does not — the sitting's. Either way the
-// focus is then put on the heading, as on any element before the editor.
+// uncancelled. Where the browser puts focus next is its own: Chromium moves it to the notes'
+// button before the editor; headless Firefox may leave it where it is — the sitting's. Either way
+// the focus is then put on the heading, above the notes' button.
 async function leaveBackwards(probe) {
   const state = await probe.press("Shift+Tab", "Shift+Tab at the first stop");
   const key = state.keys.find((record) => record.key === "Tab");
@@ -69,9 +111,9 @@ async function leaveBackwards(probe) {
 
 export const ROWS = {
   "enter-from-the-page": {
-    title: "Tab from the page enters at the first stop, named and described",
+    title: "Tab from the page, past the notes' button, enters at the first stop, named and described",
     async run(probe) {
-      const state = await probe.press("Tab", "Tab from the page");
+      const state = await enterTheEditor(probe);
       probe.check(state.activeId === "midi-evil-canvas" && state.edge === "first", "Tab from the page did not enter at the first stop");
       probe.expectWrites(state, [], "entering");
       await probe.expectFocus("About MIDI Evil, button");
@@ -141,11 +183,11 @@ export const ROWS = {
     title: "into the canvas and out in both directions, through every stop, with a window, a menu, the side panel's fields and the leave control",
     async run(probe) {
       // The application opens with its About window: a window open.
-      let state = await probe.press("Tab", "Tab from the page");
+      let state = await enterTheEditor(probe);
       probe.check(state.activeId === "midi-evil-canvas" && state.edge === "first", "Tab from the page did not enter at the first stop");
       await probe.expectFocus("About MIDI Evil, button");
       await leaveBackwards(probe);
-      state = await probe.press("Tab", "Tab back in");
+      state = await enterTheEditor(probe);
       probe.check(state.edge === "first", "Tab from before the editor did not enter at the first stop");
       probe.expectWrites(state, [], "returning");
       let stops = 1;
@@ -412,7 +454,7 @@ export const ROWS = {
     title: "with the About window open and the Keyboard notes opened after it, Tab's ends are the ones it walks to",
     async run(probe) {
       // The application opens with its About window; Project › Keyboard notes… opens a second.
-      await probe.press("Tab", "Tab from the page");
+      await enterTheEditor(probe);
       await probe.pressUntil("Tab", "Project, button");
       await probe.press("Enter");
       await probe.pressUntil("Tab", "Keyboard notes…");

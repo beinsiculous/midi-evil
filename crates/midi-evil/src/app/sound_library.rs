@@ -26,6 +26,7 @@ impl StudioApp {
         let mut refusal = None;
         egui::Window::new(format!("Sound library / {}", current.kind.label()))
             .id(egui::Id::new("sound-library"))
+            .movable(crate::platform::shows(context, crate::platform::Shown::MovingWindows))
             .open(&mut open)
             .default_width(540.0)
             .default_height(400.0)
@@ -39,10 +40,12 @@ impl StudioApp {
                     for (collection, title) in [(Collection::All, "All sounds"), (Collection::Factory, "Factory"), (Collection::User, "User loaded")] {
                         ui.selectable_value(&mut self.sounds.collection, collection, title);
                     }
-                    let refused = self.recorder.is_some().then_some(Unavailable::WhileRecording);
-                    let button = Refusable::add(ui, refused, egui::Button::new("Load files…"));
-                    load = button.clicked();
-                    refusal = refusal.or(button.refusal());
+                    if crate::platform::shows(ui.ctx(), crate::platform::Shown::LoadSoundFiles) {
+                        let refused = self.recorder.is_some().then_some(Unavailable::WhileRecording);
+                        let button = Refusable::add(ui, refused, egui::Button::new("Load files…"));
+                        load = button.clicked();
+                        refusal = refusal.or(button.refusal());
+                    }
                 });
                 ui.separator();
                 let choices = self.sounds.choices(&self.project, self.patch_base(), current.kind);

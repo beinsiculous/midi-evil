@@ -67,6 +67,12 @@ impl eframe::App for Shell {
             context.memory_mut(|memory| memory.request_focus(target));
         }
         eframe::App::ui(&mut self.app, root, frame);
+        // A pass the workstation discards is run again at once with no new input; the page is
+        // told the pass that stands, and the entry it was making waits for it.
+        if context.will_discard() {
+            self.shared.entering.set(entering);
+            return;
+        }
         let spoken = self.app.spoken_frame(&context);
         self.stops = (spoken.first_stop, spoken.last_stop);
         self.shared.frame_finished(&spoken);

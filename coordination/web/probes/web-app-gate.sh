@@ -1,23 +1,44 @@
 #!/usr/bin/env bash
-# The web gate for the application's own bundle: serves the bundle scripts/build_wasm.sh left in
-# target/web/dist/ and has web-app-probe.mjs run every row of web-app-rows.mjs in headless
-# Chromium, then headless Firefox, each row in a fresh page starting from the application's own
-# default project. Then three negative controls, in both browsers, each made from the same copy of
-# the bundle, each run on the row that shows it and each of which must fail for the reason it
-# exists to show:
+# The web gate for the application's own bundles: serves the visitor's bundle scripts/build_wasm.sh
+# left in target/web/dist/ and the gate's, which scripts/build_wasm.sh --gate left in
+# target/web/dist-gate/, and has web-app-probe.mjs run every row, each in a fresh page, in
+# headless Chromium, then headless Firefox. The rows run in five groups, each with a deadline of
+# its own in each browser (WEB_APP_GROUP_TIMEOUT_SECONDS, default 300), and a group that runs out
+# says its name:
+#   keys-and-bridge  the keys, the bridge, the focus boundary and the text entry, from the
+#                    application's own default project, on the visitor's bundle;
+#   matrix           the native gate's W0 and R rows in the browser, each from the fixture its
+#                    native row opens, on the gate's bundle;
+#   surfaces         the native gate's sequences for the instrument list, the Song view, the roll's
+#                    toolbar, the track panel and the windows, the same way;
+#   absence          what the browser build leaves out is not there, on the visitor's bundle;
+#   page             the page's own text, its layout, and the visitor's bundle ignoring the gate's
+#                    query and lacking its marker.
+# Then four negative controls, in both browsers, each run on the row that shows it and each of
+# which must fail for the reason it exists to show:
 #   live-never-written  the live region ignores every write, so no row hears anything;
 #   current-stale       the current element keeps its first text, so the focused canvas is
 #                       described by a control it is no longer on;
 #   binds-not-bound     the page turns Control+O, a chord the browser keeps, into the
-#                       application's Save, cancelling the browser's own meaning of it.
-# Exit status 0 means every row held in both browsers and all six controls failed as they must.
+#                       application's Save, cancelling the browser's own meaning of it;
+#   shows-desktop       the gate's bundle drawing what the desktop draws, on which the absence
+#                       walk must find the Mixer's tab.
+# The first three are copies of the visitor's bundle with one line put into the page. The gate
+# refuses to start, as a tooling failure, without a gate bundle whose wasm carries the marker
+# only the gate's build compiles in, carries the digest of the fixture set it was built from and
+# that digest is the tracked files' own, and whose page is the page in the source tree; and
+# unless both bundles carry the build identity of this tree (scripts/build_identity.sh): a missing
+# or stale gate bundle is not a row's failure, and the two gates never test different projects
+# under one row. Exit status 0 means every row held in both browsers
+# and all eight controls failed as they must.
 #
 #   coordination/web/probes/web-app-gate.sh > web-app-gate-transcript.txt
 #
 # It builds nothing. The bundle is served from a copy, on 127.0.0.1 with python3's http.server, on
 # a port the server binds itself, with .wasm served as application/wasm, and the server is
-# stopped however the script ends. Each browser run is under a watchdog
-# (WEB_APP_GATE_TIMEOUT_SECONDS, default 1500). Playwright comes from the working set's
+# stopped however the script ends. Each group, in each browser, runs under its own watchdog of
+# WEB_APP_GROUP_TIMEOUT_SECONDS (default 300); no row's own deadline may be more than half of it,
+# which the probe checks before it starts. Playwright comes from the working set's
 # insiculous_web/node_modules beside the repository's main checkout (PLAYWRIGHT_FROM names
 # another package.json) and needs Node 24 (NODE overrides the node it finds). A missing Node,
 # Playwright or browser is the tooling's failure: exit status 2, the application not judged.
@@ -26,6 +47,9 @@ set -euo pipefail
 probes=$(cd "$(dirname "$0")" && pwd)
 repository=$(cd "$probes/../../.." && pwd)
 bundle=${MIDI_EVIL_WEB_BUNDLE:-$repository/target/web/dist}
+gate_bundle=${MIDI_EVIL_WEB_GATE_BUNDLE:-$repository/target/web/dist-gate}
+# The marker's one home is the gate's module; it is read from there, never written out again.
+marker=$(sed -n 's/^const MARKER: &str = "\(.*\)";$/\1/p' "$repository/crates/evil-web/src/gate.rs")
 main_checkout=$(git -C "$repository" worktree list --porcelain | sed -n '1s/^worktree //p')
 export PLAYWRIGHT_FROM=${PLAYWRIGHT_FROM:-$main_checkout/../insiculous_web/package.json}
 
@@ -41,6 +65,44 @@ find_node() {
 
 if [ ! -f "$bundle/index.html" ] || [ ! -f "$bundle/evil_web_bg.wasm" ] || [ ! -f "$bundle/evil_web.js" ]; then
     echo "web-app-gate: the tooling failed: no built bundle at '$bundle'; run scripts/build_wasm.sh" >&2
+    exit 2
+fi
+if [ -z "$marker" ]; then
+    echo "web-app-gate: the tooling failed: no marker found in crates/evil-web/src/gate.rs" >&2
+    exit 2
+fi
+if [ ! -f "$gate_bundle/evil_web_bg.wasm" ] || ! grep -a -q -F -- "$marker" "$gate_bundle/evil_web_bg.wasm"; then
+    echo "web-app-gate: refuses to start: no gate bundle carrying the gate's marker at '$gate_bundle'; run scripts/build_wasm.sh --gate" >&2
+    exit 2
+fi
+# The same digest gate.rs compiles in: a 64-bit FNV-1a over each fixture's name and text, in the
+# order of their names, each followed by a zero byte.
+fixtures_digest=$(python3 - "$probes/fixtures" <<'PYTHON'
+import pathlib, sys
+
+hash = 0xCBF29CE484222325
+for path in sorted(pathlib.Path(sys.argv[1]).glob("*.evil"), key=lambda path: path.stem):
+    for part in (path.stem.encode(), path.read_bytes()):
+        for byte in part + b"\0":
+            hash = ((hash ^ byte) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+print(f"{hash:016x}")
+PYTHON
+)
+if ! grep -a -q -F -- "$fixtures_digest" "$gate_bundle/evil_web_bg.wasm"; then
+    echo "web-app-gate: refuses to start: the gate bundle was not built from the tracked fixtures (digest $fixtures_digest); run scripts/build_wasm.sh --gate" >&2
+    exit 2
+fi
+# Both bundles must be built from this tree: a gate bundle left from an older one would run the
+# matrix on code the visitor's bundle no longer has.
+build_identity=$("$repository/scripts/build_identity.sh")
+for built in "$bundle" "$gate_bundle"; do
+    if ! grep -a -q -F -- "$build_identity" "$built/evil_web_bg.wasm"; then
+        echo "web-app-gate: refuses to start: the bundle at '$built' was not built from this tree ($build_identity); run scripts/build_wasm.sh and scripts/build_wasm.sh --gate" >&2
+        exit 2
+    fi
+done
+if ! cmp -s "$gate_bundle/index.html" "$repository/crates/evil-web/index.html"; then
+    echo "web-app-gate: refuses to start: the gate bundle's page is not crates/evil-web/index.html, so the bundle is stale; run scripts/build_wasm.sh --gate" >&2
     exit 2
 fi
 node=$(find_node)
@@ -61,6 +123,7 @@ stop_server() {
 trap stop_server EXIT
 
 cp -r -- "$bundle" "$runtime/bundle"
+cp -r -- "$gate_bundle" "$runtime/gate"
 # A control is the bundle with one line put into its page just before the module script, so the
 # line runs before the application starts.
 control() {
@@ -136,13 +199,15 @@ if [ -z "$ready" ]; then
     exit 2
 fi
 base="http://127.0.0.1:$(cat "$port_file")"
-gate_timeout=${WEB_APP_GATE_TIMEOUT_SECONDS:-1500}
+group_timeout=${WEB_APP_GROUP_TIMEOUT_SECONDS:-300}
 
 probe() {
     local browser=$1 page=$2
     shift 2
-    timeout --signal=TERM --kill-after=15 "$gate_timeout" \
-        "$node" "$probes/web-app-probe.mjs" --url "$base/$page/index.html" --browser "$browser" "$@"
+    timeout --signal=TERM --kill-after=15 "$group_timeout" \
+        "$node" "$probes/web-app-probe.mjs" --url "$base/$page/index.html" \
+        --gate-url "$base/gate/index.html" --marker "$marker" --group-seconds "$group_timeout" \
+        --browser "$browser" "$@"
 }
 
 stop_for_tooling() {
@@ -154,39 +219,47 @@ stop_for_tooling() {
 
 failed=0
 for browser in chromium firefox; do
-    started=$SECONDS
-    echo
-    echo "################ $browser: every row"
-    status=0
-    probe "$browser" bundle || status=$?
-    echo "################ $browser: $((SECONDS - started)) s"
-    case $status in
-        0) ;;
-        2) stop_for_tooling "$browser" ;;
-        124) echo "################ FAILED: $browser: the run outlived its watchdog"; failed=1 ;;
-        *) echo "################ FAILED: $browser: a row did not hold"; failed=1 ;;
-    esac
+    for group in keys-and-bridge matrix surfaces absence page; do
+        started=$SECONDS
+        echo
+        echo "################ $browser: the $group group"
+        status=0
+        probe "$browser" bundle --group "$group" || status=$?
+        echo "################ $browser: $group: $((SECONDS - started)) s"
+        case $status in
+            0) ;;
+            2) stop_for_tooling "$browser: $group" ;;
+            124) echo "################ FAILED: $browser: the $group group ran out of its $group_timeout s"; failed=1 ;;
+            *) echo "################ FAILED: $browser: a row of the $group group did not hold"; failed=1 ;;
+        esac
+    done
 done
 
 # A control passes only when the probe failed its checks (status 1, not a crash or a hang) and
 # printed every reason the control exists to show.
+# A control named shows-desktop runs on the gate's bundle with ?shows=desktop rather than on a
+# copy of the page.
 must_fail() {
-    local browser=$1 page=$2 rows=$3 started=$SECONDS
+    local browser=$1 control=$2 rows=$3 started=$SECONDS page=$2 flags=()
     shift 3
+    if [ "$control" = shows-desktop ]; then
+        page=bundle
+        flags=(--shows-desktop)
+    fi
     echo
-    echo "################ $browser: negative control: $page, on $rows"
+    echo "################ $browser: negative control: $control, on $rows"
     local output status=0 reason wrong=
-    output=$(probe "$browser" "$page" --rows "$rows" 2>&1) || status=$?
+    output=$(probe "$browser" "$page" --rows "$rows" "${flags[@]}" 2>&1) || status=$?
     printf '%s\n' "$output"
-    echo "################ $browser: $page: $((SECONDS - started)) s"
-    [ "$status" -eq 2 ] && stop_for_tooling "$browser: negative control $page"
+    echo "################ $browser: $control: $((SECONDS - started)) s"
+    [ "$status" -eq 2 ] && stop_for_tooling "$browser: negative control $control"
     for reason in "$@"; do
         grep -q -F -- "$reason" <<< "$output" || wrong="$wrong without '$reason'"
     done
     if [ "$status" -eq 1 ] && [ -z "$wrong" ]; then
         echo "################ the negative control failed, as it must"
     else
-        echo "################ FAILED: $browser: negative control $page exited $status,$wrong"
+        echo "################ FAILED: $browser: negative control $control exited $status,$wrong"
         failed=1
     fi
 }
@@ -203,6 +276,8 @@ for browser in chromium firefox; do
         "does not hold \"About MIDI Evil, button\" ($judge)"
     must_fail "$browser" binds-not-bound browser-chords \
         "FAILED: Control+o was cancelled" "FAILED: Control+o, which is the browser's: 1 writes, not 0"
+    must_fail "$browser" shows-desktop absence-walk \
+        "FAILED: the walk reached MIXER, which the browser leaves out"
 done
 
 echo
@@ -211,4 +286,4 @@ if [ "$failed" -ne 0 ]; then
     echo "web-app gate: FAILED"
     exit 1
 fi
-echo "web-app gate: passed in Chromium and Firefox; all six negative controls failed as they must"
+echo "web-app gate: passed in Chromium and Firefox; all eight negative controls failed as they must"

@@ -161,7 +161,7 @@ fn a_failed_batch_and_refused_bank_save_are_announced() {
         "{heard:?}"
     );
 
-    harness.app.view = View::Pads;
+    harness.app.select_view(View::Pads);
     let queued = harness
         .app
         .accept_render(PendingRender::Wav(directory.path().join("queued.wav")));

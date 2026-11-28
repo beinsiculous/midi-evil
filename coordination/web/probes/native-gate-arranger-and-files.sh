@@ -1,28 +1,9 @@
 # The native gate's rows for the arranger by keyboard, the track panel, the file commands, every
 # command's announced outcome and the record's nine steps. Sourced by native-gate.sh, whose run,
-# run_with, fixture, reach_roll, fixtures and failed it uses; it is not run on its own. A row that
+# run_with, reach_roll, fixtures and failed it uses; it is not run on its own. A row that
 # only presses starts with F6, so that it waits, as every key does, for the window to have focus:
 # a window without it may not draw the frame an outcome is announced in.
 
-# Clean projects with a path: a new project needs no question when nothing is unsaved, and a
-# save writes where the project came from, so neither row opens a dialog.
-fixture clean "Clean|60,0,480"
-fixture saved "Saved|60,0,480"
-# Two tracks; the first plays one shared pattern in bars 1 and 3, the second has a unique
-# timeline of one note and no parts.
-cat > "$fixtures/arrangement.evil" << 'JSON'
-{"format":"midi-evil-project","version":2,"name":"Arrangement","tempo_bpm":120,"beats_per_bar":4,
- "beat_unit":4,"ticks_per_quarter":480,"sample_rate":44100,
- "instruments":[{"name":"Lead","source":{"type":"synth","patch":"lead"}},
-                {"name":"Bass","source":{"type":"synth","patch":"lead"}}],
- "patterns":[{"name":"Riff","length_ticks":1920,
-              "notes":[{"pitch":60,"velocity":100,"start_tick":0,"duration_ticks":480}]}],
- "tracks":[{"name":"Lead","instrument":0,"notes":[],
-            "parts":[{"pattern":0,"start_tick":0,"length_ticks":1920},
-                     {"pattern":0,"start_tick":3840,"length_ticks":1920}]},
-           {"name":"Bass","instrument":1,
-            "notes":[{"pitch":36,"velocity":100,"start_tick":0,"duration_ticks":480}],"parts":[]}]}
-JSON
 # On the Song view F6 from nothing focused reaches the toolbar, the side panel, then the arranger.
 reach_song=(--key F6 --expect-region Toolbar --key F6 --expect-region "Side panel"
     --key F6 --expect "Song, track 1 of " --expect-region Editor)
