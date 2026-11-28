@@ -1555,7 +1555,12 @@ its numbered findings.
 - **Asking is its own act.** Access to MIDI is asked for by the refresh button and by nothing
   else — not by making the application, not by reading the list.
 
-### W3a — Play is heard — BUILT 2026-11-27
+### W3a — Play is heard — DONE 2026-11-27
+
+**Sitting, 2026-11-27:** Jesse, with Orca, on the visitor's bundle built from `5154dc7`: "sitting
+passes". Unitemised: recorded as the batch passing as a whole. The sitting's question — whether
+what Orca says on Play should come before the sound — was not answered by itself, so the order
+stays as built.
 
 *As built, where it differs from what follows.* The limit stayed at five track-minutes: the
 frame that handles Play took 0.6 s in Chromium and 3.5 s in Firefox for `bach`, 0.8 s and 4.1 s
