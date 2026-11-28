@@ -2,8 +2,9 @@
 // whether the workstation started: within the draw deadline, a screenshot of the canvas element
 // itself — never the page, whose visible text would make any screenshot pass — must hold more
 // than one colour, and over the whole visit the page must raise no error and no panic, log
-// nothing as an error, have no request fail, and never call navigator.requestMIDIAccess: a page
-// that asks for MIDI on load puts a permission prompt in front of a visitor who pressed nothing.
+// nothing as an error, have no request fail, never call navigator.requestMIDIAccess — a page
+// that asks for MIDI on load puts a permission prompt in front of a visitor who pressed nothing —
+// and construct no AudioContext, which the page makes only in a visitor's first key or press.
 // There is no list of tolerated errors: the page asks for nothing but its own files. Polling stops
 // at the first error. The bundle is served by the caller (web-smoke.sh); this script only looks.
 //
@@ -119,6 +120,16 @@ async function main() {
           return requestMidiAccess(...options);
         };
       }
+      window.midiEvilSmokeAudioContexts = 0;
+      const NativeContext = window.AudioContext;
+      if (NativeContext) {
+        window.AudioContext = class extends NativeContext {
+          constructor(...options) {
+            super(...options);
+            window.midiEvilSmokeAudioContexts += 1;
+          }
+        };
+      }
     });
     const errors = [];
     page.on("pageerror", (error) => errors.push(`the page raised: ${error.message}`));
@@ -152,7 +163,7 @@ async function main() {
   return failures.length > 0 ? 1 : 0;
 }
 
-// What a loaded page shows: one canvas that draws, and no request for MIDI access.
+// What a loaded page shows: one canvas that draws, no request for MIDI access, and no audio.
 async function judgePage(page, decoder, errors, screenshotPath) {
   const failures = [];
   const canvases = page.locator("canvas");
@@ -180,6 +191,12 @@ async function judgePage(page, decoder, errors, screenshotPath) {
     if (midiRequests !== 0) failures.push(`the page asked for MIDI access: navigator.requestMIDIAccess was called ${midiRequests} time(s)`);
   } catch (error) {
     failures.push(`whether the page asked for MIDI access could not be read: ${error.message.split("\n")[0]}`);
+  }
+  try {
+    const contexts = await page.evaluate(() => window.midiEvilSmokeAudioContexts);
+    if (contexts !== 0) failures.push(`the page made audio: ${contexts} AudioContext(s) were constructed`);
+  } catch (error) {
+    failures.push(`whether the page made audio could not be read: ${error.message.split("\n")[0]}`);
   }
   return failures;
 }

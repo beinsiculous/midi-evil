@@ -1,3 +1,6 @@
+//! The desktop's preview: the rendered sound played through rodio on the default audio device,
+//! metered as it is taken.
+
 use std::num::NonZero;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -8,11 +11,7 @@ use rodio::mixer::MixerSource;
 use rodio::{DeviceSinkBuilder, DeviceSinkError, MixerDeviceSink, Player, Source};
 use web_time::Instant;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct MeterSnapshot {
-    pub level: [f32; 2],
-    pub peak: [f32; 2],
-}
+use crate::preview_output::{MeterSnapshot, PlayingPreview, PreviewOutput};
 
 #[derive(Default)]
 struct MeterState {
@@ -187,25 +186,48 @@ impl PreviewPlayer {
             meter,
         })
     }
+}
 
-    pub fn stop(&self) {
+impl PlayingPreview for PreviewPlayer {
+    fn stop(&self) {
         self.player.stop();
     }
 
-    pub fn is_finished(&self) -> bool {
+    fn is_finished(&self) -> bool {
         self.player.empty()
     }
 
-    pub fn position(&self) -> Duration {
+    fn position(&self) -> Duration {
         self.player.get_pos()
     }
 
-    pub fn meter(&self) -> MeterSnapshot {
+    /// rodio pulls from the device's own thread whatever the window is doing.
+    fn device_running(&self) -> bool {
+        true
+    }
+
+    fn meter(&self) -> MeterSnapshot {
         self.meter.get()
     }
 
-    pub fn channel_meters(&self) -> Vec<(usize, MeterSnapshot)> {
+    fn channel_meters(&self) -> Vec<(usize, MeterSnapshot)> {
         self.meter.channels()
+    }
+}
+
+/// The default audio device, opened for each preview.
+pub struct DesktopPreviewOutput;
+
+impl PreviewOutput for DesktopPreviewOutput {
+    fn play(
+        &mut self,
+        sound: StereoSound,
+        channel_meters: Vec<(usize, ChannelMeter)>,
+        repeats: bool,
+    ) -> Result<Box<dyn PlayingPreview>, String> {
+        PreviewPlayer::play_with_meters(sound, channel_meters, repeats)
+            .map(|player| Box::new(player) as Box<dyn PlayingPreview>)
+            .map_err(|error| error.to_string())
     }
 }
 

@@ -4,7 +4,7 @@ use evil_synth::{ChannelMeter, INSERT_LIMIT, MixAnalysis, SEND_COUNT};
 
 use crate::{
     effect_ui::{self, EffectType},
-    preview::MeterSnapshot,
+    preview_output::MeterSnapshot,
     theme,
 };
 

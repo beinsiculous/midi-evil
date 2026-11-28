@@ -6,11 +6,11 @@
 // Enter. web-app-probe.mjs runs them on the gate's bundle: the W0 and R rows as the matrix group,
 // the surfaces' sequences as a group of their own, each under its own deadline.
 
-import { PLAYBACK, enterTheEditor, plain, walkEveryStop } from "./web-app-rows.mjs";
+import { RECORDING_REFUSED, enterTheEditor, plain, walkEveryStop } from "./web-app-rows.mjs";
 
 // The project the row opened: its name in the Project name field and its track count in the
 // arranger's name. Leaves egui's focus on the arranger.
-async function expectFixture(probe, project, tracks) {
+export async function expectFixture(probe, project, tracks) {
   await enterTheEditor(probe);
   const named = await probe.pressUntil("Tab", "Project name");
   probe.check(plain(named.current).endsWith(`text field, ${project}`), `the project opened is not ${project}: ${named.current}`);
@@ -492,10 +492,10 @@ export const MATRIX_ROWS = {
       await step(probe, "Enter", "Undo, button, unavailable. Nothing to undo.", ["Undid the last edit. unavailable"]);
       await probe.pressUntil("Shift+Tab", "Redo, button");
       await step(probe, "Enter", "Redo, button, unavailable. Nothing to redo.", ["Redid the edit. unavailable"]);
-      for (const control of ["PLAY, button", "Record, toggle button"]) {
-        const state = await probe.pressUntil("Shift+Tab", control, 150);
-        probe.check(plain(state.current).includes(PLAYBACK), `${control} reads ${state.current}`);
-      }
+      const play = await probe.pressUntil("Shift+Tab", "PLAY, button", 150);
+      probe.check(!plain(play.current).includes("unavailable"), `PLAY reads ${play.current}`);
+      const record = await probe.pressUntil("Tab", "Record, toggle button", 150);
+      probe.check(plain(record.current).includes(RECORDING_REFUSED), `Record reads ${record.current}`);
     },
   },
 
@@ -514,7 +514,7 @@ export const MATRIX_ROWS = {
 
   "song-by-keyboard": {
     group: "surfaces",
-    title: "Song: move between tracks and parts, hear a placement, move a part, B says why it cannot play, read the transport, undo, open it in the roll",
+    title: "Song: move between tracks and parts, hear a placement, move a part, B says where playback starts, read the transport, undo, open it in the roll",
     fixture: "arrangement",
     async run(probe) {
       const song = await expectFixture(probe, "Arrangement", 2);
@@ -528,7 +528,7 @@ export const MATRIX_ROWS = {
       await step(probe, "ArrowDown", "Song, track 2 of 2, Bass", ["No track below."]);
       await step(probe, "ArrowUp", "Song, track 1 of 2, Lead, sound Lead, unique timeline");
       await step(probe, "End", "part 2 of 2, Riff, bar 3 beat 1");
-      await step(probe, "b", "part 2 of 2, Riff, bar 3 beat 1", [PLAYBACK]);
+      await step(probe, "b", "part 2 of 2, Riff, bar 3 beat 1", ["Playback starts at bar 3."]);
       await step(probe, "i", null, ["Transport, stopped, tempo 120 beats per minute, 4 4 time"]);
       await step(probe, "Enter", "Piano roll", ["Riff of Lead, in the piano roll."]);
       await step(probe, "ArrowRight", "Piano roll, C 4, pattern bar 1 beat 1, 1 beat");

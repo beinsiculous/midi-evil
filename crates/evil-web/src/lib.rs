@@ -4,6 +4,7 @@
 //! crate is empty.
 #![cfg(target_arch = "wasm32")]
 
+mod audio;
 mod bridge;
 #[cfg(feature = "gate")]
 mod gate;
@@ -72,7 +73,8 @@ fn start() {
 }
 
 /// Starts the workstation with the launch a desktop gets with no arguments: no file, no single
-/// instance to answer to, and dialogs that choose nothing.
+/// instance to answer to, dialogs that choose nothing, and previews played on the page's own
+/// audio.
 async fn start_on_canvas() -> Result<(), JsValue> {
     let window = web_sys::window().ok_or("the page has no window")?;
     let document = window.document().ok_or("the page has no document")?;
@@ -109,6 +111,7 @@ async fn start_on_canvas() -> Result<(), JsValue> {
                     midi_evil::LaunchOptions::default(),
                     None,
                     Box::new(()),
+                    Box::new(audio::PageOutput),
                 );
                 #[cfg(feature = "gate")]
                 let app = gate::application(creation, &gate_canvas)

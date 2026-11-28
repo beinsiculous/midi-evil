@@ -12,7 +12,10 @@
 //       --gate-url http://127.0.0.1:PORT/gate/index.html --browser chromium \
 //       [--group matrix] [--rows nine-steps,held-key] [--shows-desktop] [--marker TEXT]
 //
-// The rows are in web-app-rows.mjs and the matrix's in web-app-matrix-rows.mjs. Each runs in a
+// The rows are in web-app-rows.mjs, the matrix's in web-app-matrix-rows.mjs and the sound's in
+// web-app-playing-rows.mjs, every one with the audio tap of web-app-audio-tap.mjs installed
+// before the page's own scripts, so whatever a row plays is heard by the gate and by nobody
+// else. Each runs in a
 // fresh page, on the bundle it names: the visitor's (--url) or the gate's (--gate-url), which
 // opens the row's fixture by `?fixture=`. --shows-desktop adds `?shows=desktop` to every page
 // of the gate's bundle, as the absence walk's negative control asks; --marker is the text only
@@ -23,13 +26,17 @@
 // chord was not cancelled, and they say the rest is the sitting's.
 //
 // Exit status: 0, every row held; 1, a row failed, each failure on a line beginning "FAILED:";
-// 2, the tooling failed — Playwright would not load, the browser would not launch — and nothing
-// was judged; a row that outlives its deadline fails, so a hang never stands in for a result.
+// 2, the tooling failed — Playwright would not load, the browser would not launch, the tap could
+// not hear what it must, or the browser has nowhere to play to, which refuses the playing group
+// rather than failing it — and nothing was judged; a row that outlives its deadline fails, so a
+// hang never stands in for a result.
 
 import { createRequire } from "node:module";
 
+import { installAudioTap } from "./web-app-audio-tap.mjs";
 import { MATRIX_ROWS } from "./web-app-matrix-rows.mjs";
 import { PAGE_ROWS } from "./web-app-page-rows.mjs";
+import { PLAYING_ROWS, preflightTheTap } from "./web-app-playing-rows.mjs";
 import { ROWS as EARLIER_ROWS, plain } from "./web-app-rows.mjs";
 
 // Every row, each in the group it runs in. The groups run apart, each under its own deadline.
@@ -38,6 +45,7 @@ const ROWS = Object.fromEntries(
     ...Object.entries(PAGE_ROWS),
     ...Object.entries(EARLIER_ROWS).map(([name, row]) => [name, { group: "keys-and-bridge", ...row }]),
     ...Object.entries(MATRIX_ROWS).map(([name, row]) => [name, { group: "matrix", bundle: "gate", ...row }]),
+    ...Object.entries(PLAYING_ROWS).map(([name, row]) => [name, { group: "playing", bundle: "gate", ...row }]),
   ],
 );
 
@@ -82,14 +90,19 @@ function parseArguments(argv) {
     throw new ToolingFailure(`no group named ${settings.group}`);
   }
   // A row that may take most of its group's time would leave the group's own deadline nothing to
-  // stand for.
-  for (const [name, row] of Object.entries(ROWS)) {
-    const seconds = row.deadlineSeconds ?? ROW_DEADLINE_MILLISECONDS / 1000;
+  // stand for. Only the rows this run will run are held to the deadline it runs under.
+  for (const name of selectedRows(settings)) {
+    const seconds = ROWS[name].deadlineSeconds ?? ROW_DEADLINE_MILLISECONDS / 1000;
     if (settings.groupSeconds && seconds > settings.groupSeconds / 2) {
       throw new ToolingFailure(`the row ${name} may take ${seconds} s, more than half its group's ${settings.groupSeconds} s`);
     }
   }
   return settings;
+}
+
+// The rows named, or else every row of the group named, or else every row.
+function selectedRows(settings) {
+  return settings.rows ?? Object.keys(ROWS).filter((name) => !settings.group || ROWS[name].group === settings.group);
 }
 
 // The page a row starts on: its bundle's, with its fixture and, for the negative control, the
@@ -185,8 +198,10 @@ class Probe {
   // and that prompt is never part of a row. (Playwright's handling of it differs: with no dialog
   // listener, Chromium's prompt is accepted for the script; headless Firefox raises none for a
   // navigation no person started.) `before` runs on the new page before it loads, and with
-  // `waitForEditor` false the row reads the page before the application has started.
-  async open(url, { viewport = VIEWPORT, before = null, waitForEditor = true } = {}) {
+  // `waitForEditor` false the row reads the page before the application has started. An
+  // `untouched` page is read through its console alone, from the moment it opens: the tap and the
+  // bridge report there, and nothing the probe does to read it counts as a gesture.
+  async open(url, { viewport = VIEWPORT, before = null, waitForEditor = true, untouched = false } = {}) {
     this.url = url;
     // Closing a context runs no leave-page handler.
     if (this.page) await this.page.context().close();
@@ -195,14 +210,25 @@ class Probe {
       ...(this.userAgent ? { userAgent: this.userAgent } : {}),
     });
     this.page = await context.newPage();
+    await this.page.addInitScript(installAudioTap, { reportThroughConsole: untouched });
     await this.page.addInitScript(instrumentPage);
+    this.console = [];
+    this.untouchedCurrent = "";
     this.page.on("pageerror", (error) => this.errors.push(`the page raised: ${error.message}`));
     this.page.on("console", (message) => {
       if (message.type() === "error") this.errors.push(`the console logged an error: ${message.text().slice(0, 300)}`);
+      const line = { at: Date.now(), type: message.type(), text: message.text() };
+      this.console.push(line);
+      if (line.text.startsWith("midi-evil-current: ")) this.untouchedCurrent = plain(line.text.slice(19));
     });
     this.cdp = null;
     if (before) await before(this.page);
     await this.page.goto(url, { waitUntil: "load", timeout: LOAD_DEADLINE_MILLISECONDS });
+    if (untouched) {
+      const started = await this.waitForConsole(() => this.untouchedCurrent && this.untouchedCurrent !== "Loading the editor", LOAD_DEADLINE_MILLISECONDS);
+      if (!started) throw new Error("the editor never said it had started, through the console");
+      return;
+    }
     if (!waitForEditor) return;
     await this.page.waitForFunction(
       () => document.getElementById("midi-evil-current")?.textContent !== "Loading the editor",
@@ -215,6 +241,25 @@ class Probe {
     }
     await this.settle();
     await this.read();
+  }
+
+  // Waits, reading nothing of the page but its console, until `predicate` holds; false if it never
+  // did within `milliseconds`.
+  async waitForConsole(predicate, milliseconds = 10000) {
+    const until = Date.now() + milliseconds;
+    while (Date.now() < until) {
+      if (predicate()) return true;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    return predicate();
+  }
+
+  // A key on an untouched page, then a wait, read through the console alone.
+  async pressUntouched(chord, milliseconds = 150) {
+    await this.page.keyboard.press(chord);
+    await new Promise((resolve) => setTimeout(resolve, milliseconds));
+    this.log(`after ${chord}, read through the console: current: ${this.untouchedCurrent.slice(0, 150)}`);
+    return this.untouchedCurrent;
   }
 
   fail(message) {
@@ -385,7 +430,7 @@ async function runRow(engine, settings, name, log) {
       timer = setTimeout(() => reject(new Error(`the row outlived its ${rowDeadline / 1000} s deadline`)), rowDeadline);
     });
     const row = (async () => {
-      if (ROWS[name].opens !== false) await probe.open(rowUrl(settings, ROWS[name]));
+      if (ROWS[name].opens !== false) await probe.open(rowUrl(settings, ROWS[name]), { untouched: Boolean(ROWS[name].untouched) });
       await ROWS[name].run(probe);
     })();
     // A row stopped by its deadline goes on failing as the browser closes under it; that is not
@@ -409,7 +454,13 @@ async function main() {
   const settings = parseArguments(process.argv.slice(2));
   const playwright = loadPlaywright();
   const engine = settings.browser === "firefox" ? playwright.firefox : playwright.chromium;
-  const names = settings.rows ?? Object.keys(ROWS).filter((name) => !settings.group || ROWS[name].group === settings.group);
+  const names = selectedRows(settings);
+  // Before any row that plays: the tap hears an oscillator and nothing without one, and the
+  // browser has an audio server to play to — without one, Firefox's context never starts, and
+  // the rows are refused, not failed.
+  if (names.some((name) => ROWS[name].group === "playing")) {
+    await preflightTheTap(engine, settings, (line) => console.log(line), ToolingFailure);
+  }
   let failed = 0;
   for (const name of names) {
     console.log(`\n## ${settings.browser}: ${name} — ${ROWS[name].title}`);

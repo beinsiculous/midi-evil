@@ -2,17 +2,19 @@
 # The browser build's first-run smoke: serves the bundle scripts/build_wasm.sh left in
 # target/web/dist/ and has web-smoke.mjs open it once in headless Chromium and once in headless
 # Firefox, each of which passes only if the canvas itself draws more than one colour within the
-# driver's deadline, the page raises and logs no error and no panic, and it never asks for MIDI
-# access. Then five negative controls, in both browsers, each made from the same copy of the
-# bundle and each of which must fail for the reason it exists to show:
+# driver's deadline, the page raises and logs no error and no panic, it never asks for MIDI
+# access, and it constructs no AudioContext. Then six negative controls, in both browsers, each
+# made from the same copy of the bundle and each of which must fail for the reason it exists to
+# show:
 #   empty-wasm       the wasm is an empty file, so the module cannot start;
 #   wrong-canvas-id  the page's canvas does not carry the id the entry looks for;
 #   logged-error     the page withholds the media query eframe watches the pixel ratio with, so
 #                    eframe logs an error and the canvas draws all the same;
 #   asks-for-midi    the page itself calls navigator.requestMIDIAccess, and the canvas draws;
+#   makes-audio      the page itself constructs an AudioContext, and the canvas draws;
 #   never-loads      the page holds an image whose request the server never answers, so the page
 #                    never finishes loading.
-# Exit status 0 means both browsers passed and all ten controls failed as they must; each run's
+# Exit status 0 means both browsers passed and all twelve controls failed as they must; each run's
 # time is printed, and the whole smoke's.
 #
 #   coordination/web/probes/web-smoke.sh > web-smoke-transcript.txt
@@ -104,6 +106,8 @@ control logged-error
 before_module logged-error '<script>const matchMedia = window.matchMedia.bind(window); window.matchMedia = (query) => query.startsWith("(resolution:") ? null : matchMedia(query);</script>'
 control asks-for-midi
 before_module asks-for-midi '<script>navigator.requestMIDIAccess?.().catch(() => {});</script>'
+control makes-audio
+before_module makes-audio '<script>new AudioContext();</script>'
 # Opening a named pipe with no writer blocks, so the server never answers this image's request.
 control never-loads
 mkfifo "$runtime/never-loads/unanswered"
@@ -238,6 +242,7 @@ for browser in chromium firefox; do
     must_fail "$browser" logged-error "!$one_colour" \
         "FAILED: the console logged an error: " "Failed to create MediaQueryList"
     must_fail "$browser" asks-for-midi "!$one_colour" "FAILED: the page asked for MIDI access"
+    must_fail "$browser" makes-audio "!$one_colour" "FAILED: the page made audio: 1 AudioContext(s) were constructed"
     must_fail "$browser" never-loads "FAILED: the page did not finish loading"
 done
 
@@ -247,4 +252,4 @@ if [ "$failed" -ne 0 ]; then
     echo "web smoke: FAILED"
     exit 1
 fi
-echo "web smoke: passed in Chromium and Firefox; all ten negative controls failed as they must"
+echo "web smoke: passed in Chromium and Firefox; all twelve negative controls failed as they must"

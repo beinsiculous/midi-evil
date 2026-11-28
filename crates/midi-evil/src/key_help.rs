@@ -9,7 +9,7 @@ use eframe::egui;
 use crate::arranger::edits::SongCommand;
 use crate::piano_roll::edits::RollCommand;
 use crate::platform::Platform;
-use crate::speech::{self, Unavailable};
+use crate::speech;
 
 mod page_keys;
 #[cfg(test)]
@@ -74,8 +74,6 @@ pub struct KeyNote {
     pub modifier: ChordModifier,
     pub key: egui::Key,
     pub action: &'static str,
-    /// Why this platform refuses the command, which the chord then only says.
-    pub refused: Option<Unavailable>,
 }
 
 impl KeyNote {
@@ -311,9 +309,6 @@ impl Surface {
                             modifier,
                             key,
                             action: speech::app_command_action(command),
-                            refused: platform
-                                .playback_refused()
-                                .filter(|_| command == AppCommand::PlayOrStop),
                         })
                 })
                 .collect(),
@@ -324,9 +319,6 @@ impl Surface {
                         modifier,
                         key,
                         action: speech::song_command_action(command),
-                        refused: platform
-                            .playback_refused()
-                            .filter(|_| command == SongCommand::StartHere),
                     })
                 })
                 .collect(),
@@ -338,7 +330,6 @@ impl Surface {
                         modifier,
                         key,
                         action: speech::roll_command_action(command),
-                        refused: None,
                     }
                 })
                 .collect(),
@@ -408,13 +399,7 @@ pub fn keyboard_notes(
                 .notes_on(platform)
                 .iter()
                 .filter(|note| keep(note))
-                .map(|note| {
-                    let line = format!("{}: {}", note.chord(command_key), note.action);
-                    match note.refused {
-                        Some(reason) => format!("{line} — {}", speech::refused_in_notes(reason)),
-                        None => line,
-                    }
-                })
+                .map(|note| format!("{}: {}", note.chord(command_key), note.action))
                 .collect(),
         })
         .chain((!desktop_only.lines.is_empty()).then_some(desktop_only))

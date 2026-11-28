@@ -41,7 +41,13 @@ holds it to the import, and W0's main sequence goes on importing the MIDI file i
   overlapping notes at one pitch; `long` — sixty-four one-beat notes, half a minute at 120 beats
   a minute; `tempo` — one note at 90 beats a minute; `lane-point` — two notes and one pitch-bend
   point; `clean` and `saved` — one note each, nothing unsaved; `arrangement` — two tracks, the
-  first playing one shared pattern in bars 1 and 3, the second a unique timeline of one note.
+  first playing one shared pattern in bars 1 and 3, the second a unique timeline of one note;
+  `bach-at-the-limit` — the Bach invention played again from its start after its end and cut at
+  two and a half minutes, five track-minutes, the most the browser renders
+  (`the_bach_invention_at_the_limit_is_the_tracked_project_played_again_and_cut_there` holds it
+  to `bach.evil`); `chords-at-the-limit` — four tracks of four-note chords, one a beat, thirty
+  bars at 96 beats a minute, the same five track-minutes; `chords-over-the-limit` — the same a
+  bar longer, which the browser refuses to play.
 
 Steps, run in command-line order:
 
@@ -376,22 +382,25 @@ visitor's, the gate's and the tree's are one, so neither bundle can be left from
 
 `web-app-gate.sh` serves copies of both on `127.0.0.1` and runs every row through
 `web-app-probe.mjs` in headless Chromium and then headless Firefox — each row in a fresh page — in
-five groups, each under a deadline of its own (`WEB_APP_GROUP_TIMEOUT_SECONDS`, default 300, in
-each browser; the probe refuses to start a row whose own deadline is more than half of it): **keys-and-bridge**
+six groups, each under a deadline of its own (`WEB_APP_GROUP_TIMEOUT_SECONDS`, default 300, in
+each browser, and `WEB_APP_PLAYING_TIMEOUT_SECONDS`, default 600, for the playing group; the
+probe refuses to start a row whose own deadline is more than half the deadline it runs under): **keys-and-bridge**
 (`web-app-rows.mjs`, and the owed click row in `web-app-page-rows.mjs`: the keys, the bridge, the
 focus boundary and the text entry, from the default project, on the visitor's bundle), **matrix**
 (`web-app-matrix-rows.mjs`: the native gate's W0 and R rows, each from the fixture its native row
 opens and first asserting it by name and track count, on the gate's bundle), **surfaces** (the
 same file's sequences for the instrument list, the Song view, the roll's toolbar, the track panel
 and the windows, the same way), **absence** and **page**
-(`web-app-page-rows.mjs`, on the visitor's bundle). Then four negative controls in each browser,
+(`web-app-page-rows.mjs`, on the visitor's bundle), and **playing** (`web-app-playing-rows.mjs`,
+Play heard, on the gate's bundle; below). Then five negative controls in each browser,
 each run on the row that shows it and each of which must fail for its own reason:
 `live-never-written` (the live region ignores every write), `current-stale` (the current element
 keeps its first text), `binds-not-bound` (the page turns Control+O into the application's Save) —
 each a copy of the visitor's bundle with one line put into its page — and `shows-desktop` (the
 gate's bundle drawing what the desktop draws, on which the absence walk must reach the Mixer's
-tab). It exits 0 only if every row held in both browsers and all eight controls failed as they
-must; it stops the server however it ends.
+tab), and `play-never-pressed` (a copy of the gate's bundle whose page keeps Space from the
+application, on which `play-by-space` must hear nothing). It exits 0 only if every row held in
+both browsers and all ten controls failed as they must; it stops the server however it ends.
 
 ```sh
 coordination/web/probes/web-app-gate.sh > web-app-gate-transcript.txt
@@ -433,3 +442,35 @@ Mac by its user agent, from which eframe tells egui the system; `mac-text-editin
 text-entry chords egui takes on a Mac — Command+A, Command+Z, Option+Left, Option+Backspace — are
 shown reaching the field. A row stopped by its deadline is a failed row, and the probe sets its
 exit status rather than exiting, so no line a control looks for is lost.
+
+## `web-app-audio-tap.mjs` and `web-app-playing-rows.mjs` — what the gate hears
+
+`installAudioTap` is installed before the page's own scripts in every row of `web-app-probe.mjs`,
+whatever its group, since a row that plays anything must not be heard: headless Firefox plays
+through the machine's real audio server. It wraps `AudioContext` to count constructions, sends
+everything connected **into** a context's destination to a collector instead, and passes that on
+at gain zero; an `AudioWorklet` beside the collector records every sample against the context's
+own clock, and the page keeps the last forty seconds. The probe steers it through
+`window.midiEvilAudio`: `constructorThrows` makes the constructor throw, as a browser with no audio
+does; `holdSuspended()` suspends every context and keeps it suspended, answering the page's
+`resume()` and ignoring it, until `release()`; `block(milliseconds)` holds the page's thread, as a
+long render does; and its readers give the loudest sample heard between two moments, how long the
+worklet listened, the samples themselves, and the longest wait between two animation frames —
+how long the page answered nothing. The onset detector, `onsets`, is in the same file, in
+JavaScript beside the rows rather than Python called from the gate: the peak of every 2.5 ms held
+over 12.5 ms, and an onset wherever that rises above 1.15 times the median of the 200 ms before it
+and above 0.02, at least 250 ms after the last. It is good to about 12 ms.
+
+The **playing** group runs on the gate's bundle, each row from a fixture, and reads the transport
+in the arranger, where Space plays and stops and I writes the transport. Before any row, the
+probe shows on a bare page of the same origin that the tap hears an oscillator it connects and
+nothing without one, and that the browser's context starts at all: headless Firefox needs the
+machine's audio server, and without one its context never starts, which **refuses** the group —
+the tooling's failure, exit status 2 — rather than failing it. A row marked `untouched`
+(`keys-alone`, `click-alone`) reads the page through its console alone until its own key or click
+is past, because `page.evaluate` is itself a gesture to both browsers: the tap and the bridge's
+two elements report there. A real click is the browser's own pointer, moved to Play's stated place
+at the gate's 1440 by 900 window and pressed; the row passes on what the tap then hears, so a click
+that misses fails. `frame-that-handles-play` prints `MEASURED:` lines — the longest the page
+answered nothing after Play, for `bach`, `bach-at-the-limit` and `chords-at-the-limit` — and fails
+when any is over five seconds, the bound the browser's render limit is set by.

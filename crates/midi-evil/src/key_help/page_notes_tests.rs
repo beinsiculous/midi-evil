@@ -56,12 +56,13 @@ fn the_page_holds_the_notes_the_browser_build_writes() {
 }
 
 #[test]
-fn the_notes_say_why_a_refused_chord_does_nothing_and_name_no_chord_a_browser_keeps() {
+fn the_notes_say_space_plays_and_b_starts_at_the_bar_and_name_no_chord_a_browser_keeps() {
     let notes = page_notes();
-    assert!(notes.contains("Space: plays or stops the song, where the focused control does not take Space — not in the browser build yet"));
-    assert!(
-        notes.contains("B: starts playback at the part's first bar — not in the browser build yet")
-    );
+    assert!(notes.contains(
+        "<li>Space: plays or stops the song, where the focused control does not take Space</li>"
+    ));
+    assert!(notes.contains("<li>B: starts playback at the part's first bar</li>"));
+    assert!(!notes.contains("not in the browser build yet"));
     assert!(notes.contains("Alt+Page Down: "));
     for kept in ["F6", "Alt+Left", "Alt+Right", "Control+N", "Control+O"] {
         assert!(!notes.contains(kept), "{kept}");

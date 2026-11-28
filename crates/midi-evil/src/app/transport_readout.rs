@@ -26,7 +26,6 @@ impl StudioApp {
             "PLAY"
         };
         let platform = crate::platform::of(ui.ctx());
-        let refused = platform.playback_refused();
         let play_key = AppCommand::PlayOrStop
             .hover_shortcut(egui::Key::Space, platform)
             .map(|chord| format!(" · {chord} to play/stop"))
@@ -34,7 +33,7 @@ impl StudioApp {
         let play = Refusable::add_sized(
             ui,
             [88.0, 40.0],
-            refused,
+            None,
             egui::Button::image_and_text(
                 art::control(&self.controls, if active { 5 } else { 4 }),
                 label,
@@ -45,20 +44,20 @@ impl StudioApp {
             if queued {
                 self.stop_transport();
             } else if cancelling {
-                self.preview_project();
+                self.play(platform);
             } else if self.render_job.is_some() {
                 self.cancel_active_render();
             } else if active {
                 self.stop_preview();
             } else {
-                self.preview_project();
+                self.play(platform);
             }
         }
         self.report_refusal(&play);
         let record = Refusable::add_sized(
             ui,
             [88.0, 40.0],
-            refused,
+            platform.recording_refused(),
             egui::Button::new(if self.recorder.is_some() {
                 "Stop take"
             } else {

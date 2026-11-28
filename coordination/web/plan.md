@@ -1555,7 +1555,20 @@ its numbered findings.
 - **Asking is its own act.** Access to MIDI is asked for by the refresh button and by nothing
   else — not by making the application, not by reading the list.
 
-### W3a — Play is heard
+### W3a — Play is heard — BUILT 2026-11-27
+
+*As built, where it differs from what follows.* The limit stayed at five track-minutes: the
+frame that handles Play took 0.6 s in Chromium and 3.5 s in Firefox for `bach`, 0.8 s and 4.1 s
+for the Bach invention at the limit, and 0.6 s and 3.1 s for the four tracks of chords at the
+limit — in this measure the chords cost less than the line. **A track is counted to where its
+sound ends, not to the end of what is played**: a note that starts before that end is made
+whole however far past it runs, and cutting it short was tried and changes five of the twelve
+built-in sounds from their first frames, since they sweep their pitch over the note's length.
+A track counts when it has a note of its own or a part before the end. The limit's function
+takes about a microsecond. Space twice with the render between is heard by the tap as nothing,
+on a fixture that sounds from its first frame, so the frame's order is as it was. The onset
+detector is JavaScript beside the rows. Reviewed in code mode over two rounds: fifteen findings,
+`review/web-w3/rebuttal-5.md`.
 
 **Builds:**
 

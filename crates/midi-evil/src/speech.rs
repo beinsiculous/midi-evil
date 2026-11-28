@@ -230,7 +230,7 @@ pub enum Unavailable {
     NoTrack,
     NoOtherSound,
     NoPartSelected,
-    NoPlaybackInBrowser,
+    NoRecordingInBrowser,
 }
 
 pub fn unavailable_reason(reason: Unavailable) -> &'static str {
@@ -242,20 +242,18 @@ pub fn unavailable_reason(reason: Unavailable) -> &'static str {
         Unavailable::NoTrack => "Add a track first.",
         Unavailable::NoOtherSound => "No other sound in this list.",
         Unavailable::NoPartSelected => "Select a part first.",
-        Unavailable::NoPlaybackInBrowser => "Playback is not in the browser build yet.",
+        Unavailable::NoRecordingInBrowser => "Recording is not in the browser build yet.",
     }
 }
+
+/// Said when a preview is refused because rendering it would stop the page for too long.
+pub const TOO_MUCH_TO_PLAY: &str = "Too much to play in the browser build yet.";
+
+/// Said when a preview is given up because its device never ran or stopped running.
+pub const PREVIEW_NOT_HEARD: &str = "The browser is not playing the sound; press Play again.";
 
 /// "Bass, 4 of 12 synth sounds": which sound a track has and where it is in the list that
 /// Previous and Next walk. A sound the list does not hold says so.
-/// Why a chord does nothing, as a line of the keyboard notes says it after what the chord is for.
-pub fn refused_in_notes(reason: Unavailable) -> &'static str {
-    match reason {
-        Unavailable::NoPlaybackInBrowser => "not in the browser build yet",
-        other => unavailable_reason(other),
-    }
-}
-
 /// What a platform leaves out of what the desktop shows, as the page's list of what is
 /// desktop-only says it.
 pub fn left_out_name(thing: Shown) -> &'static str {
