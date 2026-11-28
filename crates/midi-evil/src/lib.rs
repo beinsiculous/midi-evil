@@ -32,7 +32,9 @@ mod mixer_automation;
 mod patch_lab;
 mod piano_roll;
 mod platform;
+#[cfg(not(target_arch = "wasm32"))]
 mod preview;
+mod preview_output;
 mod recording;
 mod recovery;
 mod regions;
@@ -50,8 +52,10 @@ mod workspace;
 
 pub use app::StudioApp;
 pub use dialogs::Dialogs;
+pub use evil_synth::{ChannelMeter, StereoSound};
 pub use instance::SingleInstance;
 pub use launch::LaunchOptions;
+pub use preview_output::{MeterSnapshot, PlayingPreview, PreviewOutput};
 pub use spoken::{FocusedControl, Happened, KeyTable, SpokenFrame};
 
 /// The desktop application: reads the command line, hands the launch to a running copy when
@@ -72,6 +76,7 @@ pub fn run_native() -> Result<(), Box<dyn std::error::Error>> {
         InstanceStart::Secondary => return Ok(()),
     };
     let dialogs = Box::new(dialogs::DesktopDialogs);
+    let preview_output = Box::new(preview::DesktopPreviewOutput);
     let native_options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1440.0, 900.0])
@@ -87,6 +92,7 @@ pub fn run_native() -> Result<(), Box<dyn std::error::Error>> {
                 options,
                 Some(instance),
                 dialogs,
+                preview_output,
             )))
         }),
     )?;

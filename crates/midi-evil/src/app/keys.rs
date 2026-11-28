@@ -151,15 +151,8 @@ impl StudioApp {
                 continue;
             }
             if let Some(command) = song_command {
-                let refused = platform
-                    .playback_refused()
-                    .filter(|_| command == SongCommand::StartHere);
-                if let Some(reason) = refused {
-                    if !repeat {
-                        self.report(speech::unavailable_reason(reason));
-                    }
                 // A held key repeats a move or a nudge; a held Delete would empty the track.
-                } else if (!repeat || command.repeats_when_held()) && self.song_key(command) {
+                if (!repeat || command.repeats_when_held()) && self.song_key(command) {
                     // Opened in the roll: nothing after it in this frame is the arranger's.
                     song = None;
                 }
@@ -290,16 +283,14 @@ impl StudioApp {
             AppCommand::NextSound => self.cycle_sound(false),
             AppCommand::PlayOrStop if !space_is_free => return false,
             AppCommand::PlayOrStop => {
-                if let Some(reason) = platform.playback_refused() {
-                    self.report(speech::unavailable_reason(reason));
-                } else if self.queued_render.is_some() {
+                if self.queued_render.is_some() {
                     self.stop_transport();
                 } else if self.render_is_cancelling() {
-                    self.preview_project();
+                    self.play(platform);
                 } else if self.preview.is_some() || self.render_job.is_some() {
                     self.stop_transport();
                 } else {
-                    self.preview_project();
+                    self.play(platform);
                 }
             }
             AppCommand::NextRegion | AppCommand::PreviousRegion => return false,

@@ -8,7 +8,8 @@ this list (D12).
 **How it was taken.** Each line of `w-a1-inventory.md` against the browser's list of what it
 leaves out (`crates/midi-evil/src/platform.rs`, `LEFT_OUT_OF_THE_BROWSER`), the crate's tests of
 that list (`app/shown_tests.rs`), and the web gate's rows, run on the bundle each names. Rows are
-named by their key in `web-app-rows.mjs`, `web-app-matrix-rows.mjs` and `web-app-page-rows.mjs`;
+named by their key in `web-app-rows.mjs`, `web-app-matrix-rows.mjs`, `web-app-page-rows.mjs` and
+`web-app-playing-rows.mjs`;
 every one runs in headless Chromium, judged by its real tree over CDP, and headless Firefox,
 judged by Playwright's computation.
 
@@ -41,8 +42,8 @@ back to the browser: a window there does not move and the side panel does not re
 | About MIDI Evil | A | B | "The About window is open; Tab reaches it." — *click-from-outside*, *windows-and-the-project-menu* |
 | Project | S | S | "Project, button, menu open" — *states* |
 | Save project | A | B | the same command as Control+S: "Not saved." — *nine-steps* |
-| PLAY / STOP / CANCEL | S | U (W3, W4) | "PLAY, button, unavailable. Playback is not in the browser build yet.", and Enter says it — *unavailable*; Space says it — *unavailable* |
-| Record / Stop take | A | U (W3, W4) | "Record, toggle button, not pressed, unavailable. Playback is not in the browser build yet." — *r22-unavailable-controls* |
+| PLAY / STOP / CANCEL | S | B (W3) | "PLAY, button", not unavailable — *unavailable*, *r22-unavailable-controls*; Space and a click play and stop, and are heard — *play-by-space*, *play-by-a-click*, *keys-alone*, *click-alone*; a song over the browser's limit says "Too much to play in the browser build yet." — *too-much* |
+| Record / Stop take | A | U (W3) | "Record, toggle button, not pressed, unavailable. Recording is not in the browser build yet.", and Enter says it — *unavailable*, *r22-unavailable-controls*, *record-says-its-reason* |
 | Transport, … (the readout) | A | B | Enter reads it — *r21-tempo-and-a-new-project*; I reads it — *nine-steps*, *song-by-keyboard* |
 | Project name | S | S | *name-field-editing*; every fixture row reads it first |
 | Tempo in beats per minute | S | S | typed, stepped, committed and heard once — *text-fields*, *held-up-on-tempo*, *r21-tempo-and-a-new-project* |
@@ -148,7 +149,7 @@ back to the browser: a window there does not move and the side panel does not re
 | Duplicate loop | A | B | *song-buttons*, *w0-edge-full-shared-pattern* |
 | Unique timeline | A | B | "The unique timeline of Lead, in the piano roll." — *song-buttons* |
 | Song, … (the arranger) | A | B | *song-by-keyboard*, *song-delete-a-part*, and every fixture row's first step |
-| Bar ruler, clicked with a pointer | A | U (W3, W4) | its key path, B, says "Playback is not in the browser build yet." — *song-by-keyboard*, *unavailable* |
+| Bar ruler, clicked with a pointer | A | B (W3) | its key path, B, says "Playback starts at bar 3." — *song-by-keyboard*; B then Space plays from that bar — *b-then-space* |
 | Arranger, vertical scroll bar | S | S | |
 | Pattern name | S | S | *r12-every-stop-named* |
 | Part start in ticks / Part length in ticks | S | S | the same |
@@ -221,7 +222,7 @@ recovered draft — eight lines, **X**.
 Each of W-A1's key paths holds in the browser, through the browser's own chords: the roll's and
 the arranger's gestures by their chords (the matrix), the readout by Tab and the region chord
 (*regions*), a track's double-click by its button and Enter in the arranger. The ruler's click is
-the B of the Song view, which says why it cannot play (**U**, W3, W4). The two gestures W-A1 left
+the B of the Song view, which says where playback starts (**B**, W3). The two gestures W-A1 left
 without a key path, dragging the side panel's edge and a window's title bar, are not offered in
 the browser at all (*no-window-moves*).
 
@@ -232,8 +233,8 @@ rhythm window's eight among them.
 
 | ending | lines |
 |---|---|
-| B — announced in the browser, with its row | 45 |
-| U — unavailable until a named batch | 3 |
+| B — announced in the browser, with its row | 47 |
+| U — unavailable until a named batch | 1 |
 | X — absent from the browser | 41 |
 | S — a named standard control | 33 |
 | F — failing | 0 |

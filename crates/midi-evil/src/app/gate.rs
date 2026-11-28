@@ -12,11 +12,18 @@ impl StudioApp {
     pub fn with_project_text(
         creation: &eframe::CreationContext<'_>,
         dialogs: Box<dyn Dialogs>,
+        preview_output: Box<dyn PreviewOutput>,
         name: &str,
         text: &str,
     ) -> Result<Self, String> {
         let project = Project::from_json(text).map_err(|error| format!("{name}: {error}"))?;
-        let mut app = Self::new(creation, LaunchOptions::default(), None, dialogs);
+        let mut app = Self::new(
+            creation,
+            LaunchOptions::default(),
+            None,
+            dialogs,
+            preview_output,
+        );
         app.adopt_project(project, None, name, files::Discard::NothingUnsaved);
         Ok(app)
     }

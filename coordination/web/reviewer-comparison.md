@@ -104,6 +104,10 @@ credential configured"). Deepseek stood in, as the `roles` skill allows.
 | 41 | W3 section v3 (plan) | deepseek | 13 | 13 | 0 | 0 | "The plan computes 180 s as 6100 × 3/5 = 3660 ms, ignoring the 101 s point" — and the listener that outlives its node | 7:00 |
 | 42 | W3 section v4 (plan) | codex | 0 | 0 | 0 | 0 | "No blocking findings" | 1:00 |
 | 42 | W3 section v4 (plan) | deepseek | 7 | 7 | 0 | 0 | "'Recording with the independent clock; audio preview unavailable: …' is only emitted by `poll_render`'s render-error branch … not by either path" | 13:00 |
+| 43 | W3a (code) | codex | 3 | 2 | 0 | 1 | "`truncate_timeline()` removes later note starts without shortening retained notes. The synthesizer renders all 50 seconds per track" — fixed in the bound, since shortening a note changes five sounds from their first frames | 2:00 |
+| 43 | W3a (code) | gemini | 4 | 0 | 3 | 1 | none real: a context is not closed by a device change, the page has no Play element to click, and a rendered sound's channels are one length | 10:00 |
+| 43 | W3a (code) | deepseek | 6 | 1 | 2 | 3 | "`web-app-gate.sh` passes `--group-seconds` … to **every** probe invocation. `parseArguments` validates **all** rows"; `catch_unwind` catches nothing on this target | 18:00 |
+| 44 | W3a fixed (code) | codex | 2 | 1 | 0 | 1 | "its Bach fixture begins at tick 192, approximately 469 ms of silence … so starting and immediately stopping that buffer still passes the silence assertion" | 4:00 |
 
 Totals so far (through W-A1a; W-A1b's nineteen findings and W-A1c's twenty are in the rows above): codex 47 findings, 44 real, two refuted (a lockfile left out of a diff) and one
 the planner's own excerpt; deepseek 178 findings, 158 real, thirteen refuted, the rest rebutted on

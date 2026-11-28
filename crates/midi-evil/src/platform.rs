@@ -3,9 +3,10 @@
 //! same value from the context it already has and a test can run the browser's behaviour
 //! natively by installing it. What a platform shows is decided here too, in one list: each
 //! control asks it whether to draw itself, and the one place a view is selected asks it whether
-//! that view may be shown.
+//! that view may be shown. So is how much a platform renders before it plays.
 
 use eframe::egui;
+use evil_project::{Part, Project, Track};
 
 use crate::speech::Unavailable;
 use crate::workspace::View;
@@ -84,12 +85,22 @@ impl Platform {
         }
     }
 
-    /// Why nothing can play, record or start from a bar: the renderer spawns a thread, which a
-    /// browser does not give this build.
-    pub fn playback_refused(self) -> Option<Unavailable> {
+    /// Why a take cannot be recorded: the browser build has no recorder yet.
+    pub fn recording_refused(self) -> Option<Unavailable> {
         match self {
             Self::Desktop => None,
-            Self::Browser => Some(Unavailable::NoPlaybackInBrowser),
+            Self::Browser => Some(Unavailable::NoRecordingInBrowser),
+        }
+    }
+
+    /// Whether a preview of `project` that ends at `end_tick` — at the song's end, when none —
+    /// is more than this platform renders. The browser renders on the page's own thread, which
+    /// answers nothing until the render is done, so it renders only what it can in a few
+    /// seconds; the desktop renders on a thread of its own and renders anything.
+    pub fn renders_too_much(self, project: &Project, end_tick: Option<u64>) -> bool {
+        match self {
+            Self::Desktop => false,
+            Self::Browser => track_minutes(project, end_tick) > BROWSER_TRACK_MINUTES,
         }
     }
 
@@ -114,6 +125,81 @@ impl Platform {
     pub fn keeps_the_place_of_an_ended_edit(self) -> bool {
         self == Self::Browser
     }
+}
+
+/// The most the browser renders in place, in track-minutes at the rate below: five stopped
+/// Firefox, which renders five to six times slower than Chromium, for no more than five seconds.
+/// Notes sounding together cost more than notes in a line, and nothing here counts them, so this
+/// is a bound on a render that blocks the page, not a promise about one.
+const BROWSER_TRACK_MINUTES: f64 = 5.0;
+
+/// The sample rate the bound was measured at; a project at a higher rate makes more sound per
+/// minute, in proportion.
+const MEASURED_SAMPLE_RATE: f64 = 48_000.0;
+
+/// How much sound a render up to `end_tick` makes: for each track that sounds before it, the
+/// minutes from the song's start to where that track's sound ends — the renderer always works
+/// from the start, whatever range it hands back, and a note that starts before the end is made
+/// whole, however far past it runs — scaled by the sample rate. Read from the project's timing,
+/// without expanding the song into a performance, which is most of what a render costs. A
+/// project whose timing is invalid counts nothing: the render refuses it and says why.
+fn track_minutes(project: &Project, end_tick: Option<u64>) -> f64 {
+    let end_tick = end_tick.unwrap_or_else(|| project.end_tick());
+    let Ok(timing) = project.timing() else {
+        return 0.0;
+    };
+    let sounding_seconds: f64 = project
+        .tracks
+        .iter()
+        .filter(|track| !track.muted)
+        .filter_map(|track| last_sounding_tick(project, track, end_tick))
+        .map(|tick| timing.seconds_at(tick))
+        .sum();
+    sounding_seconds / 60.0 * f64::from(project.sample_rate) / MEASURED_SAMPLE_RATE
+}
+
+/// Where the sound of a track played up to `end_tick` ends, or `None` when nothing of it starts
+/// before then: `end_tick`, or later when a note that starts before it runs past it.
+fn last_sounding_tick(project: &Project, track: &Track, end_tick: u64) -> Option<u64> {
+    let own_notes = track
+        .notes
+        .iter()
+        .filter(|note| note.start_tick < end_tick)
+        .map(|note| note.start_tick.saturating_add(note.duration_ticks));
+    let part_notes = track
+        .parts
+        .iter()
+        .filter(|part| part.start_tick < end_tick)
+        .filter_map(|part| last_tick_of_a_part(project, part, end_tick));
+    own_notes
+        .chain(part_notes)
+        .max()
+        .map(|last_tick| last_tick.max(end_tick))
+}
+
+/// Where the last of a part's notes ends, of those that start before `end_tick` and before the
+/// part's own end. The part's repeats are not walked: each note of the pattern is placed in the
+/// last repeat in which it still starts in time, which is where it ends latest.
+fn last_tick_of_a_part(project: &Project, part: &Part, end_tick: u64) -> Option<u64> {
+    let pattern = project.patterns.get(part.pattern)?;
+    let last_start = part
+        .start_tick
+        .saturating_add(part.length_ticks)
+        .min(end_tick)
+        .checked_sub(1)?;
+    pattern
+        .notes
+        .iter()
+        .filter_map(|note| {
+            let first_start = part.start_tick.checked_add(note.start_tick)?;
+            let repeats_before = last_start.checked_sub(first_start)? / pattern.length_ticks.max(1);
+            Some(
+                first_start
+                    .saturating_add(repeats_before.saturating_mul(pattern.length_ticks))
+                    .saturating_add(note.duration_ticks),
+            )
+        })
+        .max()
 }
 
 fn memory_id() -> egui::Id {
@@ -148,4 +234,155 @@ pub fn shows(context: &egui::Context, thing: Shown) -> bool {
         .unwrap_or_else(|| of(context))
         .left_out()
         .contains(&thing)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use evil_project::{Instrument, Note, Pattern};
+
+    fn repository() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
+    fn fixture(name: &str) -> Project {
+        Project::load(repository().join(format!("coordination/web/probes/fixtures/{name}.evil")))
+            .unwrap()
+    }
+
+    /// Two tracks of one-beat notes at 120 beats a minute, so each beat is half a second.
+    fn two_tracks_of(beats: u64) -> Project {
+        let mut project = Project::new("Lines");
+        project.sample_rate = 48_000;
+        for name in ["One", "Two"] {
+            let instrument = project
+                .add_instrument(Instrument::synth(name, "lead"))
+                .unwrap();
+            project
+                .add_track(Track {
+                    name: name.to_owned(),
+                    instrument,
+                    notes: (0..beats)
+                        .map(|beat| Note {
+                            pitch: 60,
+                            velocity: 100,
+                            start_tick: beat * 480,
+                            duration_ticks: 480,
+                        })
+                        .collect(),
+                    ..Track::default()
+                })
+                .unwrap();
+        }
+        project
+    }
+
+    #[test]
+    fn the_bach_invention_is_three_and_three_eighths_track_minutes() {
+        let minutes = track_minutes(&fixture("bach"), None);
+        assert!((minutes - 3.375).abs() < 1e-9, "{minutes}");
+        assert!(!Platform::Browser.renders_too_much(&fixture("bach"), None));
+    }
+
+    #[test]
+    fn the_fixtures_at_the_limit_play_and_the_one_a_bar_longer_does_not() {
+        for name in ["bach-at-the-limit", "chords-at-the-limit"] {
+            let project = fixture(name);
+            let minutes = track_minutes(&project, None);
+            assert!(
+                (minutes - BROWSER_TRACK_MINUTES).abs() < 1e-9,
+                "{name}: {minutes}"
+            );
+            assert!(
+                !Platform::Browser.renders_too_much(&project, None),
+                "{name}"
+            );
+        }
+        let longer = fixture("chords-over-the-limit");
+        assert!(Platform::Browser.renders_too_much(&longer, None));
+        let bar = longer.bar_ticks();
+        assert!(!Platform::Browser.renders_too_much(&longer, Some(2 * bar)));
+        assert!(!Platform::Desktop.renders_too_much(&longer, None));
+    }
+
+    #[test]
+    fn a_range_counts_from_the_song_start_to_its_end() {
+        let project = two_tracks_of(120);
+        assert!((track_minutes(&project, None) - 2.0).abs() < 1e-9);
+        assert!((track_minutes(&project, Some(30 * 480)) - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_muted_track_and_one_with_nothing_before_the_end_make_no_sound() {
+        let mut project = two_tracks_of(120);
+        project.tracks[0].muted = true;
+        assert!((track_minutes(&project, None) - 1.0).abs() < 1e-9);
+        project.tracks[0].muted = false;
+        for note in &mut project.tracks[1].notes {
+            note.start_tick += 60 * 480;
+        }
+        assert!((track_minutes(&project, Some(30 * 480)) - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_note_that_outlasts_the_range_counts_to_its_own_end() {
+        let mut project = two_tracks_of(120);
+        project.tracks[0].notes[0].duration_ticks = 240 * 480;
+        let two_bars = Some(8 * 480);
+        let expected = (120.0 + 4.0) / 60.0;
+        assert!((track_minutes(&project, two_bars) - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_pattern_note_that_outlasts_the_range_counts_to_its_own_end() {
+        let mut project = two_tracks_of(0);
+        let pattern = project
+            .add_pattern(Pattern {
+                name: "Drone".to_owned(),
+                length_ticks: 1_920,
+                notes: vec![Note {
+                    pitch: 60,
+                    velocity: 100,
+                    start_tick: 480,
+                    duration_ticks: 120 * 480,
+                }],
+                ..Pattern::default()
+            })
+            .unwrap();
+        let part = Part {
+            pattern,
+            start_tick: 0,
+            length_ticks: 16 * 1_920,
+        };
+        project.add_part(0, part).unwrap();
+        // Played to the end of bar two, the drone last starts at beat 6 and ends 120 beats on.
+        let expected = (5.0 + 120.0) * 0.5 / 60.0;
+        assert!((track_minutes(&project, Some(2 * 1_920)) - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_part_counts_its_track_and_a_higher_rate_counts_in_proportion() {
+        let mut project = two_tracks_of(0);
+        let pattern = project
+            .add_pattern(Pattern {
+                name: "Riff".to_owned(),
+                length_ticks: 1_920,
+                notes: vec![Note::default()],
+                ..Pattern::default()
+            })
+            .unwrap();
+        project
+            .add_part(
+                0,
+                Part {
+                    pattern,
+                    start_tick: 0,
+                    length_ticks: 120 * 480,
+                },
+            )
+            .unwrap();
+        assert!((track_minutes(&project, None) - 1.0).abs() < 1e-9);
+        project.sample_rate = 96_000;
+        assert!((track_minutes(&project, None) - 2.0).abs() < 1e-9);
+    }
 }

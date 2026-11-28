@@ -62,7 +62,7 @@ use crate::instruments::{portable_file_reference, rebase_project_sources};
 use crate::launch::LaunchOptions;
 use crate::patch_lab::{self, PatchLab};
 use crate::piano_roll::{self, RollState};
-use crate::preview::PreviewPlayer;
+use crate::preview_output::{PlayingPreview, PreviewOutput};
 use crate::regions::{self, Region};
 use crate::render_job::{RenderJob, RenderOwner, WavExportQueue};
 use crate::transport::Transport;
@@ -89,7 +89,10 @@ pub struct StudioApp {
     show_export: bool,
     show_automation: bool,
     show_about: bool,
-    preview: Option<PreviewPlayer>,
+    preview: Option<Box<dyn PlayingPreview>>,
+    preview_output: Box<dyn PreviewOutput>,
+    /// When, by the frame's clock, the playing preview's device was last seen stop running.
+    preview_device_stopped_at: Option<f64>,
     mixer: MixerState,
     transport: Transport,
     instance: Option<SingleInstance>,
@@ -134,6 +137,11 @@ pub struct StudioApp {
     dialogs: Box<dyn Dialogs>,
 }
 
+/// How long a preview's device may stay stopped before the preview is given up, in seconds: a
+/// browser starts a context a moment after it is made, and may take longer when the page was
+/// busy.
+const PREVIEW_DEVICE_PATIENCE_SECONDS: f64 = 3.0;
+
 enum PendingRender {
     Preview {
         start_tick: u64,
@@ -177,9 +185,17 @@ impl StudioApp {
         options: LaunchOptions,
         instance: Option<SingleInstance>,
         dialogs: Box<dyn Dialogs>,
+        preview_output: Box<dyn PreviewOutput>,
     ) -> Self {
         let egui_context = &context.egui_ctx;
-        Self::with_dialogs(egui_context, context.storage, options, instance, dialogs)
+        Self::with_dialogs(
+            egui_context,
+            context.storage,
+            options,
+            instance,
+            dialogs,
+            preview_output,
+        )
     }
 
     fn with_dialogs(
@@ -188,6 +204,7 @@ impl StudioApp {
         options: LaunchOptions,
         instance: Option<SingleInstance>,
         dialogs: Box<dyn Dialogs>,
+        preview_output: Box<dyn PreviewOutput>,
     ) -> Self {
         theme::install(context);
         crate::platform::install(context, crate::platform::Platform::of_this_build());
@@ -209,6 +226,8 @@ impl StudioApp {
             show_automation: false,
             show_about: true,
             preview: None,
+            preview_output,
+            preview_device_stopped_at: None,
             mixer: MixerState::default(),
             transport: Transport::new(1_920),
             instance,
@@ -592,6 +611,17 @@ impl StudioApp {
                 };
             }
         });
+    }
+
+    /// Play, as a person asks for it: refused aloud, and nothing rendered, when it is more than
+    /// this platform renders.
+    fn play(&mut self, platform: crate::platform::Platform) {
+        let (_, end_tick) = self.transport.range();
+        if platform.renders_too_much(&self.project, end_tick) {
+            self.report(crate::speech::TOO_MUCH_TO_PLAY);
+            return;
+        }
+        self.preview_project();
     }
 
     fn preview_project(&mut self) {
@@ -1036,14 +1066,35 @@ impl StudioApp {
     fn play_render(&mut self, rendered: evil_render::RenderOutput, status: String, repeat: bool) {
         self.mixer.last_analysis = Some(rendered.mix_analysis.clone());
         self.mixer.last_channel_meters = rendered.channel_meters.clone();
-        let result =
-            PreviewPlayer::play_with_meters(rendered.sound, rendered.channel_meters, repeat);
+        let result = self
+            .preview_output
+            .play(rendered.sound, rendered.channel_meters, repeat);
         match result {
             Ok(player) => {
                 self.preview = Some(player);
+                self.preview_device_stopped_at = None;
                 self.status = status;
             }
-            Err(error) => self.status = format!("Could not start audio preview: {error}"),
+            Err(error) => self.report(format!("Could not start audio preview: {error}")),
+        }
+    }
+
+    /// Stops a preview whose device has not been running for three seconds, at its start or in
+    /// its middle, and says so: its position stands still meanwhile, so the transport would go
+    /// on saying it plays a song nobody hears. `now` is the frame's clock, in seconds.
+    fn stop_a_preview_nobody_hears(&mut self, now: f64) {
+        let running = self
+            .preview
+            .as_ref()
+            .is_none_or(|preview| preview.device_running());
+        if running {
+            self.preview_device_stopped_at = None;
+            return;
+        }
+        let stopped_at = *self.preview_device_stopped_at.get_or_insert(now);
+        if now - stopped_at >= PREVIEW_DEVICE_PATIENCE_SECONDS {
+            self.stop_preview();
+            self.report(crate::speech::PREVIEW_NOT_HEARD);
         }
     }
 
@@ -1290,10 +1341,11 @@ impl eframe::App for StudioApp {
         if self
             .preview
             .as_ref()
-            .is_some_and(PreviewPlayer::is_finished)
+            .is_some_and(|preview| preview.is_finished())
         {
             self.preview = None;
         }
+        self.stop_a_preview_nobody_hears(root.ctx().input(|input| input.time));
         self.toolbar(root);
         self.sound_bar(root);
         self.status_bar(root);
@@ -1361,14 +1413,16 @@ impl StudioApp {
             View::Notes => self.notes_view(ui),
             View::Mixer => {
                 let mut selected = self.roll.selected_track;
-                let meter = self.preview.as_ref().map_or(
-                    crate::preview::MeterSnapshot::default(),
-                    PreviewPlayer::meter,
-                );
+                let meter = self
+                    .preview
+                    .as_ref()
+                    .map_or(crate::preview_output::MeterSnapshot::default(), |preview| {
+                        preview.meter()
+                    });
                 let channel_meters = self
                     .preview
                     .as_ref()
-                    .map_or_else(Vec::new, PreviewPlayer::channel_meters);
+                    .map_or_else(Vec::new, |preview| preview.channel_meters());
                 mixer::mixer(
                     ui,
                     &mut self.project,

@@ -369,6 +369,39 @@ impl std::fmt::Display for RenderError {
 
 impl std::error::Error for RenderError {}
 
+/// Where a job's work runs. A page gives this build no thread, so there the work runs before the
+/// job is returned and its result waits in the channel, taken on the next poll as a thread's
+/// would be; the page answers nothing meanwhile, which is why the browser renders only a short
+/// preview. A job run in place has no worker, so nothing about it can stall and none of it is
+/// ever detached.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorkerPlace {
+    #[cfg(not(target_arch = "wasm32"))]
+    Thread,
+    #[cfg(any(target_arch = "wasm32", test))]
+    InPlace,
+}
+
+impl WorkerPlace {
+    #[cfg(not(target_arch = "wasm32"))]
+    const OF_THIS_BUILD: Self = Self::Thread;
+    #[cfg(target_arch = "wasm32")]
+    const OF_THIS_BUILD: Self = Self::InPlace;
+
+    /// Runs `work` here, or spawns the worker that runs it and returns its handle.
+    fn run(self, work: impl FnOnce() + Send + 'static) -> Option<JoinHandle<()>> {
+        match self {
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Thread => Some(std::thread::spawn(work)),
+            #[cfg(any(target_arch = "wasm32", test))]
+            Self::InPlace => {
+                work();
+                None
+            }
+        }
+    }
+}
+
 pub struct RenderJob {
     receiver: Receiver<Result<RenderSuccess, RenderError>>,
     snapshot: Arc<RenderSnapshot>,
@@ -387,9 +420,15 @@ impl RenderJob {
         end_tick: Option<u64>,
         owner: &RenderOwner,
     ) -> Self {
-        Self::spawn(snapshot, owner, None, move |snapshot, cancellation| {
-            evil_render::render_snapshot_range(snapshot, start_tick, end_tick, cancellation)
-        })
+        Self::spawn(
+            WorkerPlace::OF_THIS_BUILD,
+            snapshot,
+            owner,
+            None,
+            move |snapshot, cancellation| {
+                evil_render::render_snapshot_range(snapshot, start_tick, end_tick, cancellation)
+            },
+        )
     }
 
     pub fn start_wav(snapshot: Arc<RenderSnapshot>, output: PathBuf, owner: &RenderOwner) -> Self {
@@ -404,6 +443,7 @@ impl RenderJob {
         owner: &RenderOwner,
     ) -> Self {
         Self::spawn(
+            WorkerPlace::OF_THIS_BUILD,
             snapshot,
             owner,
             Some(output),
@@ -420,6 +460,7 @@ impl RenderJob {
         owner: &RenderOwner,
     ) -> Self {
         Self::spawn(
+            WorkerPlace::OF_THIS_BUILD,
             snapshot,
             owner,
             Some(output),
@@ -430,6 +471,7 @@ impl RenderJob {
     }
 
     fn spawn(
+        place: WorkerPlace,
         snapshot: Arc<RenderSnapshot>,
         owner: &RenderOwner,
         output: Option<PathBuf>,
@@ -449,7 +491,7 @@ impl RenderJob {
         let worker_resolving = resolving.clone();
         let job_snapshot = snapshot.clone();
         owner.workers.fetch_add(1, Ordering::AcqRel);
-        let worker = std::thread::spawn(move || {
+        let worker = place.run(move || {
             let _worker = WorkerGuard(worker_owner.clone());
             #[cfg(test)]
             worker_owner.call_worker_test_hook();
@@ -493,7 +535,7 @@ impl RenderJob {
             generation,
             resolving,
             cancelled_at: std::cell::Cell::new(None),
-            worker: Some(worker),
+            worker,
         }
     }
 
@@ -984,6 +1026,37 @@ mod tests {
             })
             .unwrap();
         project
+    }
+
+    #[test]
+    fn a_render_in_place_returns_what_the_worker_returns_and_never_detaches() {
+        let render = |snapshot: &RenderSnapshot, cancellation: &RenderCancellation| {
+            evil_render::render_snapshot_range(snapshot, 0, None, cancellation)
+        };
+        let snapshot = Arc::new(RenderSnapshot::new(project(), PathBuf::from(".")));
+        let owner = RenderOwner::default();
+        let threaded =
+            RenderJob::spawn(WorkerPlace::Thread, snapshot.clone(), &owner, None, render)
+                .wait()
+                .unwrap();
+        let mut in_place = RenderJob::spawn(WorkerPlace::InPlace, snapshot, &owner, None, render);
+        assert!(
+            in_place.worker.is_none(),
+            "the work ran before spawn returned"
+        );
+        assert_eq!(owner.worker_count(), 0);
+        in_place.cancel();
+        in_place.expire_cancellation_grace();
+        assert!(!in_place.detach_if_stalled(), "nothing in place can stall");
+        let in_place = in_place
+            .try_finish()
+            .expect("the result waits in the channel");
+        let (threaded, in_place) = (threaded.output, in_place.unwrap().output);
+        assert_eq!(in_place.sound.left, threaded.sound.left);
+        assert_eq!(in_place.sound.right, threaded.sound.right);
+        assert_eq!(in_place.sound.sample_rate, threaded.sound.sample_rate);
+        assert_eq!(in_place.note_count, threaded.note_count);
+        assert!(!in_place.sound.left.is_empty());
     }
 
     #[test]

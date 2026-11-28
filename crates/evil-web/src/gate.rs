@@ -52,7 +52,7 @@ const fn hexadecimal(value: u64) -> [u8; 16] {
 }
 
 /// The gate's tracked projects, as the native gate copies them, by name in order.
-const FIXTURES: [(&str, &str); 12] = [
+const FIXTURES: [(&str, &str); 15] = [
     (
         "arrangement",
         include_str!("../../../coordination/web/probes/fixtures/arrangement.evil"),
@@ -62,8 +62,20 @@ const FIXTURES: [(&str, &str); 12] = [
         include_str!("../../../coordination/web/probes/fixtures/bach.evil"),
     ),
     (
+        "bach-at-the-limit",
+        include_str!("../../../coordination/web/probes/fixtures/bach-at-the-limit.evil"),
+    ),
+    (
         "bass",
         include_str!("../../../coordination/web/probes/fixtures/bass.evil"),
+    ),
+    (
+        "chords-at-the-limit",
+        include_str!("../../../coordination/web/probes/fixtures/chords-at-the-limit.evil"),
+    ),
+    (
+        "chords-over-the-limit",
+        include_str!("../../../coordination/web/probes/fixtures/chords-over-the-limit.evil"),
     ),
     (
         "clean",
@@ -133,6 +145,7 @@ pub fn application(
             midi_evil::LaunchOptions::default(),
             None,
             Box::new(()),
+            Box::new(crate::audio::PageOutput),
         ));
     };
     let (_, text) = FIXTURES
@@ -142,6 +155,7 @@ pub fn application(
     Ok(midi_evil::StudioApp::with_project_text(
         creation,
         Box::new(()),
+        Box::new(crate::audio::PageOutput),
         &format!("{name}.evil"),
         text,
     )?)

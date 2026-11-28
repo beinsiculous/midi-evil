@@ -185,8 +185,71 @@ impl crate::dialogs::Dialogs for ScriptedDialogs {
     }
 }
 
+#[derive(Default)]
+struct OutputScript {
+    plays: usize,
+    device_stopped: bool,
+    refusal: Option<String>,
+}
+
+/// An output a test plays previews on: nothing is heard, every play is counted, and the test
+/// says whether its device can be opened and whether it is running.
+#[derive(Clone, Default)]
+pub(super) struct ScriptedOutput(Rc<RefCell<OutputScript>>);
+
+impl ScriptedOutput {
+    pub(super) fn plays(&self) -> usize {
+        self.0.borrow().plays
+    }
+
+    /// Whether the device of every preview, playing or to come, is running.
+    pub(super) fn set_device_running(&self, running: bool) {
+        self.0.borrow_mut().device_stopped = !running;
+    }
+
+    /// Why the next previews cannot start, or `None` for them to start.
+    pub(super) fn refuse_with(&self, refusal: Option<&str>) {
+        self.0.borrow_mut().refusal = refusal.map(str::to_owned);
+    }
+}
+
+impl crate::preview_output::PreviewOutput for ScriptedOutput {
+    fn play(
+        &mut self,
+        _sound: evil_synth::StereoSound,
+        _channel_meters: Vec<(usize, evil_synth::ChannelMeter)>,
+        _repeats: bool,
+    ) -> Result<Box<dyn PlayingPreview>, String> {
+        let mut script = self.0.borrow_mut();
+        if let Some(refusal) = &script.refusal {
+            return Err(refusal.clone());
+        }
+        script.plays += 1;
+        Ok(Box::new(ScriptedPlaying(Rc::clone(&self.0))))
+    }
+}
+
+struct ScriptedPlaying(Rc<RefCell<OutputScript>>);
+
+impl PlayingPreview for ScriptedPlaying {
+    fn stop(&self) {}
+
+    fn is_finished(&self) -> bool {
+        false
+    }
+
+    fn position(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
+
+    fn device_running(&self) -> bool {
+        !self.0.borrow().device_stopped
+    }
+}
+
 impl StudioApp {
-    /// An application whose dialogs fail the test if one is asked; `Harness` answers them.
+    /// An application whose dialogs fail the test if one is asked; `Harness` answers them. It
+    /// plays on the desktop's device, as the desktop does.
     pub(super) fn create(
         context: &egui::Context,
         storage: Option<&dyn eframe::Storage>,
@@ -194,7 +257,8 @@ impl StudioApp {
         instance: Option<SingleInstance>,
     ) -> Self {
         let dialogs = Box::new(ScriptedDialogs::default());
-        Self::with_dialogs(context, storage, options, instance, dialogs)
+        let preview_output = Box::new(crate::preview::DesktopPreviewOutput);
+        Self::with_dialogs(context, storage, options, instance, dialogs, preview_output)
     }
 }
 
@@ -538,6 +602,13 @@ impl Harness {
             .find(|(_, node)| node.role() == role)
             .map(|(id, _)| *id)
             .unwrap_or_else(|| panic!("no {role:?} node"))
+    }
+
+    /// Previews from now on play on a scripted output, which the test holds.
+    pub(super) fn play_on_a_scripted_output(&mut self) -> ScriptedOutput {
+        let output = ScriptedOutput::default();
+        self.app.preview_output = Box::new(output.clone());
+        output
     }
 
     /// Whether the transport started; stopped again at once, so a test never reaches audio.

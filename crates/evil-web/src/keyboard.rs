@@ -20,6 +20,9 @@
 //!
 //! Focus that arrives from the page comes through a sentinel before or after the canvas, and
 //! enters at egui's first or last stop by the direction it came from.
+//!
+//! Every key and every pointer press, wherever on the page, wakes the page's audio first: a
+//! browser lets a page start its sound only inside such an event's own handler.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -149,6 +152,7 @@ fn install_keys(
         "keydown",
         true,
         move |event: web_sys::KeyboardEvent| {
+            crate::audio::wake();
             let active = document.active_element();
             if !in_editor(active.clone(), &canvas) {
                 return;
@@ -214,7 +218,7 @@ fn install_keys(
 }
 
 /// A paste, a composed character and the pointer reach the editor without a key the table would
-/// see.
+/// see. A pointer press anywhere on the page also wakes the page's audio, as any key does.
 fn install_input_marks(
     window: &web_sys::Window,
     document: &web_sys::Document,
@@ -236,6 +240,9 @@ fn install_input_marks(
     for name in ["pointerdown", "pointermove", "pointerup"] {
         let (canvas, shared) = (canvas.clone(), Rc::clone(shared));
         listen(window, name, true, move |event: web_sys::MouseEvent| {
+            if name == "pointerdown" {
+                crate::audio::wake();
+            }
             let target = event
                 .target()
                 .and_then(|target| target.dyn_into::<web_sys::Element>().ok());

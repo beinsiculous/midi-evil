@@ -6,7 +6,7 @@ export function plain(text) {
   return text.replaceAll("\u00a0", " ").trimEnd();
 }
 
-export const PLAYBACK = "Playback is not in the browser build yet.";
+export const RECORDING_REFUSED = "Recording is not in the browser build yet.";
 
 // Every stop of the editor as it now is: Tab from egui's focus to the editor's end, then Shift+Tab
 // back in and on to its first stop, so the whole ring is walked from wherever it starts. `each`
@@ -413,22 +413,22 @@ export const ROWS = {
   },
 
   "unavailable": {
-    title: "Undo on a clean start and Play: reached by Tab, described as unavailable with the reason, activated, the reason written, nothing changed; Space and B say it too",
+    title: "Record and Undo on a clean start: reached by Tab, described as unavailable with the reason, activated, the reason written, nothing changed; Play on the way is not unavailable",
     async run(probe) {
       await newProjectFromTheMenu(probe);
       let state = await probe.pressUntil("Tab", "PLAY");
-      await probe.expectFocus(`PLAY, button, unavailable. ${PLAYBACK}`);
-      state = await probe.press("Enter", "Enter on PLAY");
-      probe.expectWrites(state, [PLAYBACK], "PLAY activated");
-      probe.check(plain(state.current).startsWith("PLAY,"), "focus left PLAY");
+      await probe.expectFocus("PLAY, button");
+      probe.check(!plain(state.current).includes("unavailable"), `PLAY reads ${state.current}`);
+      state = await probe.pressUntil("Tab", "Record");
+      await probe.expectFocus(`Record, toggle button, not pressed, unavailable. ${RECORDING_REFUSED}`);
+      state = await probe.press("Enter", "Enter on Record");
+      probe.expectWrites(state, [RECORDING_REFUSED], "Record activated");
+      probe.check(plain(state.current).startsWith("Record,"), "focus left Record");
       state = await probe.pressUntil("Tab", "Undo");
       await probe.expectFocus("Undo, button, unavailable. Nothing to undo.");
       state = await probe.press("Enter", "Enter on Undo");
       probe.expectWrites(state, ["Nothing to undo."], "Undo activated");
       probe.check(!state.unsaved, "Undo changed the document");
-      await probe.pressUntil("Alt+PageDown", "Song,");
-      probe.expectWrites(await probe.press("b", "B in the arranger"), [PLAYBACK], "B");
-      probe.expectWrites(await probe.press("Space", "Space in the arranger"), [PLAYBACK], "Space");
     },
   },
 

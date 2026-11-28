@@ -2,9 +2,10 @@
 # The web gate for the application's own bundles: serves the visitor's bundle scripts/build_wasm.sh
 # left in target/web/dist/ and the gate's, which scripts/build_wasm.sh --gate left in
 # target/web/dist-gate/, and has web-app-probe.mjs run every row, each in a fresh page, in
-# headless Chromium, then headless Firefox. The rows run in five groups, each with a deadline of
-# its own in each browser (WEB_APP_GROUP_TIMEOUT_SECONDS, default 300), and a group that runs out
-# says its name:
+# headless Chromium, then headless Firefox. The rows run in six groups, each with a deadline of
+# its own in each browser (WEB_APP_GROUP_TIMEOUT_SECONDS, default 300; the playing group, which
+# listens to whole songs, WEB_APP_PLAYING_TIMEOUT_SECONDS, default 600), and a group that runs
+# out says its name:
 #   keys-and-bridge  the keys, the bridge, the focus boundary and the text entry, from the
 #                    application's own default project, on the visitor's bundle;
 #   matrix           the native gate's W0 and R rows in the browser, each from the fixture its
@@ -13,8 +14,11 @@
 #                    toolbar, the track panel and the windows, the same way;
 #   absence          what the browser build leaves out is not there, on the visitor's bundle;
 #   page             the page's own text, its layout, and the visitor's bundle ignoring the gate's
-#                    query and lacking its marker.
-# Then four negative controls, in both browsers, each run on the row that shows it and each of
+#                    query and lacking its marker;
+#   playing          Play heard: what the audio tap hears and what the transport says, from the
+#                    gate's fixtures, on the gate's bundle. The tap passes everything on at no
+#                    volume, since headless Firefox plays through the machine's audio server.
+# Then five negative controls, in both browsers, each run on the row that shows it and each of
 # which must fail for the reason it exists to show:
 #   live-never-written  the live region ignores every write, so no row hears anything;
 #   current-stale       the current element keeps its first text, so the focused canvas is
@@ -22,23 +26,28 @@
 #   binds-not-bound     the page turns Control+O, a chord the browser keeps, into the
 #                       application's Save, cancelling the browser's own meaning of it;
 #   shows-desktop       the gate's bundle drawing what the desktop draws, on which the absence
-#                       walk must find the Mixer's tab.
-# The first three are copies of the visitor's bundle with one line put into the page. The gate
+#                       walk must find the Mixer's tab;
+#   play-never-pressed  the page keeps Space from the application, so Play is never pressed and
+#                       the row that expects sound hears nothing.
+# The first three are copies of the visitor's bundle with one line put into the page, the last a
+# copy of the gate's bundle with one line put into its page. The gate
 # refuses to start, as a tooling failure, without a gate bundle whose wasm carries the marker
 # only the gate's build compiles in, carries the digest of the fixture set it was built from and
 # that digest is the tracked files' own, and whose page is the page in the source tree; and
 # unless both bundles carry the build identity of this tree (scripts/build_identity.sh): a missing
 # or stale gate bundle is not a row's failure, and the two gates never test different projects
 # under one row. Exit status 0 means every row held in both browsers
-# and all eight controls failed as they must.
+# and all ten controls failed as they must.
 #
 #   coordination/web/probes/web-app-gate.sh > web-app-gate-transcript.txt
 #
 # It builds nothing. The bundle is served from a copy, on 127.0.0.1 with python3's http.server, on
 # a port the server binds itself, with .wasm served as application/wasm, and the server is
 # stopped however the script ends. Each group, in each browser, runs under its own watchdog of
-# WEB_APP_GROUP_TIMEOUT_SECONDS (default 300); no row's own deadline may be more than half of it,
-# which the probe checks before it starts. Playwright comes from the working set's
+# WEB_APP_GROUP_TIMEOUT_SECONDS (default 300) or, for the playing group,
+# WEB_APP_PLAYING_TIMEOUT_SECONDS (default 600); no row's own deadline may be more than half of
+# the deadline it runs under, which the probe checks before it starts. A browser with no audio server to play
+# to refuses the playing group, which is the tooling's failure, not the application's. Playwright comes from the working set's
 # insiculous_web/node_modules beside the repository's main checkout (PLAYWRIGHT_FROM names
 # another package.json) and needs Node 24 (NODE overrides the node it finds). A missing Node,
 # Playwright or browser is the tooling's failure: exit status 2, the application not judged.
@@ -124,11 +133,12 @@ trap stop_server EXIT
 
 cp -r -- "$bundle" "$runtime/bundle"
 cp -r -- "$gate_bundle" "$runtime/gate"
-# A control is the bundle with one line put into its page just before the module script, so the
-# line runs before the application starts.
+# A control is a bundle — the visitor's, unless a third argument names another — with one line
+# put into its page just before the module script, so the line runs before the application
+# starts.
 control() {
-    local name=$1 line=$2
-    cp -r -- "$runtime/bundle" "$runtime/$name"
+    local name=$1 line=$2 from=${3:-bundle}
+    cp -r -- "$runtime/$from" "$runtime/$name"
     python3 - "$runtime/$name/index.html" "$line" <<'PYTHON'
 import sys
 
@@ -142,6 +152,7 @@ PYTHON
 control live-never-written '<script>Object.defineProperty(document.getElementById("midi-evil-live"), "textContent", { get() { return ""; }, set() {} });</script>'
 control current-stale '<script>(() => { const current = document.getElementById("midi-evil-current"); const descriptor = Object.getOwnPropertyDescriptor(Node.prototype, "textContent"); let writes = 0; Object.defineProperty(current, "textContent", { get() { return descriptor.get.call(current); }, set(text) { if (writes++ === 0) descriptor.set.call(current, text); } }); })();</script>'
 control binds-not-bound '<script>window.addEventListener("keydown", (event) => { if (event.ctrlKey && event.key.toLowerCase() === "o") { event.preventDefault(); document.getElementById("midi-evil-canvas").dispatchEvent(new KeyboardEvent("keydown", { key: "s", ctrlKey: true, bubbles: true, cancelable: true })); } }, true);</script>'
+control play-never-pressed '<script>window.addEventListener("keydown", (event) => { if (event.key === " ") event.stopImmediatePropagation(); }, true);</script>' gate
 port_file=$runtime/port
 
 python3 - "$runtime" "$port_file" > "$runtime/server.log" 2>&1 <<'PYTHON' &
@@ -200,13 +211,19 @@ if [ -z "$ready" ]; then
 fi
 base="http://127.0.0.1:$(cat "$port_file")"
 group_timeout=${WEB_APP_GROUP_TIMEOUT_SECONDS:-300}
+playing_timeout=${WEB_APP_PLAYING_TIMEOUT_SECONDS:-600}
+# The deadline of a group, which a control's row runs under too.
+seconds_for() {
+    if [ "$1" = playing ]; then echo "$playing_timeout"; else echo "$group_timeout"; fi
+}
 
+# The probe holds each row it runs to the deadline it runs under.
 probe() {
-    local browser=$1 page=$2
-    shift 2
-    timeout --signal=TERM --kill-after=15 "$group_timeout" \
+    local browser=$1 page=$2 seconds=$3
+    shift 3
+    timeout --signal=TERM --kill-after=15 "$seconds" \
         "$node" "$probes/web-app-probe.mjs" --url "$base/$page/index.html" \
-        --gate-url "$base/gate/index.html" --marker "$marker" --group-seconds "$group_timeout" \
+        --gate-url "$base/gate/index.html" --marker "$marker" --group-seconds "$seconds" \
         --browser "$browser" "$@"
 }
 
@@ -219,17 +236,17 @@ stop_for_tooling() {
 
 failed=0
 for browser in chromium firefox; do
-    for group in keys-and-bridge matrix surfaces absence page; do
+    for group in keys-and-bridge matrix surfaces absence page playing; do
         started=$SECONDS
         echo
         echo "################ $browser: the $group group"
         status=0
-        probe "$browser" bundle --group "$group" || status=$?
+        probe "$browser" bundle "$(seconds_for "$group")" --group "$group" || status=$?
         echo "################ $browser: $group: $((SECONDS - started)) s"
         case $status in
             0) ;;
             2) stop_for_tooling "$browser: $group" ;;
-            124) echo "################ FAILED: $browser: the $group group ran out of its $group_timeout s"; failed=1 ;;
+            124) echo "################ FAILED: $browser: the $group group ran out of its $(seconds_for "$group") s"; failed=1 ;;
             *) echo "################ FAILED: $browser: a row of the $group group did not hold"; failed=1 ;;
         esac
     done
@@ -238,18 +255,23 @@ done
 # A control passes only when the probe failed its checks (status 1, not a crash or a hang) and
 # printed every reason the control exists to show.
 # A control named shows-desktop runs on the gate's bundle with ?shows=desktop rather than on a
-# copy of the page.
+# copy of the page; play-never-pressed is a copy of the gate's page, and its row runs in the
+# playing group's time.
 must_fail() {
-    local browser=$1 control=$2 rows=$3 started=$SECONDS page=$2 flags=()
+    local browser=$1 control=$2 rows=$3 started=$SECONDS page=$2 flags=() seconds=$group_timeout
     shift 3
     if [ "$control" = shows-desktop ]; then
         page=bundle
         flags=(--shows-desktop)
+    elif [ "$control" = play-never-pressed ]; then
+        page=bundle
+        flags=(--gate-url "$base/$control/index.html")
+        seconds=$playing_timeout
     fi
     echo
     echo "################ $browser: negative control: $control, on $rows"
     local output status=0 reason wrong=
-    output=$(probe "$browser" "$page" --rows "$rows" "${flags[@]}" 2>&1) || status=$?
+    output=$(probe "$browser" "$page" "$seconds" --rows "$rows" "${flags[@]}" 2>&1) || status=$?
     printf '%s\n' "$output"
     echo "################ $browser: $control: $((SECONDS - started)) s"
     [ "$status" -eq 2 ] && stop_for_tooling "$browser: negative control $control"
@@ -278,6 +300,8 @@ for browser in chromium firefox; do
         "FAILED: Control+o was cancelled" "FAILED: Control+o, which is the browser's: 1 writes, not 0"
     must_fail "$browser" shows-desktop absence-walk \
         "FAILED: the walk reached MIXER, which the browser leaves out"
+    must_fail "$browser" play-never-pressed play-by-space \
+        "FAILED: Space, to play: the tap heard nothing"
 done
 
 echo
@@ -286,4 +310,4 @@ if [ "$failed" -ne 0 ]; then
     echo "web-app gate: FAILED"
     exit 1
 fi
-echo "web-app gate: passed in Chromium and Firefox; all eight negative controls failed as they must"
+echo "web-app gate: passed in Chromium and Firefox; all ten negative controls failed as they must"

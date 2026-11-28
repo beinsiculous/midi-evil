@@ -22,16 +22,13 @@ const DESKTOP_ONLY = [
   "Relinking the MIDI file", "Exporting MIDI", "Rendering WAV files, track stems and arrangement parts",
   "The export row", "Loading sound files", "Moving a window by its title bar", "Resizing the side panel",
 ];
-// Every chord of the browser's table, and the reason beside each it refuses.
+// Every chord of the browser's table. None is refused: Space and B play in the browser too.
 const BROWSER_CHORDS = [
-  "Control+S: ", "Control+Z: ", "Control+Shift+Z: ", "Control+Y: ", "Alt+Page Down: ", "Alt+Page Up: ",
+  "Control+S: ", "Control+Z: ", "Control+Shift+Z: ", "Control+Y: ", "Space: ", "Alt+Page Down: ", "Alt+Page Up: ",
   "Left: ", "Right: ", "Up: ", "Down: ", "Home: ", "End: ", "Control+Left: ", "Control+Right: ",
-  "Shift+Up: ", "Shift+Down: ", "Shift+Left: ", "Shift+Right: ", "Enter: ", "Delete: ", "Escape: ", "I: ",
+  "Shift+Up: ", "Shift+Down: ", "Shift+Left: ", "Shift+Right: ", "Enter: ", "Delete: ", "Escape: ", "B: ", "I: ",
 ];
-const REFUSED = [
-  "Space: plays or stops the song, where the focused control does not take Space — not in the browser build yet",
-  "B: starts playback at the part's first bar — not in the browser build yet",
-];
+const REFUSAL_SUFFIX = "not in the browser build yet";
 const KEPT_BY_A_BROWSER = ["F6", "Alt+Left", "Alt+Right", "Control+N", "Control+O"];
 
 // A stop's name is the current element's text up to its first comma: a window's title bar is
@@ -187,7 +184,7 @@ export const PAGE_ROWS = {
       probe.check(page.order, "the heading, the notes' button and the notes do not come before the canvas");
       probe.check(page.hidden && page.expanded === "false", "the notes are not closed when the page loads");
       for (const chord of BROWSER_CHORDS) probe.check(page.text.includes(chord), `the notes lack ${JSON.stringify(chord)}`);
-      for (const line of REFUSED) probe.check(page.text.includes(line), `the notes lack ${JSON.stringify(line)}`);
+      probe.check(!page.text.includes(REFUSAL_SUFFIX), `the notes still say a chord is ${REFUSAL_SUFFIX}`);
       for (const kept of KEPT_BY_A_BROWSER) probe.check(!page.text.includes(kept), `the notes name ${kept}, which a browser keeps`);
       for (const thing of DESKTOP_ONLY) probe.check(page.text.includes(thing), `the desktop-only list lacks ${JSON.stringify(thing)}`);
       probe.check(page.text.includes("Chromium and Firefox"), "the notes do not say which browsers the page was tested in");

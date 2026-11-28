@@ -18,6 +18,37 @@ fn the_tracked_bach_project_is_the_midi_file_imported_note_for_note() {
     assert_eq!(tracked, imported);
 }
 
+/// The browser's preview limit is shown on the invention itself: its first bars again after its
+/// end, cut where the limit is.
+#[test]
+fn the_bach_invention_at_the_limit_is_the_tracked_project_played_again_and_cut_there() {
+    let fixtures = repository().join("coordination/web/probes/fixtures");
+    let bach = Project::load(fixtures.join("bach.evil")).unwrap();
+    let at_the_limit = Project::load(fixtures.join("bach-at-the-limit.evil")).unwrap();
+    let once = bach.end_tick();
+    let cut = at_the_limit.end_tick();
+    assert!(once < cut && cut < 2 * once, "{once} {cut}");
+    let mut expected = bach.clone();
+    expected.name = "bach-at-the-limit".to_owned();
+    for (track, played) in expected.tracks.iter_mut().zip(&bach.tracks) {
+        track.notes = [0, once]
+            .into_iter()
+            .flat_map(|offset| {
+                played.notes.iter().map(move |note| evil_project::Note {
+                    start_tick: note.start_tick + offset,
+                    ..*note
+                })
+            })
+            .filter(|note| note.start_tick < cut)
+            .map(|note| evil_project::Note {
+                duration_ticks: note.duration_ticks.min(cut - note.start_tick),
+                ..note
+            })
+            .collect();
+    }
+    assert_eq!(at_the_limit, expected);
+}
+
 #[cfg(feature = "gate")]
 #[test]
 fn every_tracked_project_starts_the_workstation_from_its_text_with_no_file_behind_it() {
@@ -29,7 +60,8 @@ fn every_tracked_project_starts_the_workstation_from_its_text_with_no_file_behin
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
         let creation = eframe::CreationContext::_new_kittest(egui::Context::default());
         let dialogs = Box::new(super::test_harness::ScriptedDialogs::default());
-        let app = StudioApp::with_project_text(&creation, dialogs, &name, &text).unwrap();
+        let output = Box::new(crate::preview::DesktopPreviewOutput);
+        let app = StudioApp::with_project_text(&creation, dialogs, output, &name, &text).unwrap();
         assert_eq!(app.project, Project::from_json(&text).unwrap(), "{name}");
         assert!(app.project_path.is_none() && !app.dirty, "{name}");
         assert!(
@@ -38,8 +70,9 @@ fn every_tracked_project_starts_the_workstation_from_its_text_with_no_file_behin
         );
         opened += 1;
     }
-    assert_eq!(opened, 12);
+    assert_eq!(opened, 15);
     let creation = eframe::CreationContext::_new_kittest(egui::Context::default());
     let dialogs = Box::new(super::test_harness::ScriptedDialogs::default());
-    assert!(StudioApp::with_project_text(&creation, dialogs, "broken.evil", "{").is_err());
+    let output = Box::new(crate::preview::DesktopPreviewOutput);
+    assert!(StudioApp::with_project_text(&creation, dialogs, output, "broken.evil", "{").is_err());
 }
