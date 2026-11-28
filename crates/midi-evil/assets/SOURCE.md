@@ -11,18 +11,18 @@ Source masters from the user-selected Insiculous branding set (retained unmodifi
 
 `midi-evil-icon.aseprite` and `midi-evil-splash.aseprite` are copies of the editable source masters. Their matching PNG files were exported in Aseprite for use by the app. No NanoStudio artwork is used in the rendered UI.
 
-## Redistribution audit — 2026-11-05
+## Redistribution audit — 2026-11-27
 
-The selected source revision is Insiculous `deion_assets` commit `1a7b363`, in
-`ai/branding/midi_evil/`. All four local icon/splash files are byte-identical to
-that revision:
+The selected source revision is Insiculous `deion_assets` commit `de1390b`
+(matching `ai/branding/midi_evil/` as refreshed in `de18b6a`). All four local
+icon/splash files are byte-identical to that revision:
 
 | File | SHA-256 |
 | --- | --- |
-| `midi-evil-icon.aseprite` | `37b25cd65397f2cf7ccb6a7976253140d3d9c98b6892fc2b71b0ec469ede7e77` |
-| `midi-evil-icon.png` | `d1b1087279206e19e1a2b0d6b3d79b5f01844d680fa19b24854619ccad14d82a` |
-| `midi-evil-splash.aseprite` | `064d52f7d6f6330e5b78b72bba2693b5fc70fb20b3bfd184f842b634ebcc7b28` |
-| `midi-evil-splash.png` | `619e4f2b259cb06ec3b2914f9c83b10c56d8619aba4b67fda3422c801a8ce69f` |
+| `midi-evil-icon.aseprite` | `f6e242d5679deaf89d82d2afa1cdc30b26d294ee5017d7cb527400c37e30121b` |
+| `midi-evil-icon.png` | `4f2d787b934c14ad05429f6dce9f91979546474a46c781a9199e4cc2d117fb03` |
+| `midi-evil-splash.aseprite` | `c239a4e10d968434eeca92dbd7a6ab6bb5ac74d84a1eeebd3e5d4c0697970197` |
+| `midi-evil-splash.png` | `d158df476e238004554cfd9941e484427774119e6e9a20439552b12cbd83bc05` |
 
 The source repository's `README.md`, **The AI-asset quarantine rule**, permits
 AI-generated assets in **free releases** and requires a human hand-cleanup pass
